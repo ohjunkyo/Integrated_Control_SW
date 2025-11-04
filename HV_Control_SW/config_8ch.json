@@ -1,0 +1,60 @@
+{
+	"arduino_settings": {
+		"_comment": "리눅스 환경에서 포트 이름 확인: 터미널에 'dmesg | grep tty' 또는 'ls /dev/tty*' 입력. 정품 Arduino Uno는 보통 /dev/ttyACM0, CH340 칩셋 호환 보드는 /dev/ttyUSB0 으로 인식됩니다.",
+		"port": "/dev/ttyUSB0",
+		"baud_rate": 9600,
+		"sensors": [
+			{
+				"pin": 2,
+				"name": "Internal Ambient",
+				"_comment": "Data index 0. Corresponds to the first pin in the Arduino's DHT_PINS array."
+			},
+			{
+				"pin": 3,
+				"name": "External Ambient",
+				"_comment": "Data index 1. Corresponds to the second pin."
+			},
+			{
+				"pin": 4,
+				"name": "Rack Front",
+				"_comment": "Data index 2. Corresponds to the third pin."
+			},
+			{
+				"pin": 5,
+				"name": "Rack Rear",
+				"_comment": "Data index 3. Corresponds to the fourth pin."
+			}
+		]
+	},
+	"caen_hv_settings": {
+		"system_type": "SMARTHV",
+		"link_type": "TCPIP",
+		"connection_argument": "192.168.0.200",
+		"username": "admin",
+		"password": "admin",
+		"channels_to_monitor": [0, 1, 2, 3],
+		"parameters": {
+			"v_mon": "VMon",
+			"i_mon": "IMon",
+			"v_set": "VSet",
+			"i_set": "ISet",
+			"pw": "Pw"
+		}
+	},
+	"ui_options": {
+		"window_title": "Real-time Monitoring System v2.3",
+		"shifter_name": "Jiyoung Choi (Chonnam Nat'l Univ.)"
+	},
+	"ui_styles": {
+		"background_color": "#FFF8DC",
+		"font_color_main": "black",
+		"font_color_sensor": "blue",
+		"font_color_voltage": "crimson",
+		"font_color_current": "darkorange",
+		"font_size_large": 14,
+		"font_size_medium": 12
+	},
+	"logging_options": {
+		"log_file_prefix": "monitoring_log"
+	}
+}

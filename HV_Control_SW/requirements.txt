@@ -1,0 +1,7 @@
+pyqt5
+pyqtgraph
+pyserial
+pyvisa
+pyUSB
+numpy
+caen-libs

@@ -1,0 +1,45 @@
+[
+    {
+        "frame": "scripts",
+        "label": "1. Configuration",
+        "command": "open_config",
+        "style": "Normal.TButton"
+    },
+    {
+        "frame": "scripts",
+        "label": "2. Run DAQ",
+        "command": "run_daq",
+        "style": "Normal.TButton"
+    },
+    {
+        "frame": "scripts",
+        "label": "3. Produce",
+        "command": "run_produce",
+        "style": "Normal.TButton"
+    },
+    {
+        "frame": "scripts",
+        "label": "4. Analysis",
+        "command": "run_analysis",
+        "style": "Normal.TButton"
+    },
+    {
+        "frame": "scripts",
+        "label": "5. Waveform inspection",
+        "command": "run_waveform",
+        "style": "Normal.TButton"
+    },
+    {
+        "frame": "scripts",
+        "label": "6. Waveform (2D)",
+        "command": "run_contour",
+        "style": "Normal.TButton"
+    },
+    {
+        "frame": "view",
+        "label": "Image Viewer",
+        "command": "open_image_viewer",
+        "style": "Normal.TButton"
+    }
+
+]
