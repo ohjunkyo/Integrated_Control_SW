@@ -195,15 +195,19 @@ class App:
 
     def _execute_in_new_terminal(self, command):
         """저장된 설정에 따라 올바른 터미널에서 명령을 실행합니다."""
-        self._log(f"Executing command via '{self.terminal_preference}': {' '.join(command)}")
+        # [수정됨] command는 이제 리스트가 아니라, '&&'로 묶인 단일 문자열일 수 있습니다.
+        # ' '.join(command)은 command가 ['cmd1 && cmd2'] 일 때 "cmd1 && cmd2"를 만듭니다.
+        command_str_for_log = ' '.join(command)
+        self._log(f"Executing command via '{self.terminal_preference}': {command_str_for_log}")
 
         try:
             if self.terminal_preference == 'xterm':
-                # xterm 실행 로직
-                term_command = ['xterm', '-hold', '-e'] + command
+                # xterm은 -e 뒤에 오는 모든 것을 단일 명령으로 취급하므로,
+                # 'bash -c "..."' 쉘을 명시적으로 실행해야 합니다.
+                term_command_str = f"{' '.join(command)}; echo; read -p 'Execution finished. Press Enter to close this terminal...'"
+                term_command = ['xterm', '-hold', '-e', 'bash', '-c', term_command_str]
                 subprocess.Popen(term_command)
             else: # 기본값은 gnome-terminal
-                # gnome-terminal 실행 로직
                 term_command_str = f"{' '.join(command)}; echo; read -p 'Execution finished. Press Enter to close this terminal...'"
                 term_command = ['gnome-terminal', '--', 'bash', '-c', term_command_str]
                 subprocess.Popen(term_command)
@@ -256,31 +260,108 @@ class App:
         script_path = os.path.join(daq_path, 'script2.sh')
         config_path = self.config_manager.filepath
         command = [script_path, mode, config_path]
-    #	command = [script_path, daq_path, mode]
         self._execute_in_new_terminal(command)
 
+    # --- [수정됨] 여러 명령을 순차적으로 실행하도록 변경 ---
     def run_produce(self):
-        run_num = self.ui.get_run_num()
-        if not run_num: return
+        selected_files = self.ui.get_selected_file_paths()
         daq_path = self._get_daq_path()
         if not daq_path: return
+        
+        helper = os.path.join(self.base_dir, 'run_cpp_script.sh')
+        script = os.path.join(daq_path, 'prod_ntp_v3.C') 
+        config_path = self.config_manager.filepath
         mode_int = "0" if self.ui.run_mode.get() == "laser" else "1"
-        helper = os.path.join(self.base_dir, 'run_cpp_script.sh')
-        script = os.path.join(daq_path, 'prod_ntp_v2.C')
-        config_path = self.config_manager.filepath
-        command = [helper, script, config_path, run_num, mode_int]
-        self._execute_in_new_terminal(command)
+        
+        runs_to_process = [] 
 
+        if selected_files:
+            pattern = re.compile(r'\.([0-9]{4})\.root$')
+            for f_path in selected_files:
+                if "raw" in f_path.lower():
+                    f_name = os.path.basename(f_path)
+                    match = pattern.search(f_name)
+                    if match:
+                        run_num_str = str(int(match.group(1)))
+                        runs_to_process.append((run_num_str, f_path))
+                    else:
+                        self._log(f"WARNING: Could not extract 4-digit run number from {f_name}. Skipping.")
+                else:
+                    self._log(f"INFO: Skipping already processed file: {f_path}")
+        else:
+            run_num = self.ui.get_run_num()
+            if not run_num: return
+            runs_to_process.append((run_num, "")) 
+
+        if not runs_to_process:
+            messagebox.showwarning("No Runs", "No valid RAW files found to process.")
+            return
+
+        # [수정] 10개의 명령을 만드는 대신, 1개의 긴 명령을 만듭니다.
+        all_commands_list = []
+        for run_num, f_path in runs_to_process:
+            f_path_arg = f"\\\"{f_path}\\\"" if f_path else "\"\""
+            command_parts = [helper, script, config_path, run_num, mode_int, f_path_arg]
+            # 개별 명령을 문자열로 조립
+            all_commands_list.append(" ".join(command_parts))
+        
+        # '&&'를 사용해 모든 명령을 순차적으로 실행하는 하나의 문자열로 결합
+        final_command_string = " && ".join(all_commands_list)
+        
+        # 터미널에 이 긴 문자열을 리스트의 유일한 원소로 전달
+        self._execute_in_new_terminal([final_command_string])
+
+    # --- [수정됨] 여러 명령을 순차적으로 실행하도록 변경 ---
     def run_analysis(self):
-        run_num = self.ui.get_run_num()
-        if not run_num: return
+        selected_files = self.ui.get_selected_file_paths()
         daq_path = self._get_daq_path()
         if not daq_path: return
+        
         helper = os.path.join(self.base_dir, 'run_cpp_script.sh')
-        script = os.path.join(daq_path, 'read_ntp_v2.C')
+        script = os.path.join(daq_path, 'read_ntp_v3.C') 
         config_path = self.config_manager.filepath
-        command = [helper, script, config_path, run_num]
-        self._execute_in_new_terminal(command)
+        
+        runs_to_process = [] 
+
+        if selected_files:
+            pattern = re.compile(r'\.([0-9]{4})\.root$')
+            for f_path in selected_files:
+                f_name = os.path.basename(f_path)
+                match = pattern.search(f_name)
+                if match:
+                    run_num_str = str(int(match.group(1))) 
+                    
+                    if "production" in f_path.lower() or "prd_" in f_name.lower():
+                         processed_path = f_path
+                    else:
+                         processed_path = os.path.join(self.config_manager.get_config_value("ProcessedDataPath"), f"prd_{f_name}")
+                    
+                    runs_to_process.append((run_num_str, processed_path))
+                else:
+                    self._log(f"WARNING: Could not extract 4-digit run number from {f_name}. Skipping.")
+        else:
+            run_num = self.ui.get_run_num()
+            if not run_num: return
+            runs_to_process.append((run_num, ""))
+
+        if not runs_to_process:
+            messagebox.showwarning("No Runs", "No valid run numbers found to process.")
+            return
+        
+        # [수정] 10개의 명령을 만드는 대신, 1개의 긴 명령을 만듭니다.
+        all_commands_list = []
+        for run_num, f_path in runs_to_process:
+            f_path_arg = f"\\\"{f_path}\\\"" if f_path else "\"\""
+            command_parts = [helper, script, config_path, run_num, f_path_arg]
+            # 개별 명령을 문자열로 조립
+            all_commands_list.append(" ".join(command_parts))
+
+        # '&&'를 사용해 모든 명령을 순차적으로 실행하는 하나의 문자열로 결합
+        final_command_string = " && ".join(all_commands_list)
+
+        # 터미널에 이 긴 문자열을 리스트의 유일한 원소로 전달
+        self._execute_in_new_terminal([final_command_string])
+
 
     def run_waveform(self):
         run_num = self.ui.get_run_num()
@@ -304,6 +385,18 @@ class App:
         command = [helper, script, config_path, run_num]
         self._execute_in_new_terminal(command)
 
+    def run_auto_analysis(self):
+        messagebox.showinfo("Not Implemented", "Auto Analysis button is not configured.")
+        pass
+
+    def run_uniformity_raw(self):
+        messagebox.showinfo("Not Implemented", "Uniformity (Raw) button is not configured.")
+        pass
+
+    def run_uniformity_norm(self):
+        messagebox.showinfo("Not Implemented", "Uniformity (Norm) button is not configured.")
+        pass
+
     def run_transfer(self):
         daq_path = self._get_daq_path()
         if not daq_path: return
@@ -313,6 +406,42 @@ class App:
             return
         command = [script_path]
         self._execute_in_new_terminal(command)
+    
+    def delete_data_files(self, file_paths):
+        if not file_paths: return
+        
+        num_files = len(file_paths)
+        file_list_str = "\n".join(f"- {os.path.basename(p)}" for p in file_paths[:5])
+        if num_files > 5:
+            file_list_str += f"\n...and {num_files - 5} more."
+
+        confirmed = messagebox.askyesno(
+            "Confirm Deletion",
+            f"Are you sure you want to permanently delete {num_files} selected file(s)?\n\n{file_list_str}\n\nThis action cannot be undone."
+        )
+
+        if not confirmed:
+            self._log("User cancelled file deletion.")
+            return
+
+        deleted_count = 0
+        failed_files = []
+        for file_path in file_paths:
+            try:
+                os.remove(file_path)
+                self._log(f"Deleted file: {file_path}")
+                deleted_count += 1
+            except Exception as e:
+                self._log(f"Failed to delete {file_path}: {e}")
+                failed_files.append(os.path.basename(file_path))
+        
+        if deleted_count > 0:
+            self.refresh_all_data() 
+        
+        if failed_files:
+            messagebox.showerror("Deletion Error", f"Successfully deleted {deleted_count} file(s), but failed to delete:\n\n{', '.join(failed_files)}")
+        elif deleted_count > 0:
+            messagebox.showinfo("Success", f"Successfully deleted {deleted_count} file(s).")
 
     def _get_daq_path(self):
         if not self.config_manager: return None
@@ -383,12 +512,18 @@ class App:
     def open_root_file_browser(self, file_path):
         try:
             command = ['root', '-l', file_path]
-            subprocess.Popen(command)
+            
+            if self.terminal_preference == 'xterm':
+                term_command = ['xterm', '-e'] + command
+            else: # gnome-terminal
+                term_command = ['gnome-terminal', '--'] + command
+            
+            subprocess.Popen(term_command)
+            
         except FileNotFoundError:
-            messagebox.showerror("Error", "'root' command not found. Is ROOT framework installed?")
+            messagebox.showerror("Error", f"'root' or '{self.terminal_preference}' command not found.")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to open ROOT file:\n{e}")
-
 
     def get_latest_run_number(self):
         if not self.config_manager: return (1, "Config not loaded.")

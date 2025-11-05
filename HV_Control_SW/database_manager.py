@@ -1,6 +1,7 @@
 import sqlite3
 import csv
 from datetime import datetime
+import numpy as np # [수정됨] np.nan을 사용하기 위해 import
 
 class DatabaseManager:
     def __init__(self, db_path, config):
@@ -17,18 +18,15 @@ class DatabaseManager:
             name = sensor['name'].replace(" ", "_").replace("#", "")
             columns.append(f"{name}_T REAL")
             columns.append(f"{name}_H REAL")
-
+        
         for ch in self.config['caen_hv_settings']['channels_to_monitor']:
             columns.append(f"Ch{ch}_V REAL")
-
             if self.is_dual_current:
                 columns.append(f"Ch{ch}_I_L REAL")
                 columns.append(f"Ch{ch}_I_H REAL")
             else:
                 columns.append(f"Ch{ch}_I REAL")
-        
         return columns
-
 
     def _check_and_update_schema(self):
         cursor = self.conn.cursor()
@@ -46,9 +44,9 @@ class DatabaseManager:
     def log_data(self, data_point):
         cursor = self.conn.cursor()
         cols, values, placeholders = ['timestamp'], [data_point['ts']], ['?']
-
+        
         for i, sensor in enumerate(self.config['arduino_settings']['sensors']):
-            name = sensor['name'].replace(" ", "_")
+            name = sensor['name'].replace(" ", "_").replace("#", "")
             s_data = data_point['sensors'].get(i, {'t': None, 'h': None})
             cols.extend([f'{name}_T', f'{name}_H']); values.extend([s_data['t'], s_data['h']]); placeholders.extend(['?', '?'])
 
@@ -59,7 +57,7 @@ class DatabaseManager:
                 cols.extend([f'Ch{ch}_I_L', f'Ch{ch}_I_H']); values.extend([hv_data.get('il'), hv_data.get('ih')]); placeholders.extend(['?', '?'])
             else:
                 cols.append(f'Ch{ch}_I'); values.append(hv_data.get('i')); placeholders.append('?')
-
+        
         sql = f"INSERT OR REPLACE INTO monitoring_data ({', '.join(cols)}) VALUES ({', '.join(placeholders)})"
         try:
             cursor.execute(sql, values)
@@ -73,11 +71,30 @@ class DatabaseManager:
         columns = [description[0] for description in cursor.description]
         rows = cursor.fetchall()
         data = {col: [] for col in columns}; timestamps = []
+        
+        # --- [수정됨] 데이터 타입을 float/nan으로 강제 변환 ---
         for row in rows:
             dt_obj = datetime.fromisoformat(row[0])
             timestamps.append(dt_obj.timestamp())
-            for i, col in enumerate(columns): data[col].append(row[i])
+            
+            # 1. 타임스탬프 문자열 추가 (i=0)
+            data[columns[0]].append(row[0]) 
+            
+            # 2. 나머지 모든 숫자 데이터를 float 또는 np.nan으로 변환 (i > 0)
+            for i in range(1, len(columns)):
+                col = columns[i]
+                val = row[i]
+                if val is None:
+                    data[col].append(np.nan)
+                else:
+                    try:
+                        # DB에서 가져온 값을 float으로 강제 변환
+                        data[col].append(float(val))
+                    except (ValueError, TypeError):
+                        # 변환 실패 시(예: 빈 문자열) nan 처리
+                        data[col].append(np.nan)
+            
         return timestamps, data
-
+    
     def close(self):
         self.conn.close()

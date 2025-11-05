@@ -3,6 +3,7 @@ import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, font
 import os
 import json
+import math 
 from image_viewer import ImageViewer
 from config_window import ConfigWindow 
 from datetime import datetime
@@ -21,6 +22,7 @@ class UIManager:
 		self.run_number_var = tk.StringVar(value="1")
 		self.status_indicators = {}
 		self.buttons = {}
+		self.image_viewer_window = None 
 
 		self._create_menubar()
 		self.create_widgets()
@@ -101,11 +103,10 @@ class UIManager:
 		self._create_log_viewer(log_tab)
 
 	def on_config_loaded(self):
-		self.update_pmt_status_indicators()
+		self._update_pmt_status_and_helper() 
 		self.update_config_display()
 		self.update_path_display()
 		if hasattr(self, 'data_tree'):
-			#	self.update_data_viewer()
 			self.update_data_viewer(force_refresh=True)
 
 
@@ -123,13 +124,9 @@ class UIManager:
 		ttk.Label(ip_frame, text="Local IP:").grid(row=0, column=0, sticky="w", padx=(0, 3))
 		self.local_ip_value = ttk.Label(ip_frame, text="Fetching...", anchor="w")
 		self.local_ip_value.grid(row=0, column=1, sticky="ew")
-	#	ttk.Label(ip_frame, text="Tailscale IP:").grid(row=1, column=0, sticky="w", padx=(0, 5))
-	#	self.tailscale_ip_value = ttk.Label(ip_frame, text="Fetching...", anchor="w")
-	#	self.tailscale_ip_value.grid(row=1, column=1, sticky="ew")
 
 	def update_ip_display(self, ip_info):
 		self.local_ip_value.config(text=ip_info.get('local_ip', 'N/A'))
-	#   self.tailscale_ip_value.config(text=ip_info.get('tailscale_ip', 'N/A'))
 
 	def update_daq_connection_status(self, is_connected):
 		if is_connected:
@@ -146,22 +143,37 @@ class UIManager:
 			messagebox.showwarning("Warning", "Configuration manager not initialized.")
 
 	def _create_status_frame(self, parent):
-		self.pmt_status_frame = ttk.LabelFrame(parent, text="PMT Status", padding="10")
-		self.pmt_status_frame.pack(fill=tk.X, pady=5, padx=5)
+		self.pmt_status_frame = ttk.LabelFrame(parent, text="PMT Status & Rotation Helper", padding="10")
+		self.pmt_status_frame.pack(fill=tk.BOTH, expand=True, pady=5, padx=5) 
 
-	def update_pmt_status_indicators(self):
+	def _update_pmt_status_and_helper(self):
 		if not self.controller.config_manager: return
+		
 		for widget in self.pmt_status_frame.winfo_children():
 			widget.destroy()
 		self.status_indicators.clear()
 
-		indicator_container = ttk.Frame(self.pmt_status_frame)
-		indicator_container.pack()
+		cfg = self.controller.config_manager.get_all_variables()
+
+		X_MAP = [0, 45, 90, 135, 180, -45, -90, -135]
+		Y_MAP = [90, 135, 180, -45, -90, -135, 0, 45]
+		# [수정됨] POS_MAP_ORIGINAL: 각 문자의 *고정된* 각도 (A=9시=180도)
+		POS_MAP_ORIGINAL = { 'E': 0, 'F': 45, 'G': 90, 'H': 135, 'A': 180, 'B': 225, 'C': 270, 'D': 315 }
 
 		for i in range(1, 4):
-			sn_val = self.controller.config_manager.get_config_value(f'SN{i}')
+			sn_val = cfg.get(f'SN{i}')
+			dir_val = cfg.get(f'direction{i}')
 			is_active = sn_val and sn_val.strip()
-			self._create_status_indicator(indicator_container, f"SN{i}", is_active, side=tk.LEFT)
+
+			pmt_row_frame = ttk.Frame(self.pmt_status_frame)
+			pmt_row_frame.pack(fill=tk.X, pady=5)
+
+			self._create_status_indicator(pmt_row_frame, f"SN{i}", is_active, side=tk.LEFT)
+			self._create_helper_diagram(pmt_row_frame, dir_val, POS_MAP_ORIGINAL) # [수정됨]
+			self._create_helper_text(pmt_row_frame, i, sn_val, dir_val, X_MAP, Y_MAP)
+			
+			ttk.Separator(self.pmt_status_frame, orient='horizontal').pack(fill='x', pady=5)
+
 
 	def _create_status_indicator(self, parent, name, is_active, side=tk.TOP):
 		color = 'gold' if is_active else '#adb5bd'
@@ -174,6 +186,111 @@ class UIManager:
 		canvas.create_text(41, 41, text=name, font=("Helvetica", 13, "bold"))
 		canvas.bind("<Button-1>", lambda event, pmt_name=name: self.controller.open_pmt_config_window(pmt_name))
 		self.status_indicators[name] = {"canvas": canvas, "oval_id": oval_id}
+
+	# --- [수정됨] 다이어그램을 동적으로 회전시키는 로직 ---
+	def _create_helper_diagram(self, parent, direction, pos_map_original):
+		canvas = tk.Canvas(parent, width=100, height=100)
+		canvas.pack(side=tk.LEFT, padx=10)
+		
+		C_X, C_Y, R = 50, 50, 40 # 중심과 반지름
+
+		# 1. 원과 중심부
+		canvas.create_oval(C_X - R, C_Y - R, C_X + R, C_Y + R, outline='gray')
+		canvas.create_rectangle(C_X - 17, C_Y - 15, C_X - 2, C_Y + 15, fill='lightgray', outline='black', dash=(2, 2))
+		canvas.create_text(C_X - 9.5, C_Y, text="DY1", font=("Helvetica", 9, "bold"))
+		canvas.create_rectangle(C_X + 2, C_Y - 15, C_X + 17, C_Y + 15, fill='lightgray', outline='black', dash=(2, 2))
+		canvas.create_text(C_X + 9.5, C_Y, text="DY2", font=("Helvetica", 9, "bold"))
+
+		# 2. 회전 각도 계산
+		TARGET_ANGLE = 180 # 9시 방향 (A의 기본 위치)
+		rotation_offset = 0
+		current_dir_char = 'A' # 기본값
+
+		if direction and direction.upper() in pos_map_original:
+			current_dir_char = direction.upper()
+			original_angle_of_current_dir = pos_map_original[current_dir_char]
+			rotation_offset = TARGET_ANGLE - original_angle_of_current_dir
+			# 예: direction='B' (225도) -> offset = 180 - 225 = -45도
+			# 예: direction='E' (0도)   -> offset = 180 - 0   = 180도
+
+		# 3. A-H 레이블 그리기 (회전 적용)
+		label_font = ("Helvetica", 10, "bold")
+		for char, original_angle_deg in pos_map_original.items():
+			
+			# 새 각도 계산 (offset 적용)
+			new_angle_deg = (original_angle_deg + rotation_offset) % 360
+			new_angle_rad = math.radians(new_angle_deg)
+			
+			x = C_X + (R) * math.cos(new_angle_rad)
+			y = C_Y - (R) * math.sin(new_angle_rad) # Y축은 위쪽이 마이너스
+			
+			color = 'red' if char == current_dir_char else 'black'
+			canvas.create_text(x, y, text=char, font=label_font, fill=color)
+
+		# 4. 'Cable' 화살표 그리기 (항상 9시 방향에 고정)
+		x1 = C_X - 18
+		y1 = C_Y
+		x2 = C_X - (R - 5)
+		y2 = C_Y
+		canvas.create_line(x1, y1, x2, y2, arrow=tk.LAST, fill='red', width=3)
+	# ---
+
+	def _create_helper_text(self, parent, pmt_index, sn, direction, x_map, y_map):
+		"""회전/틸트 각도를 알려주는 텍스트를 생성합니다."""
+		text_frame = ttk.Frame(parent)
+		text_frame.pack(side=tk.LEFT, padx=10, fill=tk.X, expand=True)
+		
+		msg = ""
+		x_tilt_msg = ""
+		y_tilt_msg = ""
+		
+		if sn and direction:
+			try:
+				idx = ord(direction.upper()) - ord('A')
+				if 0 <= idx < len(x_map):
+					x_rot_ideal = x_map[idx]
+					y_rot_ideal = y_map[idx]
+					
+					x_rot_display = x_rot_ideal
+					y_rot_display = y_rot_ideal
+					
+					x_tilt_logic_inverted = False
+					y_tilt_logic_inverted = True 
+
+					if x_rot_ideal < 0:
+						x_rot_display = x_rot_ideal + 180 
+						x_tilt_logic_inverted = not x_tilt_logic_inverted 
+						
+					if y_rot_ideal < 0:
+						y_rot_display = y_rot_ideal + 180 
+						y_tilt_logic_inverted = not y_tilt_logic_inverted 
+					
+					x_tilt_msg = "  (X+: Tilt +, X-: Tilt -)" if not x_tilt_logic_inverted else f"  (Rot={x_rot_display}°, INVERT TILT: X+: Tilt -, X-: Tilt +)"
+					y_tilt_msg = "  (Y+: Tilt -, Y-: Tilt +)" if y_tilt_logic_inverted else f"  (Rot={y_rot_display}°, INVERT TILT: Y+: Tilt +, Y-: Tilt -)"
+					
+					msg = (
+						f"SN{pmt_index} ({sn} / Dir {direction}):\n"
+						f"  X-Axis Scan: Set Rotation = {x_rot_display}°\n"
+						f"  Y-Axis Scan: Set Rotation = {y_rot_display}°"
+					)
+
+				else:
+					msg = f"SN{pmt_index} ({sn}): Invalid direction '{direction}'"
+			except Exception:
+				msg = f"SN{pmt_index} ({sn}): Error parsing direction '{direction}'"
+		else:
+			msg = f"SN{pmt_index}: Not configured."
+
+		label_main = ttk.Label(text_frame, text=msg, foreground="black", font=("Helvetica", 10), anchor="w", justify=tk.LEFT)
+		label_main.pack(side=tk.TOP, anchor="w", fill='x')
+		
+		if x_tilt_msg or y_tilt_msg:
+			correction_msg = f"{x_tilt_msg}\n{y_tilt_msg}"
+			label_corr = ttk.Label(text_frame, text=correction_msg, foreground="#c92a2a", font=("Helvetica", 10, "bold"), anchor="w", justify=tk.LEFT)
+			label_corr.pack(side=tk.TOP, anchor="w", fill='x', pady=(2,0))
+		
+		if not (sn and direction):
+			label_main.config(foreground="gray")
 
 	def _create_run_control_frame(self, parent):
 		frame = ttk.LabelFrame(parent, text="Run Control & Parameters", padding="10")
@@ -198,14 +315,16 @@ class UIManager:
 		try:
 			with open(os.path.join(self.controller.base_dir, 'buttons.json'), 'r') as f:
 				buttons_config = json.load(f)
+			
 			for config in buttons_config:
 				if config['frame'] == frame_id:
 					btn = ttk.Button(
 							frame, text=config['label'],
 							command=lambda cmd=config['command']: self.controller.handle_button_click(cmd)
 							)
-					btn.pack(pady=5, fill=tk.X, expand=True)
+					btn.pack(pady=5, fill=tk.X, expand=True) 
 					self.buttons[config['command']] = btn
+
 		except (FileNotFoundError, json.JSONDecodeError) as e:
 			ttk.Label(frame, text=f"Error loading buttons.json: {e}").pack()
 		return frame
@@ -285,8 +404,6 @@ class UIManager:
 		self.data_size_label = ttk.Label(bottom_frame, textvariable=self.data_size_var, foreground="blue", font=("Helvetica", 10, "bold"))
 		self.data_size_label.pack(side=tk.LEFT, padx=5)
 
-		#refresh_btn = ttk.Button(bottom_frame, text="Refresh 🔄", command=self.controller.refresh_all_data)
-		#refresh_btn.pack(side=tk.RIGHT)
 
 		def configure_wraplength(event):
 			width = event.width - 150 
@@ -318,14 +435,17 @@ class UIManager:
 
 		left_data_frame = ttk.Frame(data_paned_window)
 		data_paned_window.add(left_data_frame, weight=3)
-
-		notebook = ttk.Notebook(left_data_frame)
-		notebook.pack(fill=tk.BOTH, expand=True, pady=5)
+		
+		self.data_notebook = ttk.Notebook(left_data_frame)
+		self.data_notebook.pack(fill=tk.BOTH, expand=True, pady=5)
 
 		for tab_name in ["Raw", "Production"]:
-			tab_frame = ttk.Frame(notebook)
-			notebook.add(tab_frame, text=f"{tab_name} Data")
+			tab_frame = ttk.Frame(self.data_notebook)
+			self.data_notebook.add(tab_frame, text=f"{tab_name} Data")
 			self._create_file_browser_tab(tab_frame, tab_name)
+		
+		delete_button = ttk.Button(left_data_frame, text="Delete Selected File(s) 🗑️", command=self.on_delete_selected_files)
+		delete_button.pack(fill=tk.X, padx=5, pady=(5,0))
 
 		right_info_frame = ttk.LabelFrame(data_paned_window, text="File Info", padding=10)
 		data_paned_window.add(right_info_frame, weight=1)
@@ -471,13 +591,83 @@ class UIManager:
 			full_path = os.path.join(dir_path, filename)
 			self.update_file_info_panel(full_path)
 
-
 	def open_image_viewer(self):
+		if self.image_viewer_window and self.image_viewer_window.winfo_exists():
+			self.image_viewer_window.lift()
+			self.image_viewer_window.focus_force()
+			return
+
 		if self.controller.config_manager:
-			# controller 전체 대신, controller.config_manager를 전달하도록 수정
-			ImageViewer(self.master, self.controller.config_manager)
+			self.image_viewer_window = ImageViewer(self.master, self.controller.config_manager)
+			self.image_viewer_window.protocol("WM_DELETE_WINDOW", self._on_image_viewer_close)
 		else:
 			messagebox.showwarning("Warning", "Please set the DAQ configuration file path first.")
+
+	def _on_image_viewer_close(self):
+		if self.image_viewer_window:
+			self.image_viewer_window.destroy()
+		self.image_viewer_window = None
+
+	def on_delete_selected_files(self):
+		try:
+			if not hasattr(self, 'data_notebook'): 
+				messagebox.showerror("Error", "Data notebook not initialized.")
+				return
+
+			current_data_tab_index = self.data_notebook.index(self.data_notebook.select())
+			tab_text = self.data_notebook.tab(current_data_tab_index, "text")
+			tab_type = "Raw" if "Raw" in tab_text else "Production"
+
+			if tab_type not in self.data_view_vars: return
+
+			tree = self.data_view_vars[tab_type]["tree"]
+			selected_items = tree.selection()
+			if not selected_items:
+				messagebox.showwarning("No Selection", "Please select one or more files to delete.")
+				return
+
+			files_to_delete = []
+			for item_id in selected_items:
+				values = tree.item(item_id, "values")
+				if values:
+					filename, dir_path, _ = values
+					full_path = os.path.join(dir_path, filename)
+					files_to_delete.append(full_path)
+			
+			if files_to_delete:
+				self.controller.delete_data_files(files_to_delete)
+		except Exception as e:
+			messagebox.showerror("Error", f"Could not get selected files: {e}")
+
+	def get_selected_file_paths(self):
+		"""현재 활성화된 Data 탭에서 선택된 파일들의 전체 경로 리스트를 반환합니다."""
+		try:
+			if not hasattr(self, 'data_notebook'): 
+				return []
+
+			current_data_tab_index = self.data_notebook.index(self.data_notebook.select())
+			tab_text = self.data_notebook.tab(current_data_tab_index, "text")
+			tab_type = "Raw" if "Raw" in tab_text else "Production"
+
+			if tab_type not in self.data_view_vars: 
+				return []
+
+			tree = self.data_view_vars[tab_type]["tree"]
+			selected_items = tree.selection()
+			if not selected_items:
+				return []
+
+			files_to_return = []
+			for item_id in selected_items:
+				values = tree.item(item_id, "values")
+				if values:
+					filename, dir_path, _ = values
+					full_path = os.path.join(dir_path, filename)
+					files_to_return.append(full_path)
+			
+			return files_to_return
+		except Exception:
+			return [] # 오류 발생 시 빈 리스트 반환
 
 	def get_run_num(self):
 		run_num = self.run_number_var.get()

@@ -1,4 +1,4 @@
-from PyQt5.QtCore import QObject, pyqtSignal, QThread, QTimer
+from PyQt5.QtCore import QObject, pyqtSignal, QThread, QTimer, pyqtSlot # [수정됨] pyqtSlot 추가
 from workers.arduino import ArduinoWorker
 from workers.caen_process import caen_worker_process
 from multiprocessing import Process, Queue
@@ -17,6 +17,8 @@ class CaenProcessBridge(QObject):
             elif item['type'] == 'status': self.connection_status.emit(item['msg'])
             elif item['type'] == 'feedback': self.command_feedback.emit(item['msg'])
             elif item['type'] == 'initial_settings': self.initial_settings_ready.emit(item['data'])
+    
+    @pyqtSlot() # [수정됨] 이 함수가 다른 스레드에서 호출될 수 있음을 알림
     def stop(self):
         self.timer.stop()
 
@@ -33,6 +35,9 @@ class WorkerManager(QObject):
         self._arduino_thread.started.connect(self._arduino_worker.run)
         self._arduino_worker.data_ready.connect(self.arduino_data_ready); self._arduino_worker.connection_status.connect(self.arduino_status_changed)
         
+        # [수정됨] 스레드가 종료될 때 'stop_polling'이 올바른 스레드에서 호출되도록 연결
+        self._arduino_thread.finished.connect(self._arduino_worker.stop_polling)
+        
         self.caen_cmd_q = Queue(); self.caen_data_q = Queue()
         self.caen_process = Process(target=caen_worker_process, args=(self.caen_cmd_q, self.caen_data_q, config['caen_hv_settings']))
         
@@ -40,6 +45,9 @@ class WorkerManager(QObject):
         self.caen_bridge.moveToThread(self.caen_bridge_thread)
         self.caen_bridge.data_ready.connect(self.caenhv_data_ready); self.caen_bridge.connection_status.connect(self.caenhv_status_changed)
         self.caen_bridge.command_feedback.connect(self.hv_command_feedback); self.caen_bridge.initial_settings_ready.connect(self.hv_initial_settings_ready)
+        
+        # [수정됨] 브릿지 스레드가 종료될 때 'stop'이 올바른 스레드에서 호출되도록 연결
+        self.caen_bridge_thread.finished.connect(self.caen_bridge.stop)
         
         self.shutdown_timer = QTimer(self); self.shutdown_timer.timeout.connect(self._check_shutdown_status)
 
@@ -49,7 +57,9 @@ class WorkerManager(QObject):
     def initiate_shutdown(self):
         print("Initiating worker shutdown...")
         if self._arduino_thread.isRunning():
-            self._arduino_worker.stop_polling(); self._arduino_thread.quit()
+            # [수정됨] 타이머를 직접 멈추는 대신 스레드에 종료 신호를 보냄
+            # self._arduino_worker.stop_polling() # <- 이 줄 삭제
+            self._arduino_thread.quit() # 'finished' 신호가 stop_polling을 호출할 것임
         if self.caen_process.is_alive():
             self.caen_cmd_q.put({'type': 'stop'})
         
@@ -65,8 +75,9 @@ class WorkerManager(QObject):
             print("Arduino thread and CAEN process stopped.")
             
             # Now, stop the bridge
-            self.caen_bridge.stop()
-            self.caen_bridge_thread.quit()
+            # [수정됨] 타이머를 직접 멈추는 대신 스레드에 종료 신호를 보냄
+            # self.caen_bridge.stop() # <- 이 줄 삭제
+            self.caen_bridge_thread.quit() # 'finished' 신호가 stop을 호출할 것임
             self.caen_bridge_thread.wait()
             print("Bridge thread stopped.")
             

@@ -16,7 +16,7 @@ const std::string LogDir = "/home/precalkor/ADC/ADC_test/LOG/DAQ/";
 
 // --- DAQ Common Settings --- //
 const int Events = 1000;
-const int TimeWindow = 16834;
+const int TimeWindow = 1024;
 const int PostTrigger = 80;
 const std::string ChannelMask = "00000111";
 
@@ -47,7 +47,7 @@ const std::string HV2 = "1750";
 const std::string HV3 = "";
 
 // --- NOTE ---
-const std::string NOTE = "shjeondarktest";
+const std::string NOTE = "20251025_hvon";
 
 // --- Trigger Channel ---
 const int TriggerCh = 2;

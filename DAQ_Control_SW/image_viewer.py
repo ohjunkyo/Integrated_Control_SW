@@ -77,6 +77,8 @@ class ImageViewer(Toplevel):
 		ttk.Button(zoom_frame, text="Zoom In (+)", command=self.zoom_in).pack(side=tk.LEFT, expand=True, padx=2)
 		ttk.Button(zoom_frame, text="Zoom Out (-)", command=self.zoom_out).pack(side=tk.LEFT, expand=True, padx=2)
 		ttk.Button(zoom_frame, text="Fit to Screen", command=self.fit_to_screen).pack(side=tk.LEFT, expand=True, padx=2)
+		# --- [수정됨] 새로고침 버튼 추가 ---
+		ttk.Button(zoom_frame, text="Refresh 🔄", command=self.load_image_list).pack(side=tk.LEFT, expand=True, padx=2)
 
 
 		self.listbox.bind("<<ListboxSelect>>", self.on_listbox_select)

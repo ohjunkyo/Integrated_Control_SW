@@ -1,5 +1,5 @@
 import time, serial
-from PyQt5.QtCore import QObject, pyqtSignal, QTimer
+from PyQt5.QtCore import QObject, pyqtSignal, QTimer, pyqtSlot # [수정됨] pyqtSlot 추가
 import numpy as np
 
 class ArduinoWorker(QObject):
@@ -17,6 +17,7 @@ class ArduinoWorker(QObject):
     def start_polling(self):
         self.timer.start(1000) # Poll every 1 second
 
+    @pyqtSlot() # [수정됨] 이 함수가 다른 스레드에서 호출될 수 있음을 알림
     def stop_polling(self):
         self.timer.stop()
         if self.ser and self.ser.is_open:
