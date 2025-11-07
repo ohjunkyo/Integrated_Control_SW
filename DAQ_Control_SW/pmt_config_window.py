@@ -22,7 +22,7 @@ class PMTConfigWindow(Toplevel):
             f"direction{self.pmt_number}",
             f"HV{self.pmt_number}",
             f"RotateAngle{self.pmt_number}",
-            f"TitlAngle{self.pmt_number}"
+            f"TiltAngle{self.pmt_number}"
         ]
 
         for key in self.config_keys:

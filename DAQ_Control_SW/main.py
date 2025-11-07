@@ -382,6 +382,7 @@ class App:
         helper = os.path.join(self.base_dir, 'run_cpp_script.sh')
         script = os.path.join(daq_path, 'Draw_Contour_v2.C')
         config_path = self.config_manager.filepath
+
         command = [helper, script, config_path, run_num]
         self._execute_in_new_terminal(command)
 
@@ -406,19 +407,19 @@ class App:
             return
         command = [script_path]
         self._execute_in_new_terminal(command)
-    
+
     def delete_data_files(self, file_paths):
         if not file_paths: return
-        
+
         num_files = len(file_paths)
         file_list_str = "\n".join(f"- {os.path.basename(p)}" for p in file_paths[:5])
         if num_files > 5:
             file_list_str += f"\n...and {num_files - 5} more."
 
         confirmed = messagebox.askyesno(
-            "Confirm Deletion",
-            f"Are you sure you want to permanently delete {num_files} selected file(s)?\n\n{file_list_str}\n\nThis action cannot be undone."
-        )
+                "Confirm Deletion",
+                f"Are you sure you want to permanently delete {num_files} selected file(s)?\n\n{file_list_str}\n\nThis action cannot be undone."
+                )
 
         if not confirmed:
             self._log("User cancelled file deletion.")
@@ -434,10 +435,10 @@ class App:
             except Exception as e:
                 self._log(f"Failed to delete {file_path}: {e}")
                 failed_files.append(os.path.basename(file_path))
-        
+
         if deleted_count > 0:
             self.refresh_all_data() 
-        
+
         if failed_files:
             messagebox.showerror("Deletion Error", f"Successfully deleted {deleted_count} file(s), but failed to delete:\n\n{', '.join(failed_files)}")
         elif deleted_count > 0:
@@ -512,14 +513,14 @@ class App:
     def open_root_file_browser(self, file_path):
         try:
             command = ['root', '-l', file_path]
-            
+
             if self.terminal_preference == 'xterm':
                 term_command = ['xterm', '-e'] + command
             else: # gnome-terminal
                 term_command = ['gnome-terminal', '--'] + command
-            
+
             subprocess.Popen(term_command)
-            
+
         except FileNotFoundError:
             messagebox.showerror("Error", f"'root' or '{self.terminal_preference}' command not found.")
         except Exception as e:

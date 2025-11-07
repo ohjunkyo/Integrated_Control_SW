@@ -84,7 +84,7 @@ class MonitoringApp(QMainWindow):
         p1.getAxis('left').setTickFont(tick_font)
         p1.getAxis('bottom').setTickFont(tick_font)
         
-        p1.addLegend(offset=(-10, 10)).setLabelTextSize(f"{legend_font_size}pt")
+        # p1.addLegend(offset=(-10, 10)).setLabelTextSize(f"{legend_font_size}pt") # Analysis 탭에서는 여기서 생성 안 함
 
         p2 = pg.ViewBox()
         p1.scene().addItem(p2)
@@ -175,6 +175,9 @@ class MonitoringApp(QMainWindow):
         
         th_color = self.styles.get('font_color_sensor', 'blue')
         self.monitor_plots['overlay'] = self.create_dual_y_plot("Temperature (°C)", "Humidity (%)", (0, 100), th_color)
+        
+        # 모니터링 탭의 오버레이 플롯에는 레전드를 추가합니다 (여기는 괜찮습니다)
+        self.monitor_plots['overlay'].getPlotItem().addLegend().setLabelTextSize(legend_font_size_str)
         
         self.monitor_plots['overlay'].setTitle("Sensor T/H Overlay (Solid=T, Dash=H)", size=title_font_size_str)
         graph_layout.addWidget(self.monitor_plots['overlay'], 2, 0, 1, 2)
@@ -380,9 +383,28 @@ class MonitoringApp(QMainWindow):
         start_str = self.start_time_edit.dateTime().toString(Qt.ISODate); end_str = self.end_time_edit.dateTime().toString(Qt.ISODate)
         timestamps, data = self.db_manager.fetch_data_range(start_str, end_str)
         
-        # 플롯 클리어 및 폰트/범례 설정
         for plot in self.analysis_plots.values(): 
-            plot.clear()
+            p1 = plot.getPlotItem() # p1을 먼저 가져옵니다.
+
+            # --- [*** 여기가 수정된 부분 ***] ---
+            # 1. 기존 레전드 객체가 PlotItem에 연결되어 있다면,
+            if p1.legend:
+                # 2. PlotItem의 레이아웃에서 레전드를 제거합니다.
+                #    이것이 UI에서 레전드를 시각적으로 지우는 핵심입니다.
+                try:
+                    p1.layout.removeItem(p1.legend)
+                except Exception as e:
+                    # p1.legend가 존재하지만 layout에 없는 비정상적인 경우
+                    print(f"Could not remove legend from layout: {e}")
+                
+                # 3. 레전드가 scene에서 스스로를 분리하도록 합니다 (메모리 정리)
+                p1.legend.setParentItem(None)
+                
+                # 4. PlotItem의 내부 참조를 None으로 설정합니다.
+                p1.legend = None
+            # --- [*** 수정 끝 ***] ---
+
+            plot.clear() # 이제 plot.clear()를 호출합니다.
             if hasattr(plot, 'dual_viewbox'):
                 plot.dual_viewbox.clear() 
             
@@ -391,8 +413,11 @@ class MonitoringApp(QMainWindow):
             tick_font = QFont(); tick_font.setPointSize(self.styles.get('font_size_medium', 16) - 2)
             label_font = QFont(); label_font.setPointSize(self.styles.get('font_size_medium', 16))
             
-            p1 = plot.getPlotItem()
+            # plot.clear()가 p1.legend를 None으로 만들었으므로,
+            # (그리고 위에서 강제로 None으로 만들었으므로)
+            # 여기서 새로 추가하는 것은 문제가 없습니다.
             p1.addLegend().setLabelTextSize(legend_font_size_str)
+
             p1.getAxis('bottom').setTickFont(tick_font)
             p1.getAxis('left').setTickFont(tick_font)
             p1.getAxis('left').label.setFont(label_font)

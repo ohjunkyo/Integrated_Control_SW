@@ -26,8 +26,7 @@ class ImageViewer(Toplevel):
 		self.view_mode = tk.StringVar(value="All")
 		self.sort_mode = tk.StringVar(value="name")
 
-		# --- 패닝 민감도 변수 (새로 추가) ---
-		self.pan_sensitivity = 0.5 # 이 값을 조절하여 민감도를 변경합니다. (0.1 ~ 1.0 사이가 적당)
+		self.pan_sensitivity = 0.2 
 
 		paned_window = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
 		paned_window.pack(fill=tk.BOTH, expand=True)
@@ -40,6 +39,9 @@ class ImageViewer(Toplevel):
 		ttk.Radiobutton(mode_frame, text="All", variable=self.view_mode, value="All", command=self.load_image_list).pack(side=tk.LEFT, expand=True)
 		ttk.Radiobutton(mode_frame, text="Produce", variable=self.view_mode, value="ByProduce", command=self.load_image_list).pack(side=tk.LEFT, expand=True)
 		ttk.Radiobutton(mode_frame, text="Analysis", variable=self.view_mode, value="ByAnalysis", command=self.load_image_list).pack(side=tk.LEFT, expand=True)
+		ttk.Radiobutton(mode_frame, text="Contour", variable=self.view_mode, value="Contour", command=self.load_image_list).pack(side=tk.LEFT, expand=True)
+		ttk.Radiobutton(mode_frame, text="Uniformity", variable=self.view_mode, value="Uniformity", command=self.load_image_list).pack(side=tk.LEFT, expand=True)
+
 
 		sort_frame = ttk.LabelFrame(list_frame, text="Sort By", padding=5)
 		sort_frame.pack(fill=tk.X, padx=5, pady=5)
@@ -157,7 +159,7 @@ class ImageViewer(Toplevel):
 			display_name = os.path.basename(path)
 			if show_prefix:
 				parent_dir = os.path.basename(os.path.dirname(path))
-				if parent_dir in ["ByProduce", "ByAnalysis"]:
+				if parent_dir in ["ByProduce", "ByAnalysis", "Contour", "Uniformity"]:
 					display_name = f"{parent_dir}/{display_name}"
 			self.listbox.insert(tk.END, display_name)
 
@@ -175,7 +177,9 @@ class ImageViewer(Toplevel):
 			if mode == "All":
 				dirs_to_scan.extend([
 					os.path.join(self.base_image_dir, 'ByProduce'),
-					os.path.join(self.base_image_dir, 'ByAnalysis')
+					os.path.join(self.base_image_dir, 'ByAnalysis'),
+					os.path.join(self.base_image_dir, 'Contour'),
+					os.path.join(self.base_image_dir, 'Uniformity')
 				])
 			else:
 				dirs_to_scan.append(os.path.join(self.base_image_dir, mode))

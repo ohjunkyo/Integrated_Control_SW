@@ -15,17 +15,17 @@ const std::string ImagePath = "/home/precalkor/ADC/ADC_test/Data/image/";
 const std::string LogDir = "/home/precalkor/ADC/ADC_test/LOG/DAQ/";
 
 // --- DAQ Common Settings --- //
-const int Events = 1000;
+const int Events = 200000;
 const int TimeWindow = 1024;
-const int PostTrigger = 80;
+const int PostTrigger = 60;
 const std::string ChannelMask = "00000111";
 
 // --- Sequence Settings --- //
 const int NumSequences = 1;
-const int IntervalTime = 30;
+const int IntervalTime = 60;
 
 // -- Laser (Current, mA) --- //
-const std::string Laser = "126";
+const std::string Laser = "130";
 
 // --- PMT configuration --- //
 const std::string SN1 = "ED1950";
@@ -37,17 +37,17 @@ const std::string direction3 = "";
 
 // -- Angle Configuration --- //
 const std::string RotateAngle1 = "0";
-const std::string TiltAngle1 = "0";
-const std::string RotateAngle2 = "0";
-const std::string TiltAngle2 = "0";
+const std::string TiltAngle1 = "-55";
+const std::string RotateAngle2 = "45";
+const std::string TiltAngle2 = "-55";
 
 // --- High Voltage --- //
-const std::string HV1 = "1750";
-const std::string HV2 = "1750";
+const std::string HV1 = "1850";
+const std::string HV2 = "1840";
 const std::string HV3 = "";
 
 // --- NOTE ---
-const std::string NOTE = "20251025_hvon";
+const std::string NOTE = "20251107_lightleak";
 
 // --- Trigger Channel ---
 const int TriggerCh = 2;
@@ -55,7 +55,7 @@ const int TriggerCh = 2;
 
 // --- Shift Information ---
 const std::string Shift_worker = "";
-const std::string Expert = "";
+const std::string Expert = "Junkyo";
 
 // It is monitor PMT
 const std::string RotateAngle3 = "";
