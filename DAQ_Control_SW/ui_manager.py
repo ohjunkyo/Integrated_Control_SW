@@ -157,7 +157,7 @@ class UIManager:
 
 		X_MAP = [0, 45, 90, 135, 180, -45, -90, -135]
 		Y_MAP = [90, 135, 180, -45, -90, -135, 0, 45]
-		# [수정됨] POS_MAP_ORIGINAL: 각 문자의 *고정된* 각도 (A=9시=180도)
+		# PMT 고유 좌표 (A=180도, G=90도)
 		POS_MAP_ORIGINAL = { 'E': 0, 'F': 45, 'G': 90, 'H': 135, 'A': 180, 'B': 225, 'C': 270, 'D': 315 }
 
 		for i in range(1, 4):
@@ -169,7 +169,7 @@ class UIManager:
 			pmt_row_frame.pack(fill=tk.X, pady=5)
 
 			self._create_status_indicator(pmt_row_frame, f"SN{i}", is_active, side=tk.LEFT)
-			self._create_helper_diagram(pmt_row_frame, dir_val, POS_MAP_ORIGINAL) # [수정됨]
+			self._create_helper_diagram(pmt_row_frame, dir_val, POS_MAP_ORIGINAL) 
 			self._create_helper_text(pmt_row_frame, i, sn_val, dir_val, X_MAP, Y_MAP)
 			
 			ttk.Separator(self.pmt_status_frame, orient='horizontal').pack(fill='x', pady=5)
@@ -187,53 +187,93 @@ class UIManager:
 		canvas.bind("<Button-1>", lambda event, pmt_name=name: self.controller.open_pmt_config_window(pmt_name))
 		self.status_indicators[name] = {"canvas": canvas, "oval_id": oval_id}
 
-	# --- [수정됨] 다이어그램을 동적으로 회전시키는 로직 ---
+	# --- [*** 여기가 완전히 수정된 부분 ***] ---
 	def _create_helper_diagram(self, parent, direction, pos_map_original):
-		canvas = tk.Canvas(parent, width=100, height=100)
+		# 캔버스 크기를 늘려 +X, +Y 라벨 공간 확보
+		canvas = tk.Canvas(parent, width=120, height=120) 
 		canvas.pack(side=tk.LEFT, padx=10)
 		
-		C_X, C_Y, R = 50, 50, 40 # 중심과 반지름
+		C_X, C_Y, R = 60, 60, 40 # 중심과 반지름
+		LABEL_R = R + 12 # +X, +Y 라벨을 그릴 반지름
 
-		# 1. 원과 중심부
-		canvas.create_oval(C_X - R, C_Y - R, C_X + R, C_Y + R, outline='gray')
-		canvas.create_rectangle(C_X - 17, C_Y - 15, C_X - 2, C_Y + 15, fill='lightgray', outline='black', dash=(2, 2))
-		canvas.create_text(C_X - 9.5, C_Y, text="DY1", font=("Helvetica", 9, "bold"))
-		canvas.create_rectangle(C_X + 2, C_Y - 15, C_X + 17, C_Y + 15, fill='lightgray', outline='black', dash=(2, 2))
-		canvas.create_text(C_X + 9.5, C_Y, text="DY2", font=("Helvetica", 9, "bold"))
-
-		# 2. 회전 각도 계산
-		TARGET_ANGLE = 180 # 9시 방향 (A의 기본 위치)
+		# --- 1. 회전 각도 계산 ---
+		# 'direction' 라벨이 9시(180도)에 오도록 전체를 회전시킴
+		TARGET_CABLE_ANGLE = 180 # 9시 방향 (케이블 고정 위치)
 		rotation_offset = 0
 		current_dir_char = 'A' # 기본값
 
 		if direction and direction.upper() in pos_map_original:
 			current_dir_char = direction.upper()
+			# PMT 고유 좌표계에서 현재 direction의 각도 (예: B=225도)
 			original_angle_of_current_dir = pos_map_original[current_dir_char]
-			rotation_offset = TARGET_ANGLE - original_angle_of_current_dir
+			# (목표 각도 - 현재 각도) 만큼 회전
+			rotation_offset = TARGET_CABLE_ANGLE - original_angle_of_current_dir
 			# 예: direction='B' (225도) -> offset = 180 - 225 = -45도
-			# 예: direction='E' (0도)   -> offset = 180 - 0   = 180도
+			# 예: direction='G' (90도)  -> offset = 180 - 90  = 90도
 
-		# 3. A-H 레이블 그리기 (회전 적용)
+		# --- 2. 고정된 "Scan Axis" 그리기 (12시-6시) ---
+		# 파워포인트의 파란색 영역처럼 표시
+		canvas.create_rectangle(C_X - 6, C_Y - R - 15, C_X + 6, C_Y + R + 15, 
+								fill="#e7f5ff", outline="")
+		canvas.create_line(C_X, C_Y - R + 5, C_X, C_Y - R - 12, arrow=tk.LAST, fill="#1971c2", width=2)
+		canvas.create_line(C_X, C_Y + R - 5, C_X, C_Y + R + 12, arrow=tk.LAST, fill="#1971c2", width=2)
+		canvas.create_text(C_X, C_Y - R - 18, text="Scan Axis", font=("Helvetica", 9, "bold"), fill="#1971c2")
+
+		# --- 3. 고정된 "Cable" 표시 그리기 (9시) ---
+		canvas.create_line(C_X - R + 5, C_Y, C_X - R - 12, C_Y, arrow=tk.LAST, fill='red', width=3)
+		canvas.create_text(C_X - R - 15, C_Y, text="Cable", font=("Helvetica", 9, "bold"), fill="red", anchor="e")
+
+		# --- 4. 회전하는 PMT 원과 라벨 ---
+		canvas.create_oval(C_X - R, C_Y - R, C_X + R, C_Y + R, outline='gray')
+
+		# --- 5. 회전하는 DY1 / DY2 ---
+		DY_R = 10 # Dynode 라벨 반지름
+		DY_FONT = ("Helvetica", 9, "bold")
+		# PMT 고유 좌표 (DY1=9시, DY2=3시)
+		DY1_ORIGINAL_ANGLE_DEG = 180 
+		DY2_ORIGINAL_ANGLE_DEG = 0   
+		
+		# 회전 적용
+		new_dy1_angle_rad = math.radians((DY1_ORIGINAL_ANGLE_DEG + rotation_offset) % 360)
+		dy1_x = C_X + DY_R * math.cos(new_dy1_angle_rad)
+		dy1_y = C_Y - DY_R * math.sin(new_dy1_angle_rad) # Y축 반전
+		
+		new_dy2_angle_rad = math.radians((DY2_ORIGINAL_ANGLE_DEG + rotation_offset) % 360)
+		dy2_x = C_X + DY_R * math.cos(new_dy2_angle_rad)
+		dy2_y = C_Y - DY_R * math.sin(new_dy2_angle_rad)
+
+		canvas.create_text(dy1_x, dy1_y, text="DY1", font=DY_FONT, fill='black')
+		canvas.create_text(dy2_x, dy2_y, text="DY2", font=DY_FONT, fill='black')
+
+		# --- 6. 회전하는 A-H 라벨 및 +X/+Y ---
 		label_font = ("Helvetica", 10, "bold")
+		axis_label_font = ("Helvetica", 10, "bold")
+		
 		for char, original_angle_deg in pos_map_original.items():
 			
-			# 새 각도 계산 (offset 적용)
+			# 라벨의 새 각도 계산
 			new_angle_deg = (original_angle_deg + rotation_offset) % 360
 			new_angle_rad = math.radians(new_angle_deg)
 			
-			x = C_X + (R) * math.cos(new_angle_rad)
-			y = C_Y - (R) * math.sin(new_angle_rad) # Y축은 위쪽이 마이너스
+			# A-H 라벨 위치 (원 안쪽)
+			x = C_X + (R - 8) * math.cos(new_angle_rad)
+			y = C_Y - (R - 8) * math.sin(new_angle_rad) # Y축 반전
 			
+			# +X/+Y 라벨 위치 (원 바깥쪽)
+			x_ax = C_X + (LABEL_R) * math.cos(new_angle_rad)
+			y_ax = C_Y - (LABEL_R) * math.sin(new_angle_rad)
+			
+			# 'direction'과 일치하는 라벨은 빨간색으로 표시
 			color = 'red' if char == current_dir_char else 'black'
 			canvas.create_text(x, y, text=char, font=label_font, fill=color)
 
-		# 4. 'Cable' 화살표 그리기 (항상 9시 방향에 고정)
-		x1 = C_X - 18
-		y1 = C_Y
-		x2 = C_X - (R - 5)
-		y2 = C_Y
-		canvas.create_line(x1, y1, x2, y2, arrow=tk.LAST, fill='red', width=3)
-	# ---
+			# PMT의 고유 X축(G), Y축(A) 라벨 추가
+			if char == 'A':
+				canvas.create_text(x_ax, y_ax, text="+Y", font=axis_label_font, fill="#c92a2a")
+			elif char == 'G':
+				canvas.create_text(x_ax, y_ax, text="+X", font=axis_label_font, fill="#1971c2")
+	# --- [*** 수정 끝 ***] ---
+
 
 	def _create_helper_text(self, parent, pmt_index, sn, direction, x_map, y_map):
 		"""회전/틸트 각도를 알려주는 텍스트를 생성합니다."""
@@ -248,25 +288,38 @@ class UIManager:
 			try:
 				idx = ord(direction.upper()) - ord('A')
 				if 0 <= idx < len(x_map):
-					x_rot_ideal = x_map[idx]
-					y_rot_ideal = y_map[idx]
+					x_rot_ideal = x_map[idx] # "이상적인" 각도 (X-scan용)
+					y_rot_ideal = y_map[idx] # "이상적인" 각도 (Y-scan용)
 					
-					x_rot_display = x_rot_ideal
-					y_rot_display = y_rot_ideal
+					x_rot_display = x_rot_ideal # 모터에 설정할 "실제" 각도
+					y_rot_display = y_rot_ideal # 모터에 설정할 "실제" 각도
 					
-					x_tilt_logic_inverted = False
-					y_tilt_logic_inverted = True 
+					x_tilt_logic_inverted = False # X축 틸트 방향
+					y_tilt_logic_inverted = True  # Y축 틸트는 기본적으로 반대
 
+					# --- X축 모터 각도 및 틸트 방향 계산 ---
 					if x_rot_ideal < 0:
-						x_rot_display = x_rot_ideal + 180 
-						x_tilt_logic_inverted = not x_tilt_logic_inverted 
+						x_rot_display = x_rot_ideal + 180 # 예: -45 -> 135
+						x_tilt_logic_inverted = not x_tilt_logic_inverted # 틸트 반전
+					elif x_rot_ideal == 180:
+						x_rot_display = 0 # 180 -> 0
+						x_tilt_logic_inverted = not x_tilt_logic_inverted # 틸트 반전
 						
+					# --- Y축 모터 각도 및 틸트 방향 계산 ---
 					if y_rot_ideal < 0:
-						y_rot_display = y_rot_ideal + 180 
-						y_tilt_logic_inverted = not y_tilt_logic_inverted 
+						y_rot_display = y_rot_ideal + 180 # 예: -90 -> 90
+						y_tilt_logic_inverted = not y_tilt_logic_inverted # 기본 반전을 다시 반전 -> 정상
+					elif y_rot_ideal == 180:
+						y_rot_display = 0 # 180 -> 0
+						y_tilt_logic_inverted = not y_tilt_logic_inverted # 기본 반전을 다시 반전 -> 정상
 					
-					x_tilt_msg = "  (X+: Tilt +, X-: Tilt -)" if not x_tilt_logic_inverted else f"  (Rot={x_rot_display}°, INVERT TILT: X+: Tilt -, X-: Tilt +)"
-					y_tilt_msg = "  (Y+: Tilt -, Y-: Tilt +)" if y_tilt_logic_inverted else f"  (Rot={y_rot_display}°, INVERT TILT: Y+: Tilt +, Y-: Tilt -)"
+					# --- 메시지 생성 ---
+					x_tilt_msg_inner = "(X+: Tilt +, X-: Tilt -)" if not x_tilt_logic_inverted else "(INVERT TILT: X+: Tilt -, X-: Tilt +)"
+					y_tilt_msg_inner = "(Y+: Tilt -, Y-: Tilt +)" if y_tilt_logic_inverted else "(INVERT TILT: Y+: Tilt +, Y-: Tilt -)"
+
+					# 0, 45, 90, 135는 Rot=을 표시할 필요 없음
+					x_tilt_msg = f"  {x_tilt_msg_inner}" if x_rot_display == x_rot_ideal and x_rot_ideal >= 0 else f"  (Rot={x_rot_display}°, {x_tilt_msg_inner})"
+					y_tilt_msg = f"  {y_tilt_msg_inner}" if y_rot_display == y_rot_ideal and y_rot_ideal >= 0 else f"  (Rot={y_rot_display}°, {y_tilt_msg_inner})"
 					
 					msg = (
 						f"SN{pmt_index} ({sn} / Dir {direction}):\n"
@@ -276,8 +329,8 @@ class UIManager:
 
 				else:
 					msg = f"SN{pmt_index} ({sn}): Invalid direction '{direction}'"
-			except Exception:
-				msg = f"SN{pmt_index} ({sn}): Error parsing direction '{direction}'"
+			except Exception as e:
+				msg = f"SN{pmt_index} ({sn}): Error parsing direction '{direction}' ({e})"
 		else:
 			msg = f"SN{pmt_index}: Not configured."
 

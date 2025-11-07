@@ -1,26 +1,26 @@
 #!/bin/bash
 
-echo "Monitoring App 관련 프로세스를 검색하고 종료합니다..."
+echo "Searching for and terminating Monitoring App related processes..."
 
-# 1. 메인 앱 (launcher.py) 프로세스 검색
-# [l]auncher.py는 grep 명령 자신을 제외하기 위한 트릭입니다.
+# 1. Search for the main app (launcher.py) process
+# [l]auncher.py is a trick to exclude the grep command itself.
 APP_PIDS=$(ps aux | grep '[l]auncher.py' | awk '{print $2}')
 
 if [ -z "$APP_PIDS" ]; then
-  echo "실행 중인 메인 앱(launcher.py)이 없습니다."
+  echo "No main app (launcher.py) is running."
 else
-  echo "메인 앱 PID: $APP_PIDS ... 강제 종료 (kill -9)"
+  echo "Main app PID(s): $APP_PIDS ... Force terminating (kill -9)"
   kill -9 $APP_PIDS
 fi
 
-# 2. CAEN 워커 프로세스 검색 (간혹 메인 앱이 죽어도 홀로 남을 수 있음)
+# 2. Search for CAEN worker processes (can sometimes remain if the main app dies)
 WORKER_PIDS=$(ps aux | grep '[c]aen_process' | awk '{print $2}')
 
 if [ -z "$WORKER_PIDS" ]; then
-  echo "남아있는 워커 프로세스가 없습니다."
+  echo "No remaining worker processes found."
 else
-  echo "남아있는 워커 PID: $WORKER_PIDS ... 강제 종료 (kill -9)"
+  echo "Remaining worker PID(s): $WORKER_PIDS ... Force terminating (kill -9)"
   kill -9 $WORKER_PIDS
 fi
 
-echo "프로세스 정리 완료."
+echo "Process cleanup complete."

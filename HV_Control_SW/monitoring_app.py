@@ -71,7 +71,6 @@ class MonitoringApp(QMainWindow):
     def create_dual_y_plot(self, left_label="Left Axis", right_label="Right Axis", right_range=None, right_color='blue'):
         label_font_size = self.styles.get('font_size_medium', 16)
         tick_font_size = label_font_size - 2
-        legend_font_size = self.styles.get('font_size_legend', 10)
         
         tick_font = QFont(); tick_font.setPointSize(tick_font_size)
         label_font = QFont(); label_font.setPointSize(label_font_size)
@@ -83,8 +82,6 @@ class MonitoringApp(QMainWindow):
         p1.getAxis('left').label.setFont(label_font)
         p1.getAxis('left').setTickFont(tick_font)
         p1.getAxis('bottom').setTickFont(tick_font)
-        
-        # p1.addLegend(offset=(-10, 10)).setLabelTextSize(f"{legend_font_size}pt") # Analysis 탭에서는 여기서 생성 안 함
 
         p2 = pg.ViewBox()
         p1.scene().addItem(p2)
@@ -175,8 +172,6 @@ class MonitoringApp(QMainWindow):
         
         th_color = self.styles.get('font_color_sensor', 'blue')
         self.monitor_plots['overlay'] = self.create_dual_y_plot("Temperature (°C)", "Humidity (%)", (0, 100), th_color)
-        
-        # 모니터링 탭의 오버레이 플롯에는 레전드를 추가합니다 (여기는 괜찮습니다)
         self.monitor_plots['overlay'].getPlotItem().addLegend().setLabelTextSize(legend_font_size_str)
         
         self.monitor_plots['overlay'].setTitle("Sensor T/H Overlay (Solid=T, Dash=H)", size=title_font_size_str)
@@ -227,6 +222,7 @@ class MonitoringApp(QMainWindow):
         btn_all.clicked.connect(lambda: [cb.setChecked(True) for cb in self.analysis_checkboxes.values()]); btn_none.clicked.connect(lambda: [cb.setChecked(False) for cb in self.analysis_checkboxes.values()])
         
         title_font_size_str = f"{self.styles.get('font_size_large', 18)}pt"
+        legend_font_size_str = f"{self.styles.get('font_size_legend', 10)}pt"
         
         self.analysis_plots_widget = QWidget(); graph_layout = QGridLayout(self.analysis_plots_widget)
         
@@ -239,6 +235,12 @@ class MonitoringApp(QMainWindow):
         hv_curr_color = self.styles.get('font_color_current', 'darkorange')
         self.analysis_plots['hv_curr_overlay'] = self.create_dual_y_plot("HV Voltage (V)", "HV Current (uA)", None, hv_curr_color)
         self.analysis_plots['hv_curr_overlay'].setTitle("HV/Current Overlay History", size=title_font_size_str)
+        
+        # --- [*** 여기가 첫 번째 수정 지점 ***] ---
+        # Analysis 탭의 플롯에 레전드를 여기서 한 번만 생성합니다.
+        for plot in self.analysis_plots.values():
+            plot.getPlotItem().addLegend().setLabelTextSize(legend_font_size_str)
+        # --- [*** 수정 끝 ***] ---
         
         graph_layout.addWidget(self.analysis_plots['temp_humi_overlay'], 0, 0)
         graph_layout.addWidget(self.analysis_plots['hv_curr_overlay'], 0, 1)
@@ -293,7 +295,6 @@ class MonitoringApp(QMainWindow):
             print(f"Error loading initial graph data: {e}")
 
     def _draw_all_monitor_curves(self):
-        """self.graph_data에 있는 데이터로 모니터링 커브를 모두 다시 그립니다."""
         if not self.graph_data['time']:
             return
             
@@ -383,41 +384,23 @@ class MonitoringApp(QMainWindow):
         start_str = self.start_time_edit.dateTime().toString(Qt.ISODate); end_str = self.end_time_edit.dateTime().toString(Qt.ISODate)
         timestamps, data = self.db_manager.fetch_data_range(start_str, end_str)
         
+        # --- [*** 여기가 두 번째 수정 지점 ***] ---
         for plot in self.analysis_plots.values(): 
-            p1 = plot.getPlotItem() # p1을 먼저 가져옵니다.
+            p1 = plot.getPlotItem()
 
-            # --- [*** 여기가 수정된 부분 ***] ---
-            # 1. 기존 레전드 객체가 PlotItem에 연결되어 있다면,
+            # 레전드 객체를 파괴하는 대신, 내용만 비웁니다.
             if p1.legend:
-                # 2. PlotItem의 레이아웃에서 레전드를 제거합니다.
-                #    이것이 UI에서 레전드를 시각적으로 지우는 핵심입니다.
-                try:
-                    p1.layout.removeItem(p1.legend)
-                except Exception as e:
-                    # p1.legend가 존재하지만 layout에 없는 비정상적인 경우
-                    print(f"Could not remove legend from layout: {e}")
-                
-                # 3. 레전드가 scene에서 스스로를 분리하도록 합니다 (메모리 정리)
-                p1.legend.setParentItem(None)
-                
-                # 4. PlotItem의 내부 참조를 None으로 설정합니다.
-                p1.legend = None
-            # --- [*** 수정 끝 ***] ---
+                p1.legend.clear()
 
-            plot.clear() # 이제 plot.clear()를 호출합니다.
+            # 플롯의 커브들을 지웁니다.
+            plot.clear() 
             if hasattr(plot, 'dual_viewbox'):
                 plot.dual_viewbox.clear() 
             
-            legend_font_size = self.styles.get('font_size_legend', 10)
-            legend_font_size_str = f"{legend_font_size}pt"
+            # 폰트 등은 그대로 다시 설정해 줄 수 있습니다.
             tick_font = QFont(); tick_font.setPointSize(self.styles.get('font_size_medium', 16) - 2)
             label_font = QFont(); label_font.setPointSize(self.styles.get('font_size_medium', 16))
             
-            # plot.clear()가 p1.legend를 None으로 만들었으므로,
-            # (그리고 위에서 강제로 None으로 만들었으므로)
-            # 여기서 새로 추가하는 것은 문제가 없습니다.
-            p1.addLegend().setLabelTextSize(legend_font_size_str)
-
             p1.getAxis('bottom').setTickFont(tick_font)
             p1.getAxis('left').setTickFont(tick_font)
             p1.getAxis('left').label.setFont(label_font)
@@ -425,6 +408,7 @@ class MonitoringApp(QMainWindow):
             if hasattr(p1, 'getAxis') and p1.getAxis('right'):
                 p1.getAxis('right').setTickFont(tick_font)
                 p1.getAxis('right').label.setFont(label_font)
+        # --- [*** 수정 끝 ***] ---
             
         if not timestamps: return
         selected_cols = [name for name, cb in self.analysis_checkboxes.items() if cb.isChecked()]
@@ -442,9 +426,6 @@ class MonitoringApp(QMainWindow):
             
             plot_name = name.replace('_', ' ') 
             
-            # --- [수정됨] 데이터 분류 로직 수정 ---
-            
-            # 1. HV/Current 데이터 먼저 확인
             if '_V' in name: 
                 p_hv1.plot(timestamps, values, pen=pen, name=plot_name)
             
@@ -452,9 +433,8 @@ class MonitoringApp(QMainWindow):
                 curve = pg.PlotCurveItem(pen=pen, name=plot_name)
                 curve.setData(timestamps, values, connect='finite')
                 p_hv2.addItem(curve)
-                p_hv1.legend.addItem(curve, plot_name)
+                if p_hv1.legend: p_hv1.legend.addItem(curve, plot_name)
 
-            # 2. T/H 데이터 확인
             elif '_T' in name:
                 p_th1.plot(timestamps, values, pen=pen, name=plot_name)
             
@@ -462,13 +442,10 @@ class MonitoringApp(QMainWindow):
                 curve = pg.PlotCurveItem(pen=pen, name=plot_name)
                 curve.setData(timestamps, values, connect='finite')
                 p_th2.addItem(curve)
-                p_th1.legend.addItem(curve, plot_name)
-            
-            # --- [수정 끝] ---
+                if p_th1.legend: p_th1.legend.addItem(curve, plot_name)
             
             color_idx += 1
         
-        # Y축 자동 범위 조절
         p_th1.enableAutoRange(axis='y', enable=True)
         p_th2.enableAutoRange(axis='y', enable=True)
         p_hv1.enableAutoRange(axis='y', enable=True)

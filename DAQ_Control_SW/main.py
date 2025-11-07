@@ -267,12 +267,12 @@ class App:
         selected_files = self.ui.get_selected_file_paths()
         daq_path = self._get_daq_path()
         if not daq_path: return
-        
+
         helper = os.path.join(self.base_dir, 'run_cpp_script.sh')
         script = os.path.join(daq_path, 'prod_ntp_v3.C') 
         config_path = self.config_manager.filepath
         mode_int = "0" if self.ui.run_mode.get() == "laser" else "1"
-        
+
         runs_to_process = [] 
 
         if selected_files:
@@ -304,10 +304,10 @@ class App:
             command_parts = [helper, script, config_path, run_num, mode_int, f_path_arg]
             # 개별 명령을 문자열로 조립
             all_commands_list.append(" ".join(command_parts))
-        
+
         # '&&'를 사용해 모든 명령을 순차적으로 실행하는 하나의 문자열로 결합
         final_command_string = " && ".join(all_commands_list)
-        
+
         # 터미널에 이 긴 문자열을 리스트의 유일한 원소로 전달
         self._execute_in_new_terminal([final_command_string])
 
@@ -316,11 +316,11 @@ class App:
         selected_files = self.ui.get_selected_file_paths()
         daq_path = self._get_daq_path()
         if not daq_path: return
-        
+
         helper = os.path.join(self.base_dir, 'run_cpp_script.sh')
         script = os.path.join(daq_path, 'read_ntp_v3.C') 
         config_path = self.config_manager.filepath
-        
+
         runs_to_process = [] 
 
         if selected_files:
@@ -330,12 +330,12 @@ class App:
                 match = pattern.search(f_name)
                 if match:
                     run_num_str = str(int(match.group(1))) 
-                    
+
                     if "production" in f_path.lower() or "prd_" in f_name.lower():
-                         processed_path = f_path
+                        processed_path = f_path
                     else:
-                         processed_path = os.path.join(self.config_manager.get_config_value("ProcessedDataPath"), f"prd_{f_name}")
-                    
+                        processed_path = os.path.join(self.config_manager.get_config_value("ProcessedDataPath"), f"prd_{f_name}")
+
                     runs_to_process.append((run_num_str, processed_path))
                 else:
                     self._log(f"WARNING: Could not extract 4-digit run number from {f_name}. Skipping.")
@@ -347,7 +347,7 @@ class App:
         if not runs_to_process:
             messagebox.showwarning("No Runs", "No valid run numbers found to process.")
             return
-        
+
         # [수정] 10개의 명령을 만드는 대신, 1개의 긴 명령을 만듭니다.
         all_commands_list = []
         for run_num, f_path in runs_to_process:
@@ -362,17 +362,47 @@ class App:
         # 터미널에 이 긴 문자열을 리스트의 유일한 원소로 전달
         self._execute_in_new_terminal([final_command_string])
 
-
+    # --- [*** 여기가 수정된 부분 ***] ---
     def run_waveform(self):
-        run_num = self.ui.get_run_num()
-        if not run_num: return
+        selected_files = self.ui.get_selected_file_paths()
         daq_path = self._get_daq_path()
         if not daq_path: return
+
         helper = os.path.join(self.base_dir, 'run_cpp_script.sh')
         script = os.path.join(daq_path, 'Draw_waveform.C')
         config_path = self.config_manager.filepath
-        command = [helper, script, config_path, run_num, 'interactive']
-        self._execute_in_new_terminal(command)
+
+        runs_to_process = [] # (run_num_str)만 저장
+
+        if selected_files:
+            pattern = re.compile(r'\.([0-9]{4})\.root$')
+            for f_path in selected_files:
+                f_name = os.path.basename(f_path)
+                match = pattern.search(f_name)
+                if match:
+                    run_num_str = str(int(match.group(1)))
+                    if run_num_str not in runs_to_process:
+                        runs_to_process.append(run_num_str)
+                else:
+                    self._log(f"WARNING: Could not extract 4-digit run number from {f_name}. Skipping.")
+        else:
+            run_num = self.ui.get_run_num()
+            if not run_num: return
+            runs_to_process.append(run_num)
+
+        if not runs_to_process:
+            messagebox.showwarning("No Runs", "No valid run numbers found to process.")
+            return
+
+        all_commands_list = []
+        for run_num in runs_to_process:
+            # Draw_waveform.C는 run_num과 "interactive" 인자만 받습니다.
+            command_parts = [helper, script, config_path, run_num, 'interactive']
+            all_commands_list.append(" ".join(command_parts))
+
+        final_command_string = " && ".join(all_commands_list)
+        self._execute_in_new_terminal([final_command_string])
+    # --- [*** 수정 끝 ***] ---
 
     def run_contour(self):
         run_num = self.ui.get_run_num()

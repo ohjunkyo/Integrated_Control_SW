@@ -26,7 +26,7 @@ class ImageViewer(Toplevel):
 		self.view_mode = tk.StringVar(value="All")
 		self.sort_mode = tk.StringVar(value="name")
 
-		self.pan_sensitivity = 0.2 
+		self.pan_sensitivity = 0.05
 
 		paned_window = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
 		paned_window.pack(fill=tk.BOTH, expand=True)
@@ -94,11 +94,11 @@ class ImageViewer(Toplevel):
 		self.load_image_list()
 
 	def zoom_in(self):
-		self.zoom_factor *= 1.2
+		self.zoom_factor *= 1.1
 		self.show_image()
 
 	def zoom_out(self):
-		self.zoom_factor /= 1.2
+		self.zoom_factor /= 1.1
 		self.show_image()
 
 	def fit_to_screen(self):
