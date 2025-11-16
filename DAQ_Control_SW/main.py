@@ -208,15 +208,11 @@ class App:
 
     def _execute_in_new_terminal(self, command):
         """저장된 설정에 따라 올바른 터미널에서 명령을 실행합니다."""
-        # [수정됨] command는 이제 리스트가 아니라, '&&'로 묶인 단일 문자열일 수 있습니다.
-        # ' '.join(command)은 command가 ['cmd1 && cmd2'] 일 때 "cmd1 && cmd2"를 만듭니다.
         command_str_for_log = ' '.join(command)
         self._log(f"Executing command via '{self.terminal_preference}': {command_str_for_log}")
 
         try:
             if self.terminal_preference == 'xterm':
-                # xterm은 -e 뒤에 오는 모든 것을 단일 명령으로 취급하므로,
-                # 'bash -c "..."' 쉘을 명시적으로 실행해야 합니다.
                 term_command_str = f"{' '.join(command)}; echo; read -p 'Execution finished. Press Enter to close this terminal...'"
                 term_command = ['xterm', '-hold', '-e', 'bash', '-c', term_command_str]
                 subprocess.Popen(term_command)
@@ -275,7 +271,6 @@ class App:
         command = [script_path, mode, config_path]
         self._execute_in_new_terminal(command)
 
-    # --- [수정됨] 여러 명령을 순차적으로 실행하도록 변경 ---
     def run_produce(self):
         selected_files = self.ui.get_selected_file_paths()
         daq_path = self._get_daq_path()
@@ -310,21 +305,15 @@ class App:
             messagebox.showwarning("No Runs", "No valid RAW files found to process.")
             return
 
-        # [수정] 10개의 명령을 만드는 대신, 1개의 긴 명령을 만듭니다.
         all_commands_list = []
         for run_num, f_path in runs_to_process:
             f_path_arg = f"\\\"{f_path}\\\"" if f_path else "\"\""
             command_parts = [helper, script, config_path, run_num, mode_int, f_path_arg]
-            # 개별 명령을 문자열로 조립
             all_commands_list.append(" ".join(command_parts))
 
-        # '&&'를 사용해 모든 명령을 순차적으로 실행하는 하나의 문자열로 결합
         final_command_string = " && ".join(all_commands_list)
-
-        # 터미널에 이 긴 문자열을 리스트의 유일한 원소로 전달
         self._execute_in_new_terminal([final_command_string])
 
-    # --- [수정됨] 여러 명령을 순차적으로 실행하도록 변경 ---
     def run_analysis(self):
         selected_files = self.ui.get_selected_file_paths()
         daq_path = self._get_daq_path()
@@ -361,21 +350,23 @@ class App:
             messagebox.showwarning("No Runs", "No valid run numbers found to process.")
             return
 
-        # [수정] 10개의 명령을 만드는 대신, 1개의 긴 명령을 만듭니다.
         all_commands_list = []
         for run_num, f_path in runs_to_process:
             f_path_arg = f"\\\"{f_path}\\\"" if f_path else "\"\""
             command_parts = [helper, script, config_path, run_num, f_path_arg]
-            # 개별 명령을 문자열로 조립
             all_commands_list.append(" ".join(command_parts))
 
-        # '&&'를 사용해 모든 명령을 순차적으로 실행하는 하나의 문자열로 결합
         final_command_string = " && ".join(all_commands_list)
-
-        # 터미널에 이 긴 문자열을 리스트의 유일한 원소로 전달
         self._execute_in_new_terminal([final_command_string])
 
+    # --- [*** 여기가 수정된 부분 (1) ***] ---
     def run_waveform(self):
+        """
+        Waveform inspection:
+        - 0 files selected: Use Run Number text box.
+        - 1 file selected: Use that file's run number.
+        - 2+ files selected: Show warning and stop.
+        """
         selected_files = self.ui.get_selected_file_paths()
         daq_path = self._get_daq_path()
         if not daq_path: return
@@ -383,41 +374,54 @@ class App:
         helper = os.path.join(self.base_dir, 'run_cpp_script.sh')
         script = os.path.join(daq_path, 'Draw_waveform.C')
         config_path = self.config_manager.filepath
+        
+        run_num = None # The single run number to execute
 
-        runs_to_process = [] # (run_num_str)만 저장
-
-        if selected_files:
+        if len(selected_files) > 1:
+            # Case 1: More than one file selected
+            messagebox.showwarning("Multiple Files Selected", 
+                                   "Please select only one file for Waveform Inspection.")
+            return # Stop
+        
+        elif len(selected_files) == 1:
+            # Case 2: Exactly one file selected
+            f_path = selected_files[0]
+            f_name = os.path.basename(f_path)
             pattern = re.compile(r'\.([0-9]{4})\.root$')
-            for f_path in selected_files:
-                f_name = os.path.basename(f_path)
-                match = pattern.search(f_name)
-                if match:
-                    run_num_str = str(int(match.group(1)))
-                    if run_num_str not in runs_to_process:
-                        runs_to_process.append(run_num_str)
-                else:
-                    self._log(f"WARNING: Could not extract 4-digit run number from {f_name}. Skipping.")
+            match = pattern.search(f_name)
+            
+            if match:
+                run_num = str(int(match.group(1)))
+            else:
+                self._log(f"WARNING: Could not extract run number from {f_name}.")
+                messagebox.showwarning("Error", f"Could not extract run number from selected file:\n{f_name}")
+                return # Stop
+        
         else:
+            # Case 3: Zero files selected (the "old way")
             run_num = self.ui.get_run_num()
-            if not run_num: return
-            runs_to_process.append(run_num)
+            if not run_num:
+                return # get_run_num() shows its own warning
 
-        if not runs_to_process:
-            messagebox.showwarning("No Runs", "No valid run numbers found to process.")
-            return
-
-        all_commands_list = []
-        for run_num in runs_to_process:
-            # Draw_waveform.C는 run_num과 "interactive" 인자만 받습니다.
+        # If we have a valid run number, execute it once
+        if run_num:
             command_parts = [helper, script, config_path, run_num, 'interactive']
-            all_commands_list.append(" ".join(command_parts))
+            final_command_string = " ".join(command_parts)
+            self._execute_in_new_terminal([final_command_string])
+        else:
+            # This case should not be reachable, but as a safeguard:
+            self._log("ERROR: run_waveform logic failed, no run number was determined.")
+    # --- [*** 수정 끝 (1) ***] ---
 
-        final_command_string = " && ".join(all_commands_list)
-        self._execute_in_new_terminal([final_command_string])
 
-    # --- [*** 여기가 수정된 부분 ***] ---
+    # --- [*** 여기가 수정된 부분 (2) ***] ---
     def run_contour(self):
-        """'Contour' (Waveform 2D)가 다중 선택을 지원하도록 변경"""
+        """
+        Waveform 2D (Contour):
+        - 0 files selected: Use Run Number text box.
+        - 1 or more files selected: Use run numbers from all selected files.
+        (Identical logic to Produce and Analysis, but without file paths as args)
+        """
         selected_files = self.ui.get_selected_file_paths()
         daq_path = self._get_daq_path()
         if not daq_path: return
@@ -429,20 +433,20 @@ class App:
         runs_to_process = [] # (run_num_str)만 저장
 
         if selected_files:
-            # [FIX] 정규식 오타 수정: [0-J] -> [0-9]
+            # Case 1: One or more files selected
             pattern = re.compile(r'\.([0-9]{4})\.root$')
             for f_path in selected_files:
                 f_name = os.path.basename(f_path)
                 match = pattern.search(f_name)
                 if match:
                     run_num_str = str(int(match.group(1)))
-                    if run_num_str not in runs_to_process:
-                        runs_to_process.append(run_num_str)
+                    # [FIX] 중복 검사 로직 삭제. 선택한 파일 개수만큼 추가.
+                    runs_to_process.append(run_num_str)
                 else:
                     self._log(f"WARNING: Could not extract 4-digit run number from {f_name}. Skipping.")
         
-        # 'else' 블록은 selected_files가 비어 있을 때만 실행되어야 함
-        if not selected_files:
+        else:
+            # Case 2: Zero files selected (the "old way")
             run_num = self.ui.get_run_num()
             if not run_num: return
             runs_to_process.append(run_num)
@@ -459,7 +463,7 @@ class App:
 
         final_command_string = " && ".join(all_commands_list)
         self._execute_in_new_terminal([final_command_string])
-    # --- [*** 수정 끝 ***] ---
+    # --- [*** 수정 끝 (2) ***] ---
 
     def run_auto_analysis(self):
         messagebox.showinfo("Not Implemented", "Auto Analysis button is not configured.")
