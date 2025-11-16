@@ -1,0 +1,2 @@
+UseUnit = 1
+RecFileName = Z:\linux-home\ADC\ADC_test\LOG\LASER\LaserLog.txt\Laserlog.txt

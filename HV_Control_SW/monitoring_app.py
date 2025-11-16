@@ -108,7 +108,40 @@ class MonitoringApp(QMainWindow):
 
     def setup_ui(self):
         self.setWindowTitle(self.config['ui_options']['window_title']); self.setGeometry(100, 100, 1800, 950)
-        self.setStyleSheet(f"background-color: {self.styles['background_color']};")
+        #self.setStyleSheet(f"background-color: {self.styles['background_color']};")
+        self.setStyleSheet(f"""
+            QWidget {{
+                background-color: {self.styles['background_color']};
+                color: {self.styles['font_color_main']};
+            }}
+            QLabel, QCheckBox {{
+                color: {self.styles['font_color_main']};
+            }}
+            QComboBox, QDoubleSpinBox, QDateTimeEdit {{
+                color: {self.styles['font_color_main']};
+                background-color: #555555;
+                border: 1px solid #777777;
+            }}
+            QPushButton {{
+                color: #000000; /* 대부분의 버튼은 밝은 배경에 검은 글씨가 가독성이 좋습니다 */
+                background-color: #DDDDDD;
+                border: 1px solid #777777;
+                padding: 5px;
+            }}
+            QTabWidget::pane {{
+                border-top: 2px solid #C2C7CB;
+            }}
+            QTabBar::tab {{
+                background: #555555;
+                color: {self.styles['font_color_main']};
+                padding: 8px;
+            }}
+            QTabBar::tab:selected {{
+                background: {self.styles['background_color']};
+                color: {self.styles['font_color_main']};
+                border-top: 2px solid {self.styles['font_color_sensor']};
+            }}
+        """)
         self.tabs = QTabWidget(); self.setCentralWidget(self.tabs)
         self.monitor_tab = QWidget(); self.analysis_tab = QWidget()
         self.tabs.addTab(self.monitor_tab, "Monitoring"); self.tabs.addTab(self.analysis_tab, "Data analysis")

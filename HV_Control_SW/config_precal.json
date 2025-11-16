@@ -27,11 +27,11 @@
     "shifter_name": ""
   },
   "ui_styles": {
-    "background_color": "#FFF8DC",
-    "font_color_main": "black",
-    "font_color_sensor": "blue",
-    "font_color_voltage": "crimson",
-    "font_color_current": "darkorange",
+    "background_color": "#2E2E2E",
+    "font_color_main": "#E0E0E0",
+    "font_color_sensor": "#87CEEB",
+    "font_color_voltage": "#90EE90",
+    "font_color_current": "#FFA500",
     "font_size_large": 18,
     "font_size_medium": 16,
     "font_size_legend": 10

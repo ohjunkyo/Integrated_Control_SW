@@ -11,6 +11,7 @@ import json
 import re
 import shutil
 import glob
+import queue
 from datetime import datetime
 from ui_manager import UIManager
 from config_manager import ConfigManager
@@ -27,9 +28,9 @@ class App:
 
         icon_path = os.path.join(self.base_dir, 'icons', 'DAQcontroller.png')
         img = Image.open(icon_path)
-        p_img = ImageTk.PhotoImage(img)
-        master.p_img = p_img
-        master.iconphoto(True, p_img)
+        self.p_img = ImageTk.PhotoImage(img, master=master) 
+        master.iconphoto(True, self.p_img)
+
 
         daq_test_dir = "/home/precalkor/ADC/ADC_test/"
 
@@ -70,6 +71,18 @@ class App:
 
         self.check_daq_connection()
 
+        # main.py에 추가할 새 함수 (App 클래스 내부에)
+    def check_dir_size_queue(self):
+        try:
+            # 큐에서 모든 메시지를 비동기적으로 가져옴
+            while not self.dir_size_queue.empty():
+                display_str = self.dir_size_queue.get_nowait()
+                self.ui.update_data_size_display(display_str)
+        except queue.Empty:
+            pass
+        finally:
+            # 1초마다 큐를 다시 확인
+            self.master.after(1000, self.check_dir_size_queue)
 
     def _update_status_bar(self):
         """1초마다 현재 시간과 경과 시간을 계산하여 상태 표시줄을 업데이트합니다."""
@@ -362,7 +375,6 @@ class App:
         # 터미널에 이 긴 문자열을 리스트의 유일한 원소로 전달
         self._execute_in_new_terminal([final_command_string])
 
-    # --- [*** 여기가 수정된 부분 ***] ---
     def run_waveform(self):
         selected_files = self.ui.get_selected_file_paths()
         daq_path = self._get_daq_path()
@@ -402,19 +414,52 @@ class App:
 
         final_command_string = " && ".join(all_commands_list)
         self._execute_in_new_terminal([final_command_string])
-    # --- [*** 수정 끝 ***] ---
 
+    # --- [*** 여기가 수정된 부분 ***] ---
     def run_contour(self):
-        run_num = self.ui.get_run_num()
-        if not run_num: return
+        """'Contour' (Waveform 2D)가 다중 선택을 지원하도록 변경"""
+        selected_files = self.ui.get_selected_file_paths()
         daq_path = self._get_daq_path()
         if not daq_path: return
+        
         helper = os.path.join(self.base_dir, 'run_cpp_script.sh')
         script = os.path.join(daq_path, 'Draw_Contour_v2.C')
         config_path = self.config_manager.filepath
 
-        command = [helper, script, config_path, run_num]
-        self._execute_in_new_terminal(command)
+        runs_to_process = [] # (run_num_str)만 저장
+
+        if selected_files:
+            # [FIX] 정규식 오타 수정: [0-J] -> [0-9]
+            pattern = re.compile(r'\.([0-9]{4})\.root$')
+            for f_path in selected_files:
+                f_name = os.path.basename(f_path)
+                match = pattern.search(f_name)
+                if match:
+                    run_num_str = str(int(match.group(1)))
+                    if run_num_str not in runs_to_process:
+                        runs_to_process.append(run_num_str)
+                else:
+                    self._log(f"WARNING: Could not extract 4-digit run number from {f_name}. Skipping.")
+        
+        # 'else' 블록은 selected_files가 비어 있을 때만 실행되어야 함
+        if not selected_files:
+            run_num = self.ui.get_run_num()
+            if not run_num: return
+            runs_to_process.append(run_num)
+
+        if not runs_to_process:
+            messagebox.showwarning("No Runs", "No valid run numbers found to process.")
+            return
+            
+        # Draw_Contour_v2.C는 run_num만 인자로 받음
+        all_commands_list = []
+        for run_num in runs_to_process:
+            command_parts = [helper, script, config_path, run_num]
+            all_commands_list.append(" ".join(command_parts))
+
+        final_command_string = " && ".join(all_commands_list)
+        self._execute_in_new_terminal([final_command_string])
+    # --- [*** 수정 끝 ***] ---
 
     def run_auto_analysis(self):
         messagebox.showinfo("Not Implemented", "Auto Analysis button is not configured.")
@@ -672,7 +717,8 @@ class App:
         except Exception: pass
         finally:
             self.master.after(0, lambda: self.ui.update_daq_connection_status(is_connected))
-            self.master.after(5000, self.check_daq_connection)
+            # [MODIFIED] (Req 4) Check every 1 second
+            self.master.after(1000, self.check_daq_connection)
 
     def update_data_directory_size(self):
         if not self.config_manager: return
