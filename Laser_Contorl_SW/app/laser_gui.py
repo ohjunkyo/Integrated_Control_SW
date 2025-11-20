@@ -70,23 +70,21 @@ class RepeatingTimer(Timer):
 
 class LaserControlApp:
     
-    # Config file for saving settings (Req 7)
+    # Config file for saving settings
     CONFIG_FILE = os.path.expanduser("~/.laser_control_config.json")
 
     def __init__(self, master):
         self.master = master
         self.master.title("Laser Control (Python)")
-        self.master.geometry("550x900") # Height decreased slightly
+        self.master.geometry("550x900") 
 
         self.laser = TamadenshiLaser()
         self.status_monitor_timer: Optional[RepeatingTimer] = None
         self.is_monitoring = tk.BooleanVar(value=False)
         self.current_status_text = tk.StringVar(value="Current Status: N/A")
         
-        # self.daq_process = None # [REMOVED]
-        # self.hv_process = None # [REMOVED]
         self.gui_queue = queue.Queue() # <-- Thread-safe queue
-        self.plot_window: Optional[Toplevel] = None # <-- [NEW] For popup plot
+        self.plot_window: Optional[Toplevel] = None 
         
         # Time variables
         self.start_time = datetime.now()
@@ -103,8 +101,8 @@ class LaserControlApp:
         }
         
         # --- Internal Frequency Variables ---
-        self.trigger_var = tk.StringVar(value="External") # External, Internal (PG1), Internal (PG2)
-        self.internal_freq_hz = tk.StringVar(value="10000000") # 10 MHz default
+        self.trigger_var = tk.StringVar(value="External")
+        self.internal_freq_hz = tk.StringVar(value="10000000") 
 
         # --- Current Control Variables ---
         self.bias_val = tk.DoubleVar(value=0.0)
@@ -113,35 +111,26 @@ class LaserControlApp:
         # --- Style Configuration ---
         style = ttk.Style()
         style.configure("TButton", padding=6, relief="flat", font=("Helvetica", 10))
-        
-        # Make buttons stand out more
         style.configure("Bold.TButton", padding=6, font=("Helvetica", 10, "bold"), relief="raised")
         style.map("Bold.TButton",
             background=[('active', '#0056b3')],
             foreground=[('active', 'white')]
         )
-        
-        # Green Connect/ON button
         style.configure("Connect.TButton", padding=6, font=("Helvetica", 10, "bold"), relief="raised")
         style.map("Connect.TButton",
             background=[('!disabled', '#28a745'), ('active', '#218838')],
             foreground=[('!disabled', 'white'), ('active', 'white')]
         )
-        
-        # Red Disconnect/OFF button
         style.configure("Disconnect.TButton", padding=6, font=("Helvetica", 10, "bold"), relief="raised")
         style.map("Disconnect.TButton",
             background=[('!disabled', '#dc3545'), ('active', '#c82333')],
             foreground=[('!disabled', 'white'), ('active', 'white')]
         )
-        
         style.configure("TLabel", font=("Helvetica", 10))
         style.configure("Bold.TLabel", font=("Helvetica", 10, "bold"))
         style.configure("TLabelframe", padding=10)
         style.configure("TLabelframe.Label", font=("Helvetica", 12, "bold"))
         style.configure("TScale", troughcolor='#d3d3d3')
-        
-        # Style for toggle buttons (like old Checkbuttons)
         style.configure("Toolbutton", padding=5, font=("Helvetica", 10))
         style.map("Toolbutton",
             background=[('selected', '#007ACC'), ('!selected', '#f0f0f0')],
@@ -399,18 +388,22 @@ class LaserControlApp:
 
     def _update_status_bar_clock(self):
         """Updates the time/elapsed labels in the status bar."""
-        now = datetime.now()
-        current_time_str = now.strftime('%Y-%m-%d %H:%M:%S')
-        self.clock_var.set(f"Time: {current_time_str}")
+        try:
+            now = datetime.now()
+            current_time_str = now.strftime('%Y-%m-%d %H:%M:%S')
+            self.clock_var.set(f"Time: {current_time_str}")
 
-        elapsed = now - self.start_time
-        total_seconds = int(elapsed.total_seconds())
-        hours, remainder = divmod(total_seconds, 3600)
-        minutes, seconds = divmod(remainder, 60)
-        elapsed_str = f"{hours:02}:{minutes:02}:{seconds:02}"
-        self.elapsed_time_var.set(f"Elapsed: {elapsed_str}")
+            elapsed = now - self.start_time
+            total_seconds = int(elapsed.total_seconds())
+            hours, remainder = divmod(total_seconds, 3600)
+            minutes, seconds = divmod(remainder, 60)
+            elapsed_str = f"{hours:02}:{minutes:02}:{seconds:02}"
+            self.elapsed_time_var.set(f"Elapsed: {elapsed_str}")
 
-        self.master.after(1000, self._update_status_bar_clock)
+            self.master.after(1000, self._update_status_bar_clock)
+        except tk.TclError:
+            # Window was destroyed, stop loop
+            pass
 
     # --- Settings Save/Load Functions ---
     def _load_settings(self):
@@ -493,6 +486,7 @@ class LaserControlApp:
         
         if self.laser.set_ld_on(state):
             self.log_message(f"SET_LD: {'ON' if state else 'OFF'}")
+            Thread(target=self.read_status_to_queue).start()
         else:
             self.log_message("Failed to set Laser (LD) state", "error")
             self.handle_disconnection_ui()
@@ -505,6 +499,8 @@ class LaserControlApp:
 
         if self.laser.set_tec_on(state):
             self.log_message(f"SET_TEC: {'ON' if state else 'OFF'}")
+            Thread(target=self.read_status_to_queue).start()
+
         else:
             self.log_message("Failed to set TEC state", "error")
             self.handle_disconnection_ui()
@@ -641,14 +637,18 @@ class LaserControlApp:
             pass
         finally:
             # Re-schedule itself to run again
-            self.master.after(100, self.process_gui_queue)
+            try:
+                self.master.after(100, self.process_gui_queue)
+            except tk.TclError:
+                pass # Master was destroyed
 
     def toggle_monitoring(self):
         """Starts/Stops the real-time status monitor thread."""
         if self.is_monitoring.get():
             if self.status_monitor_timer is None and self.laser.is_connected():
                 self.log_message("Starting real-time status monitor (1Hz)...")
-                self.status_monitor_timer = RepeatingTimer(1.0, self.read_status_to_queue)
+                self.status_monitor_timer = RepeatingTimer(0.05, self.read_status_to_queue)
+                self.status_monitor_timer.daemon = True 
                 self.status_monitor_timer.start()
         else:
             if self.status_monitor_timer:
@@ -713,7 +713,6 @@ class LaserControlApp:
         self.current_status_text.set("Current Status: N/A")
 
     def handle_disconnection_ui(self):
-        """Handles the GUI update when a disconnection is detected."""
         if self.laser.is_connected(): # If driver doesn't know yet
             self.laser.disconnect()
             
@@ -724,9 +723,7 @@ class LaserControlApp:
         self.clear_live_status()
         self.log_message("Connection lost. Please check USB and retry.", "error")
 
-    # [REMOVED] _launch_external_app(self, ...)
-    # [REMOVED] launch_daq_controller(self)
-    # [REMOVED] launch_hv_monitor(self)
+    # [REMOVED] All launch_... functions
 
     def on_tab_change(self, event):
         """Called when any notebook tab is clicked."""
@@ -873,15 +870,27 @@ class LaserControlApp:
             self.laser.set_pulse_current(0.0)
             self.laser.set_tec_on(False)
             
+    # --- [*** MODIFIED: This is the fix ***] ---
     def on_closing(self):
         """Called when the window is closed."""
         self.log_message("Shutting down...")
         
+        # Save settings first
         self._save_settings()
 
+        # [FIX] Stop the monitor thread AND wait for it to finish
         if self.status_monitor_timer:
-            self.status_monitor_timer.cancel()
+            self.log_message("Stopping monitor thread...")
+            self.status_monitor_timer.cancel() # 1. Tell the thread to stop
             
+            # 2. Wait for the thread to actually die (max 1.2 sec)
+            # This prevents the race condition
+            if self.status_monitor_timer.is_alive():
+                self.status_monitor_timer.join(timeout=1.2) 
+            
+            self.log_message("Monitor thread stopped.")
+
+        # Now that the thread is safely stopped, shut down the device
         self.safe_shutdown_device()
         
         if self.laser.is_connected():
@@ -891,6 +900,7 @@ class LaserControlApp:
             self.plot_window.destroy() # Close plot window
             
         self.master.destroy()
+    # --- [*** END MODIFICATION ***] ---
 
 
 if __name__ == "__main__":

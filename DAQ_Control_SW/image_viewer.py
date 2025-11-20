@@ -41,6 +41,7 @@ class ImageViewer(Toplevel):
         ttk.Radiobutton(mode_frame, text="Analysis", variable=self.view_mode, value="ByAnalysis", command=self.load_image_list).pack(side=tk.LEFT, expand=True)
         ttk.Radiobutton(mode_frame, text="Contour", variable=self.view_mode, value="Contour", command=self.load_image_list).pack(side=tk.LEFT, expand=True)
         ttk.Radiobutton(mode_frame, text="Uniformity", variable=self.view_mode, value="Uniformity", command=self.load_image_list).pack(side=tk.LEFT, expand=True)
+        ttk.Radiobutton(mode_frame, text="Noise", variable=self.view_mode, value="Noise", command=self.load_image_list).pack(side=tk.LEFT, expand=True)
 
 
         sort_frame = ttk.LabelFrame(list_frame, text="Sort By", padding=5)
@@ -159,7 +160,7 @@ class ImageViewer(Toplevel):
             display_name = os.path.basename(path)
             if show_prefix:
                 parent_dir = os.path.basename(os.path.dirname(path))
-                if parent_dir in ["ByProduce", "ByAnalysis", "Contour", "Uniformity"]:
+                if parent_dir in ["ByProduce", "ByAnalysis", "Contour", "Uniformity", "Noise"]:
                     display_name = f"{parent_dir}/{display_name}"
             self.listbox.insert(tk.END, display_name)
 
@@ -179,7 +180,8 @@ class ImageViewer(Toplevel):
                     os.path.join(self.base_image_dir, 'ByProduce'),
                     os.path.join(self.base_image_dir, 'ByAnalysis'),
                     os.path.join(self.base_image_dir, 'Contour'),
-                    os.path.join(self.base_image_dir, 'Uniformity')
+                    os.path.join(self.base_image_dir, 'Uniformity'),
+                    os.path.join(self.base_image_dir, 'Noise')
                 ])
             else:
                 dirs_to_scan.append(os.path.join(self.base_image_dir, mode))

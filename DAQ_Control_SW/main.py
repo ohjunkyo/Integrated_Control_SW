@@ -413,14 +413,12 @@ class App:
             self._log("ERROR: run_waveform logic failed, no run number was determined.")
     # --- [*** 수정 끝 (1) ***] ---
 
-
-    # --- [*** 여기가 수정된 부분 (2) ***] ---
     def run_contour(self):
         """
         Waveform 2D (Contour):
         - 0 files selected: Use Run Number text box.
-        - 1 or more files selected: Use run numbers from all selected files.
-        (Identical logic to Produce and Analysis, but without file paths as args)
+        - 1 or more files selected: Use run numbers AND file paths from all selected files.
+        (Updated to match logic of Produce and Analysis)
         """
         selected_files = self.ui.get_selected_file_paths()
         daq_path = self._get_daq_path()
@@ -430,40 +428,43 @@ class App:
         script = os.path.join(daq_path, 'Draw_Contour_v2.C')
         config_path = self.config_manager.filepath
 
-        runs_to_process = [] # (run_num_str)만 저장
+        runs_to_process = [] # (run_num_str, file_path) 튜플을 저장
 
         if selected_files:
-            # Case 1: One or more files selected
+            # Case 1: 파일 리스트에서 선택한 경우
             pattern = re.compile(r'\.([0-9]{4})\.root$')
             for f_path in selected_files:
                 f_name = os.path.basename(f_path)
                 match = pattern.search(f_name)
                 if match:
                     run_num_str = str(int(match.group(1)))
-                    # [FIX] 중복 검사 로직 삭제. 선택한 파일 개수만큼 추가.
-                    runs_to_process.append(run_num_str)
+                    # [중요] Run 번호와 파일 전체 경로를 함께 저장
+                    runs_to_process.append((run_num_str, f_path))
                 else:
                     self._log(f"WARNING: Could not extract 4-digit run number from {f_name}. Skipping.")
         
         else:
-            # Case 2: Zero files selected (the "old way")
+            # Case 2: 파일을 선택하지 않고 텍스트 박스 입력값 사용
             run_num = self.ui.get_run_num()
             if not run_num: return
-            runs_to_process.append(run_num)
+            # 파일 경로가 없으므로 빈 문자열("") 전달
+            runs_to_process.append((run_num, ""))
 
         if not runs_to_process:
             messagebox.showwarning("No Runs", "No valid run numbers found to process.")
             return
             
-        # Draw_Contour_v2.C는 run_num만 인자로 받음
         all_commands_list = []
-        for run_num in runs_to_process:
-            command_parts = [helper, script, config_path, run_num]
+        for run_num, f_path in runs_to_process:
+            # 파일 경로가 있으면 인자로 추가 (따옴표 이스케이프 처리)
+            f_path_arg = f"\\\"{f_path}\\\"" if f_path else "\"\""
+            
+            # [중요] helper, script, config, run_num 뒤에 '파일 경로' 인자를 추가해서 보냄
+            command_parts = [helper, script, config_path, run_num, f_path_arg]
             all_commands_list.append(" ".join(command_parts))
 
         final_command_string = " && ".join(all_commands_list)
         self._execute_in_new_terminal([final_command_string])
-    # --- [*** 수정 끝 (2) ***] ---
 
     def run_auto_analysis(self):
         messagebox.showinfo("Not Implemented", "Auto Analysis button is not configured.")
