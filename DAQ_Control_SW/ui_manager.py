@@ -517,6 +517,12 @@ class UIManager:
             self.data_notebook.add(tab_frame, text=f"{tab_name} Data")
             self._create_file_browser_tab(tab_frame, tab_name)
 
+        button_frame = ttk.Frame(left_data_frame)
+        button_frame.pack(fill=tk.X, padx=5, pady=(5,0))
+
+        move_button = ttk.Button(button_frame, text="Move Selected File(s) 🚚", command=self.on_move_selected_files)
+        move_button.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+
         delete_button = ttk.Button(left_data_frame, text="Delete Selected File(s) 🗑️", command=self.on_delete_selected_files)
         delete_button.pack(fill=tk.X, padx=5, pady=(5,0))
 
@@ -525,6 +531,15 @@ class UIManager:
 
         self.file_info_label = ttk.Label(right_info_frame, text="Select a file to see details.", justify=tk.LEFT, wraplength=250)
         self.file_info_label.pack(anchor=tk.NW)
+
+    def on_move_selected_files(self):
+        files_to_move = self.get_selected_file_paths()
+
+        if not files_to_move:
+            messagebox.showwarning("No Selection", "Please select file(s) to move.")
+            return
+
+        self.controller.move_data_files(files_to_move)
 
     def _create_log_viewer(self, parent):
         log_frame = ttk.LabelFrame(parent, text="Log Viewer", padding=5)

@@ -488,6 +488,72 @@ class App:
         command = [script_path]
         self._execute_in_new_terminal(command)
 
+    def move_data_files(self, file_paths):
+        if not file_paths: return
+
+        dest_dir = filedialog.askdirectory(title="Select Destination Folder")
+        if not dest_dir: return
+
+        thread = threading.Thread(target=self._perform_rsync_thread, args=(file_paths, dest_dir))
+        thread.start()
+
+    def _perform_rsync_thread(self, file_paths, dest_dir):
+        """rsync를 사용하여 백그라운드에서 파일을 이동시키는 함수"""
+        moved_count = 0
+        failed_files = []
+        total_files = len(file_paths)
+
+        # 초기 상태 메시지
+        self.master.after(0, lambda: self.ui.data_size_var.set(f"Preparing rsync..."))
+
+        for idx, file_path in enumerate(file_paths):
+            filename = os.path.basename(file_path)
+            
+            # 상태 업데이트 (현재 몇 번째 파일 처리 중인지 표시)
+            status_msg = f"Rsync Moving... ({idx+1}/{total_files}): {filename}"
+            self.master.after(0, lambda m=status_msg: self.ui.data_size_var.set(m))
+
+            try:
+                # [핵심] rsync 명령어 구성
+                # -a: 아카이브 모드 (권한, 시간 정보 유지)
+                # --remove-source-files: 전송 성공 시 원본 파일 삭제 (Move 효과)
+                # --info=progress2: (옵션) 진행률 표시용이나 여기선 로그용
+                command = [
+                    'rsync', 
+                    '-a', 
+                    '--remove-source-files', 
+                    file_path, 
+                    dest_dir
+                ]
+                
+                # rsync 실행 (대용량 파일일수록 여기서 시간이 걸림)
+                result = subprocess.run(command, check=True, capture_output=True, text=True)
+                
+                self._log(f"[RSYNC SUCCESS] {file_path} -> {dest_dir}")
+                moved_count += 1
+                
+            except subprocess.CalledProcessError as e:
+                self._log(f"[RSYNC ERROR] File: {filename}\nError: {e.stderr}")
+                failed_files.append(filename)
+            except Exception as e:
+                self._log(f"[PYTHON ERROR] File: {filename}\nError: {e}")
+                failed_files.append(filename)
+
+        # 3. 모든 작업 완료 후 처리
+        def on_complete():
+            self.refresh_all_data() # 목록 새로고침
+            self.update_data_directory_size() # 용량 재계산
+            self.ui.data_size_var.set(f"Move Complete.") # 상태 메시지 초기화
+
+            if failed_files:
+                messagebox.showerror("Rsync Finished with Errors", 
+                                     f"Moved {moved_count} files.\nFailed:\n{', '.join(failed_files)}\n\nCheck logs for details.")
+            else:
+                messagebox.showinfo("Success", f"Successfully moved {moved_count} file(s) using rsync.")
+
+        # 메인 스레드에서 알림창 띄우기
+        self.master.after(0, on_complete)
+
     def delete_data_files(self, file_paths):
         if not file_paths: return
 

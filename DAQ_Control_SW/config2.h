@@ -37,9 +37,9 @@ const std::string direction3 = "";
 
 // -- Angle Configuration --- //
 const std::string RotateAngle1 = "0";
-const std::string TiltAngle1 = "-20";
+const std::string TiltAngle1 = "30";
 const std::string RotateAngle2 = "45";
-const std::string TiltAngle2 = "-20";
+const std::string TiltAngle2 = "30";
 
 // --- High Voltage --- //
 const std::string HV1 = "1850";
