@@ -301,86 +301,74 @@ class TamadenshiLaser:
         return self._send_command(self.CMD_SET_PG2_FREQ, payload)
     # --- [END NEW] ---
 
-   # ===================================================
+    # ===================================================
     # 4. Public Functions (GET) - Device Status Reading
     # ===================================================
 
     def update_status(self) -> bool:
         """
         Reads all key device statuses at once and stores them in the internal 'self.status' dict.
-        (Calls the DLL's GetPD function, 0x09).
         """
         # Send the "GET_ALL_STATUS" command and wait for the response
         data = self._read_command(self.CMD_GET_ALL_STATUS)
         
         if data is None:
-            # _read_command already printed the error and handled disconnection
             return False
 
         try:
-            # Parsing data based on GetPD decompiled code
-            # (Byte indices are +1 compared to DLL code, as Report ID 0 is excluded)
+            # Parsing data based on Log Analysis & Decompiler
             
-            # PD Current (complex log scale, only storing raw value here)
-            # Bytes [1] and [2]
+            # PD Current (Bytes [1] and [2])
             self.status['pd_raw'] = (data[1] << 8) | data[2]
             
-            # LD Temperature (simplified 40.0 deg C scale)
-            # Bytes [4] and [5]
+            # LD Temperature (Bytes [4] and [5])
             raw_ld_temp = (data[4] << 8) | data[5]
-            self.status['ld_temp'] = (raw_ld_temp / 1023.0) * 40.0 # (This is a simplified approximation)
+            self.status['ld_temp'] = (raw_ld_temp / 1023.0) * 40.0 
             
-            # TEC Current (complex, only storing raw value here)
-            # Bytes [17] and [8]
-            self.status['tec_current_raw'] = (data[17] << 8) | data[8]
-            
-            
-            # --- [*** MODIFICATION: This is the fix for currents ***] ---
-            # (This part was already correct from a previous fix)
-            # Bytes [9] and [10] are for PULSE
+            # TEC Current (Bytes [17] and [8]) - Index adjusted
+            # 로그상 길이를 고려해 안전하게 예외처리
+            if len(data) > 17:
+                 self.status['tec_current_raw'] = (data[17] << 8) | data[8]
+            else:
+                 self.status['tec_current_raw'] = 0
+
+            # Currents (Pulse: 9,10 / Bias: 11,12)
             self.status['pulse'] = self._dac_to_val(data[9], data[10], 200.0)
-            # Bytes [11] and [12] are for BIAS
             self.status['bias'] = self._dac_to_val(data[11], data[12], 200.0)
             
-            # Info Byte (contains LD/TEC status)
-            # Byte [16]
-            info_byte = data[15]
-            #print(f"[DEBUG] info_byte[15] = {info_byte} (binary: {info_byte:08b})")
+            # --- [*** FINAL FIX: Index is 14 ***] ---
+            # 로그 분석 결과: 0x44 뒤에 오는 값이 상태값입니다.
+            # Index 14 contains the status flags (0xc, 0x8, etc.)
+            info_byte = data[14] 
+            
+            # Bit 2 (4) = LD, Bit 3 (8) = TEC
             self.status['ld_on'] = (info_byte & 4) == 4
             self.status['tec_on'] = (info_byte & 8) == 8 
+            # --- [*** END FIX ***] ---
 
             try:
                 timestamp = datetime.now().isoformat()
-                
-                # --- [*** MODIFICATION: Added keyword arguments to .format() ***] ---
                 csv_line = "{},{ld},{tec},{temp:.3f},{bias:.3f},{pulse:.3f}".format(
-                    timestamp, # 첫 번째 {}는 위치 인자
-                    ld=self.status['ld_on'],     # ld= 키워드 추가
-                    tec=self.status['tec_on'],    # tec= 키워드 추가
-                    temp=self.status['ld_temp'],  # temp= 키워드 추가
-                    bias=self.status['bias'],   # bias= 키워드 추가
-                    pulse=self.status['pulse']  # pulse= 키워드 추가
+                    timestamp,
+                    ld=self.status['ld_on'],
+                    tec=self.status['tec_on'],
+                    temp=self.status['ld_temp'],
+                    bias=self.status['bias'],
+                    pulse=self.status['pulse']
                 )
-                # --- [*** END MODIFICATION ***] ---
-                
                 data_logger.info(csv_line)
             except Exception as e:
                 print(f"Failed to write data log: {e}")
             
             return True
-
-
+            
         except IndexError:
             print("❌ Status parse failed: Device returned unexpected data.")
             return False
         except Exception as e:
-            # [중요] 오타로 인해 여기서 에러가 발생했습니다.
             print(f"❌ Unknown error during status parsing: {e}")
             return False
 
-    # --- Cached Status Getters ---
-    # (update_status() must be called first to get fresh values)
-    
     def get_cached_status(self, key: str, default_val=0.0):
         """Safely gets a value from the internal self.status dictionary."""
         return self.status.get(key, default_val)
