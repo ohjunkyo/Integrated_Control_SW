@@ -345,7 +345,7 @@ class TamadenshiLaser:
             # Info Byte (contains LD/TEC status)
             # Byte [16]
             info_byte = data[15]
-            print(f"[DEBUG] info_byte[15] = {info_byte} (binary: {info_byte:08b})")
+            #print(f"[DEBUG] info_byte[15] = {info_byte} (binary: {info_byte:08b})")
             self.status['ld_on'] = (info_byte & 4) == 4
             self.status['tec_on'] = (info_byte & 8) == 8 
 
