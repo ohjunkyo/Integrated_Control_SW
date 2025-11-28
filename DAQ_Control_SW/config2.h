@@ -15,17 +15,17 @@ const std::string ImagePath = "/home/precalkor/ADC/ADC_test/Data/image/";
 const std::string LogDir = "/home/precalkor/ADC/ADC_test/LOG/DAQ/";
 
 // --- DAQ Common Settings --- //
-const int Events = 100000;
+const int Events = 200000;
 const int TimeWindow = 1024;
 const int PostTrigger = 60;
 const std::string ChannelMask = "00000111";
 
 // --- Sequence Settings --- //
-const int NumSequences = 1;
-const int IntervalTime = 1;
+const int NumSequences = 24;
+const int IntervalTime = 3600;
 
 // -- Laser (Current, mA) --- //
-const std::string Laser = "0";
+const std::string Laser = "130";
 
 // --- PMT configuration --- //
 const std::string SN1 = "ED1950";
@@ -36,18 +36,18 @@ const std::string SN3 = "";
 const std::string direction3 = "";
 
 // -- Angle Configuration --- //
-const std::string RotateAngle1 = "0";
-const std::string TiltAngle1 = "30";
-const std::string RotateAngle2 = "45";
-const std::string TiltAngle2 = "30";
+const std::string RotateAngle1 = "90";
+const std::string TiltAngle1 = "20";
+const std::string RotateAngle2 = "135";
+const std::string TiltAngle2 = "20";
 
 // --- High Voltage --- //
-const std::string HV1 = "1850";
-const std::string HV2 = "1840";
+const std::string HV1 = "1750";
+const std::string HV2 = "1780";
 const std::string HV3 = "";
 
 // --- NOTE ---
-const std::string NOTE = "20251120_dark_mu_metal";
+const std::string NOTE = "20251128_stability";
 
 // --- Trigger Channel ---
 const int TriggerCh = 2;
