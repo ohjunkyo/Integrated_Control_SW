@@ -4,9 +4,12 @@ from tkinter import ttk, scrolledtext, messagebox, font
 import os
 import json
 import math 
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from image_viewer import ImageViewer
 from config_window import ConfigWindow 
 from datetime import datetime
+
 
 class UIManager:
     def __init__(self, master, controller):
@@ -18,6 +21,32 @@ class UIManager:
         self.master.option_add("*Font", self.default_font)
 
 
+
+        self.laser_vars = {
+                "ld_status": tk.StringVar(value="OFF"),
+                "tec_status": tk.StringVar(value="OFF"),
+                "temp": tk.StringVar(value="--.- °C"),
+                "bias_live": tk.StringVar(value="---.- mA"),
+                "pulse_live": tk.StringVar(value="---.- mA"),
+                "bias_set": tk.DoubleVar(value=0.0),
+                "pulse_set": tk.DoubleVar(value=0.0),
+                "trigger_mode": tk.StringVar(value="External"),
+                "freq_hz": tk.StringVar(value="10000000")
+                }
+
+
+            # ui_manager.py의 __init__ 내부
+        self.ups_vars = {
+                "conn_status": tk.StringVar(value="Disconnected"),
+                "input_volt": tk.StringVar(value="--- V"),
+                "output_volt": tk.StringVar(value="--- V"),
+                "batt_level": tk.IntVar(value=0),
+                "load_level": tk.IntVar(value=0),
+                "frequency": tk.StringVar(value="-- Hz"),
+                "status_msg": tk.StringVar(value="Unknown")
+                 }
+
+
         self.run_mode = tk.StringVar(value="laser")
         self.run_number_var = tk.StringVar(value="1")
         self.status_indicators = {}
@@ -26,6 +55,7 @@ class UIManager:
 
         self._create_menubar()
         self.create_widgets()
+
 
     def _create_menubar(self):
         menubar = tk.Menu(self.master)
@@ -66,8 +96,19 @@ class UIManager:
                       For more information or to contribute, please visit the GitHub repository:
                       https://github.com/ohjunkyo/HK_PRECALIB_KOR_SYSTEM""")
 
+
+    """ UPDATE 2026 01 03 """
+
     def create_widgets(self):
-        paned_window = ttk.PanedWindow(self.master, orient=tk.HORIZONTAL)
+        self.main_notebook = ttk.Notebook(self.master)
+        self.main_notebook.pack(fill=tk.BOTH, expand=True)
+        self.daq_main_frame = ttk.Frame(self.main_notebook)
+        self.main_notebook.add(self.daq_main_frame, text=" DAQ System ")
+        self.laser_main_frame = ttk.Frame(self.main_notebook)
+        self.main_notebook.add(self.laser_main_frame, text=" Laser Control ")
+
+        #paned_window = ttk.PanedWindow(self.master, orient=tk.HORIZONTAL)
+        paned_window = ttk.PanedWindow(self.daq_main_frame, orient=tk.HORIZONTAL)
         paned_window.pack(fill=tk.BOTH, expand=True)
 
         left_pane = ttk.Frame(paned_window, width=450, padding="10")
@@ -101,6 +142,13 @@ class UIManager:
         log_tab = ttk.Frame(self.notebook, padding=10)
         self.notebook.add(log_tab, text="Log")
         self._create_log_viewer(log_tab)
+        
+        # Main-Tab2 
+        self._create_laser_control_tab(self.laser_main_frame)
+        # Main-Tab3
+        self.ups_main_frame = ttk.Frame(self.main_notebook)
+        self.main_notebook.add(self.ups_main_frame, text=" UPS Status ")
+        self._create_ups_monitoring_tab(self.ups_main_frame)
 
     def on_config_loaded(self):
         self._update_pmt_status_and_helper() 
@@ -193,7 +241,7 @@ class UIManager:
         # 캔버스 크기를 늘려 +X, +Y 라벨 공간 확보
 
         #canvas = tk.Canvas(canvas_frame, width=80, height=80, bg="white", highlightthickness=1, cursor="hand2")
-        canvas = tk.Canvas(parent, width=120, height=120) 
+        canvas = tk.Canvas(parent, width=150, height=150) 
         canvas.pack(side=tk.LEFT, padx=10)
 
         C_X, C_Y, R = 60, 60, 40 # 중심과 반지름
@@ -230,7 +278,7 @@ class UIManager:
         canvas.create_oval(C_X - R, C_Y - R, C_X + R, C_Y + R, outline='gray')
 
         # --- 5. 회전하는 DY1 / DY2 ---
-        DY_R = 10 # Dynode 라벨 반지름
+        DY_R = 5 # Dynode 라벨 반지름
         DY_FONT = ("Helvetica", 9, "bold")
         # PMT 고유 좌표 (DY1=9시, DY2=3시)
         DY1_ORIGINAL_ANGLE_DEG = 180 
@@ -450,8 +498,8 @@ class UIManager:
         self.path_container.pack(fill=tk.X, pady=(0, 5))
 
         self.path_labels = {}
-        path_keys = ['BasePath', 'RawDataPath'] #DaqProgramPath
-
+        #path_keys = ['BasePath', 'RawDataPath'] #DaqProgramPath
+        path_keys = []
         for key in path_keys:
             path_frame_inner = ttk.Frame(self.path_container)
             path_frame_inner.pack(fill=tk.X, pady=2)
@@ -776,3 +824,222 @@ class UIManager:
             messagebox.showwarning("Input Required", "Please enter a valid Run Number.")
             return None
         return run_num
+
+	## """""""""""""""""""""""""" LASER CONFIGURATION """"""""""""""""""""""""""""""""" ##
+    # ui_manager.py 수정 (파일 하단부)
+
+    def _create_laser_control_tab(self, parent):
+        main_container = ttk.Frame(parent, padding=10)
+        main_container.pack(fill=tk.BOTH, expand=True)
+
+        # --- [1] Laser Connection Bar (라벨과 버튼 밀착) ---
+        conn_frame = ttk.LabelFrame(main_container, text="Laser Connection", padding=10)
+        conn_frame.pack(fill=tk.X, pady=(0, 10))
+
+        self.laser_conn_label = ttk.Label(conn_frame, text="Status: Disconnected", 
+                                          foreground="red", font=("Helvetica", 11, "bold"))
+        self.laser_conn_label.pack(side=tk.LEFT, padx=(5, 5)) # 간격 축소
+
+        self.laser_conn_btn = ttk.Button(conn_frame, text="Connect Laser", 
+                                         command=self.controller.toggle_laser_connection)
+        self.laser_conn_btn.pack(side=tk.LEFT, padx=5) # 라벨 바로 옆
+
+        self.load_history_btn = ttk.Button(conn_frame, text="Load Historical Data 📂", 
+                                          command=self.controller.load_historical_laser_data)
+        self.load_history_btn.pack(side=tk.RIGHT, padx=10)
+
+        # --- [2] 메인 레이아웃 (PanedWindow) ---
+        laser_pane = ttk.PanedWindow(main_container, orient=tk.HORIZONTAL)
+        laser_pane.pack(fill=tk.BOTH, expand=True)
+
+        # --- 좌측 패널 (Settings + Historical Plot) ---
+        left_pane = ttk.Frame(laser_pane)
+        laser_pane.add(left_pane, weight=1)
+
+        self._create_laser_settings_frames(left_pane) # 제어 버튼들 생성
+
+        # 좌측 하단: 과거 데이터 그래프 영역 (작은 화면)
+        hist_plot_container = ttk.LabelFrame(left_pane, text="Historical Trend View (CSV)", padding=5)
+        hist_plot_container.pack(fill=tk.BOTH, expand=True, pady=10)
+        
+        self.fig_hist, self.ax_hist = plt.subplots(figsize=(4, 2.5), dpi=80)
+        self.canvas_hist = FigureCanvasTkAgg(self.fig_hist, master=hist_plot_container)
+        self.canvas_hist.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+        # --- 우측 패널 (Live Monitoring + Real-time Plot) ---
+        right_pane = ttk.Frame(laser_pane)
+        laser_pane.add(right_pane, weight=2)
+
+        self._create_laser_live_labels(right_pane)
+
+        realtime_container = ttk.LabelFrame(right_pane, text="Real-time Monitoring (Temp & Current)", padding=5)
+        realtime_container.pack(fill=tk.BOTH, expand=True, pady=5)
+        
+        self.fig_live, (self.ax_temp, self.ax_curr) = plt.subplots(2, 1, sharex=True, figsize=(6, 6), dpi=100)
+        self.fig_live.tight_layout(pad=3.0) 
+        
+        self.canvas_live = FigureCanvasTkAgg(self.fig_live, master=realtime_container)
+        self.canvas_live.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+
+    def _create_laser_settings_frames(self, parent):
+        """Power, Current, Trigger 설정을 위한 프레임들 생성"""
+        # Power Control
+        pwr_frame = ttk.LabelFrame(parent, text="Power Control", padding=10)
+        pwr_frame.pack(fill=tk.X, pady=5)
+        ttk.Button(pwr_frame, text="LD ON (Laser Diode)", command=lambda: self.controller.set_laser_ld(True)).pack(side=tk.LEFT, padx=5)
+        ttk.Button(pwr_frame, text="LD OFF", command=lambda: self.controller.set_laser_ld(False)).pack(side=tk.LEFT, padx=5)
+        ttk.Separator(pwr_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, padx=10, fill=tk.Y)
+        ttk.Button(pwr_frame, text="TEC ON (Cooler)", command=lambda: self.controller.set_laser_tec(True)).pack(side=tk.LEFT, padx=5)
+        ttk.Button(pwr_frame, text="TEC OFF", command=lambda: self.controller.set_laser_tec(False)).pack(side=tk.LEFT, padx=5)
+
+        # Current Settings
+        curr_frame = ttk.LabelFrame(parent, text="Current Settings (mA)", padding=10)
+        curr_frame.pack(fill=tk.X, pady=5)
+        self._create_laser_slider(curr_frame, "Bias:", self.laser_vars["bias_set"])
+        self._create_laser_slider(curr_frame, "Pulse:", self.laser_vars["pulse_set"])
+        ttk.Button(curr_frame, text="Apply Currents", command=self.controller.apply_laser_currents).pack(fill=tk.X, pady=10)
+
+        # Trigger & Frequency
+        self.trig_frame = ttk.LabelFrame(parent, text="Trigger Control (Hz)", padding=10)
+        self.trig_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Label(self.trig_frame, text="Mode:").pack(side=tk.LEFT)
+        self.laser_trig_combo = ttk.Combobox(self.trig_frame, textvariable=self.laser_vars["trigger_mode"],
+                                             values=["External", "Internal (PG1)", "Internal (PG2)"], state="readonly")
+        self.laser_trig_combo.pack(side=tk.LEFT, padx=5)
+        self.laser_trig_combo.bind("<<ComboboxSelected>>", self.controller.on_laser_trigger_change)
+
+        self.laser_freq_entry = ttk.Entry(self.trig_frame, textvariable=self.laser_vars["freq_hz"], width=12)
+        self.laser_freq_entry.pack(side=tk.LEFT, padx=5)
+        
+        self.laser_freq_apply_btn = ttk.Button(self.trig_frame, text="Apply", command=self.controller.apply_laser_frequency)
+        self.laser_freq_apply_btn.pack(side=tk.LEFT)
+
+    def _create_laser_live_labels(self, parent):
+        """실시간 수치를 보여주는 라벨 프레임 생성"""
+        status_grid = ttk.LabelFrame(parent, text="Live Status", padding=10)
+        status_grid.pack(fill=tk.X, pady=5)
+        
+        monitor_items = [("LD Status", "ld_status"), ("Temperature", "temp"), 
+                         ("Live Bias", "bias_live"), ("Live Pulse", "pulse_live")]
+        for label, var_key in monitor_items:
+            row = ttk.Frame(status_grid)
+            row.pack(fill=tk.X, pady=2)
+            ttk.Label(row, text=f"{label}:", font=("Helvetica", 10, "bold"), width=15).pack(side=tk.LEFT)
+            ttk.Label(row, textvariable=self.laser_vars[var_key], width=15, relief="groove").pack(side=tk.LEFT)
+
+        tec_row = ttk.Frame(status_grid)
+        tec_row.pack(fill=tk.X, pady=5)
+        ttk.Label(tec_row, text="TEC Status:", font=("Helvetica", 10, "bold"), width=15).pack(side=tk.LEFT)
+        self.tec_label = ttk.Label(tec_row, textvariable=self.laser_vars["tec_status"], 
+                                   font=("Helvetica", 11, "bold"), relief="sunken", width=10, anchor="center")
+        self.tec_label.pack(side=tk.LEFT)
+
+
+    def _create_laser_slider(self, parent, label, var):
+        frame = ttk.Frame(parent)
+        frame.pack(fill=tk.X, pady=2)
+        ttk.Label(frame, text=label, width=10).pack(side=tk.LEFT)
+        ttk.Scale(frame, from_=0, to=200, variable=var, orient=tk.HORIZONTAL).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10)
+        ttk.Entry(frame, textvariable=var, width=8).pack(side=tk.LEFT)
+
+        # UPS Monitoring    
+    def _create_ups_monitoring_tab(self, parent):
+        container = ttk.Frame(parent, padding=15)
+        container.pack(fill=tk.BOTH, expand=True)
+
+        conn_frame = ttk.LabelFrame(container, text="UPS Connection (RS232C) OMRON BA100R ds-1423816", padding=10)
+        conn_frame.pack(fill=tk.X, pady=(0, 15))
+        ttk.Label(conn_frame, text="Port:").pack(side=tk.LEFT)
+    
+        self.ups_port_combo = ttk.Combobox(conn_frame, width=20, state="readonly")
+        self.ups_port_combo.pack(side=tk.LEFT, padx=5)
+
+        self.ups_search_btn = ttk.Button(conn_frame, text="Search Ports 🔍", 
+                                         command=self.controller.search_ups_ports)
+        self.ups_search_btn.pack(side=tk.LEFT, padx=5)
+
+        self.ups_conn_btn = ttk.Button(conn_frame, text="Connect UPS", 
+                                        command=self.controller.toggle_ups_connection)
+        self.ups_conn_btn.pack(side=tk.LEFT, padx=5)
+
+        ttk.Label(conn_frame, textvariable=self.ups_vars["conn_status"], 
+                  font=("Helvetica", 10, "bold")).pack(side=tk.RIGHT)
+
+        # --- [2] 중간: 가로 3분할 레이아웃 ---
+        mid_frame = ttk.Frame(container)
+        mid_frame.pack(fill=tk.X, pady=5)
+
+        # 2-1: Power Levels (Gauge)
+        gauge_pane = ttk.LabelFrame(mid_frame, text=" Power Levels ", padding=10)
+        gauge_pane.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
+
+        ttk.Label(gauge_pane, text="Battery Level").pack(anchor="w")
+        self.ups_batt_bar = ttk.Progressbar(gauge_pane, variable=self.ups_vars["batt_level"], maximum=100)
+        self.ups_batt_bar.pack(fill=tk.X, pady=2)
+        ttk.Label(gauge_pane, textvariable=self.ups_vars["batt_level"], font=("Helvetica", 11, "bold")).pack()
+
+        ttk.Label(gauge_pane, text="UPS Load").pack(anchor="w", pady=(10, 0))
+        self.ups_load_bar = ttk.Progressbar(gauge_pane, variable=self.ups_vars["load_level"], maximum=100)
+        self.ups_load_bar.pack(fill=tk.X, pady=2)
+        ttk.Label(gauge_pane, textvariable=self.ups_vars["load_level"], font=("Helvetica", 11, "bold")).pack()
+
+        # 2-2: Electrical Info (Text)
+        info_pane = ttk.LabelFrame(mid_frame, text=" Electrical Info ", padding=10)
+        info_pane.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
+
+        items = [("Input Voltage", "input_volt"), ("Output Voltage", "output_volt"),
+                 ("Frequency", "frequency"), ("Current Status", "status_msg")]
+        for label, var_key in items:
+            row = ttk.Frame(info_pane)
+            row.pack(fill=tk.X, pady=2)
+            ttk.Label(row, text=f"{label}:", width=14).pack(side=tk.LEFT)
+            ttk.Label(row, textvariable=self.ups_vars[var_key], font=("Helvetica", 10, "bold")).pack(side=tk.LEFT)
+
+        # 2-3: Outlet Status (2x2 Grid) - [핵심 수정]
+        outlet_pane = ttk.LabelFrame(mid_frame, text=" Outlet Status (2x2) ", padding=10)
+        outlet_pane.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 0))
+
+        self.outlet_canvas = tk.Canvas(outlet_pane, width=180, height=140, highlightthickness=0)
+        self.outlet_canvas.pack(pady=5)
+
+        self.outlet_circles = []
+        labels = ["DAQ PC", "Laser Controller", "Empty", "Empty"]
+
+        for i in range(4):
+            row, col = divmod(i, 2)
+            x0, y0 = 20 + (col * 80), 10 + (row * 65)
+            x1, y1 = x0 + 45, y0 + 45
+
+            color = "#28a745" if i < 2 else "#adb5bd"
+            circle = self.outlet_canvas.create_oval(x0, y0, x1, y1, fill=color, outline="#333", width=2)
+            self.outlet_canvas.create_text(x0 + 22, y1 + 10, text=labels[i], font=("Helvetica", 8, "bold"))
+            self.outlet_circles.append(circle)
+
+        # --- [3] 하단: 실시간 그래프 (높이 최적화) ---
+        graph_frame = ttk.LabelFrame(container, text=" UPS Real-time Trend ", padding=5)
+        graph_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+
+        self.fig_ups, self.ax_ups_batt = plt.subplots(figsize=(6, 2.5), dpi=100)
+        self.ax_ups_load = self.ax_ups_batt.twinx()
+        self.fig_ups.tight_layout(pad=3.0)
+        self.canvas_ups = FigureCanvasTkAgg(self.fig_ups, master=graph_frame)
+        self.canvas_ups.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+        # --- [4] 최하단: Shutdown Control (선택형) ---
+        ctrl_bar = ttk.Frame(container)
+        ctrl_bar.pack(fill=tk.X, pady=(10, 0))
+
+        ttk.Label(ctrl_bar, text="Target:").pack(side=tk.LEFT)
+        self.shutdown_target_var = tk.StringVar(value="All Outlets")
+        self.shutdown_combo = ttk.Combobox(ctrl_bar, textvariable=self.shutdown_target_var,
+                                           values=["All Outlets", "Outlet 1 (DAQ)", "Outlet 2 (Laser)", "Outlet 3", "Outlet 4"],
+                                           state="readonly", width=15)
+        self.shutdown_combo.pack(side=tk.LEFT, padx=10)
+
+        self.btn_ups_shutdown = tk.Button(ctrl_bar, text="⚠️ EXECUTE SHUTDOWN",
+                                          bg="#dc3545", fg="white", font=("Helvetica", 10, "bold"),
+                                          command=self.controller.handle_ups_shutdown)
+        self.btn_ups_shutdown.pack(side=tk.RIGHT)
+

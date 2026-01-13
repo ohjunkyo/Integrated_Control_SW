@@ -346,22 +346,20 @@ class TamadenshiLaser:
             self.status['tec_on'] = (info_byte & 8) == 8 
             # --- [*** END FIX ***] ---
 
-            try:
-                timestamp = datetime.now().isoformat()
-                csv_line = "{},{ld},{tec},{temp:.3f},{bias:.3f},{pulse:.3f}".format(
-                    timestamp,
-                    ld=self.status['ld_on'],
-                    tec=self.status['tec_on'],
-                    temp=self.status['ld_temp'],
-                    bias=self.status['bias'],
-                    pulse=self.status['pulse']
-                )
-                data_logger.info(csv_line)
-            except Exception as e:
-                print(f"Failed to write data log: {e}")
-            
+            #try:
+            #    timestamp = datetime.now().isoformat()
+            #    csv_line = "{},{ld},{tec},{temp:.3f},{bias:.3f},{pulse:.3f}".format(
+            #        timestamp,
+            #        ld=self.status['ld_on'],
+            #        tec=self.status['tec_on'],
+            #        temp=self.status['ld_temp'],
+            #        bias=self.status['bias'],
+            #        pulse=self.status['pulse']
+            #    )
+            #    data_logger.info(csv_line)
+           # except Exception as e:
+           #     print(f"Failed to write data log: {e}")
             return True
-            
         except IndexError:
             print("❌ Status parse failed: Device returned unexpected data.")
             return False

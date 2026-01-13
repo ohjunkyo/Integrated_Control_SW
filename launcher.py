@@ -19,9 +19,9 @@ class AppLauncher(tk.Tk):
         button_font = ("Helvetica", 14, "bold")
         label_font = ("Helvetica", 10)
         status_font = ("Helvetica", 10, "bold")
-        
+
         self.processes = []
-        
+
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
         button_frame = tk.Frame(self, bg='#333333')
@@ -34,18 +34,18 @@ class AppLauncher(tk.Tk):
         hv_button.pack(pady=10, fill=tk.X)
 
         vm_button = tk.Button(
-            button_frame, text="Start Laser Control (Python)", font=button_font,
-            bg="#f0ad4e", fg="white", padx=20, pady=15,
-            command=self.launch_laser_control
-        )
+                button_frame, text="Start Laser Control (Python)", font=button_font,
+                bg="#f0ad4e", fg="white", padx=20, pady=15,
+                command=self.launch_laser_control
+                )
         vm_button.pack(pady=10, fill=tk.X)
 
         status_frame = ttk.LabelFrame(self, text="Launcher Status", padding="10")
         status_frame.pack(fill=tk.X, expand=True, padx=20, pady=10)
-        
+
         self.start_time = datetime.now()
         self.start_time_str = self.start_time.strftime('%Y-%m-%d %H:%M:%S')
-        
+
         self.current_time_var = tk.StringVar()
         self.elapsed_time_var = tk.StringVar()
 
@@ -57,10 +57,10 @@ class AppLauncher(tk.Tk):
 
         self.last_mod_file_var = tk.StringVar()
         self.last_mod_time_var = tk.StringVar()
-        
+
         self._create_status_row(status_frame, "Last Modified File:", self.last_mod_file_var, label_font, status_font)
         self._create_status_row(status_frame, "Modified Time:", self.last_mod_time_var, label_font, status_font)
-        
+
         refresh_button = ttk.Button(status_frame, text="Refresh Status 🔄", command=self.update_file_status)
         refresh_button.pack(pady=10)
 
@@ -93,7 +93,7 @@ class AppLauncher(tk.Tk):
                     # Send SIGKILL to the entire process group
                     os.killpg(pgid, signal.SIGKILL)
                 except ProcessLookupError:
-                     print(f"  - Process {proc.pid} (PGID {pgid}) already gone.")
+                    print(f"  - Process {proc.pid} (PGID {pgid}) already gone.")
                 except Exception as e:
                     print(f"  - Error terminating PGID {pgid} (PID {proc.pid}): {e}")
         print("All processes terminated.")
@@ -101,7 +101,7 @@ class AppLauncher(tk.Tk):
     def on_closing(self):
         """Called on window close or 'Exit' button press."""
         running_processes = [p for p in self.processes if p.poll() is None]
-        
+
         if running_processes:
             msg = f"Do you want to exit the launcher and terminate all {len(running_processes)} running application(s)?\n\n(DAQ, HV, Laser)"
             if messagebox.askyesno("Confirm Exit", msg):
@@ -130,12 +130,12 @@ class AppLauncher(tk.Tk):
     def launch_daq_control(self):
         print("Launching DAQ Control...")
         python_exe = self.get_python_executable()
-        
+
         script_path = os.path.join("DAQ_Control_SW", "main.py")
         script_dir = os.path.dirname(script_path)
         if not script_dir: script_dir = "."
         command = [python_exe, os.path.basename(script_path)]
-        
+
         try:
             # [MODIFIED] Use preexec_fn=os.setsid to create a new process group
             proc = subprocess.Popen(command, cwd=script_dir, preexec_fn=os.setsid)
@@ -152,9 +152,9 @@ class AppLauncher(tk.Tk):
         config_path = os.path.join("HV_Control_SW", "config_precal.json")
         script_dir = os.path.dirname(script_path)
         if not script_dir: script_dir = "."
-        
+
         command = [python_exe, os.path.basename(script_path), os.path.basename(config_path)]
-            
+
         try:
             # [MODIFIED] Use preexec_fn=os.setsid to create a new process group
             proc = subprocess.Popen(command, cwd=script_dir, preexec_fn=os.setsid)
@@ -165,15 +165,15 @@ class AppLauncher(tk.Tk):
     def launch_laser_control(self):
         print("Launching Laser Control (Python)...")
         python_exe = self.get_python_executable()
-        
-        script_path = os.path.join("Laser_Contorl_SW", "app", "laser_gui.py")
+
+        script_path = os.path.join("Laser_Control_SW", "app", "laser_gui.py")
         script_dir = os.path.dirname(script_path)
         if not script_dir: script_dir = "."
 
         if not os.path.exists(script_path):
             messagebox.showerror("Error", f"Laser script not found:\n{script_path}")
             return
-        
+
         command = [python_exe, os.path.basename(script_path)]
 
         try:
@@ -204,7 +204,7 @@ class AppLauncher(tk.Tk):
             if not os.path.isdir(directory):
                 print(f"Warning: Directory not found, skipping: {directory}")
                 continue
-                
+
             for root, dirs, files in os.walk(directory, topdown=True):
                 dirs[:] = [d for d in dirs if d not in IGNORE_DIRS]
                 for file in files:
@@ -224,7 +224,7 @@ class AppLauncher(tk.Tk):
     def update_file_status(self):
         print("Refreshing file status...")
         try:
-            file_path, mtime = self.find_most_recent_file("DAQ_Control_SW", "HV_Control_SW", "Laser_Contorl_SW")
+            file_path, mtime = self.find_most_recent_file("DAQ_Control_SW", "HV_Control_SW", "Laser_Control_SW")
             if file_path:
                 relative_path = os.path.relpath(file_path)
                 timestamp_str = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')

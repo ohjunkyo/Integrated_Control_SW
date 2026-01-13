@@ -38,7 +38,7 @@ const std::string SN3 = "EL9590";
 const std::string direction3 = "B";
 
 // -- Angle Configuration --- //
-const std::string RotateAngle1 = "10";
+const std::string RotateAngle1 = "45";
 const std::string TiltAngle1 = "10";
 
 const std::string RotateAngle2 = "0";
