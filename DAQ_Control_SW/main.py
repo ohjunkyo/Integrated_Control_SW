@@ -71,10 +71,8 @@ class App:
 
         self.check_daq_connection()
 
-        # main.py에 추가할 새 함수 (App 클래스 내부에)
     def check_dir_size_queue(self):
         try:
-            # 큐에서 모든 메시지를 비동기적으로 가져옴
             while not self.dir_size_queue.empty():
                 display_str = self.dir_size_queue.get_nowait()
                 self.ui.update_data_size_display(display_str)
@@ -169,7 +167,6 @@ class App:
         self.save_app_config()
         messagebox.showinfo("Terminal Changed", f"Terminal has been set to: {terminal_name}")
 
-    # --- 로그 처리 기능 ---
     def _log(self, message):
         """메시지를 로그 파일에 저장하고 UI를 업데이트합니다."""
         try:
@@ -359,7 +356,6 @@ class App:
         final_command_string = " && ".join(all_commands_list)
         self._execute_in_new_terminal([final_command_string])
 
-    # --- [*** 여기가 수정된 부분 (1) ***] ---
     def run_waveform(self):
         """
         Waveform inspection:
@@ -624,15 +620,19 @@ class App:
         try:
             paths_to_scan = [
                     ("Raw", self.config_manager.get_config_value("RawDataPath")),
-                    ("Production", self.config_manager.get_config_value("ProcessedDataPath"))
+                    ("Production", self.config_manager.get_config_value("ProcessedDataPath")),
+                    ("Result", self.config_manager.get_config_value("FinalResultPath")),
+                    ("External Disk", self.config_manager.get_config_value("ExternalPath")),
                     ]
-
 
             for file_type, base_path in paths_to_scan:
                 if not (base_path and os.path.isdir(base_path)):
                     continue
                 dirs_to_check = []
-                if file_type == "Raw":
+                if file_type == "Raw" :
+                    dirs_to_check.append(os.path.join(base_path, 'Dark'))
+                    dirs_to_check.append(os.path.join(base_path, 'Laser'))
+                elif file_type == "External Disk" :
                     dirs_to_check.append(os.path.join(base_path, 'Dark'))
                     dirs_to_check.append(os.path.join(base_path, 'Laser'))
                 else:
@@ -795,17 +795,25 @@ class App:
         if not self.config_manager: return
 
         raw_data_path = self.config_manager.get_config_value("RawDataPath")
+        ext_data_path = self.config_manager.get_config_value("ExternalPath")
 
         if raw_data_path and os.path.isdir(raw_data_path):
             data_parent_dir = os.path.dirname(raw_data_path)
 
-            thread = threading.Thread(target=self._get_directory_size_thread, args=(data_parent_dir,), daemon=True)
+            thread = threading.Thread(target=self._get_directory_size_thread, args=(raw_data_path, False), daemon=True)
             thread.start()
         else:
             self.ui.update_data_size_display("Path Error")
 
+        if ext_data_path and os.path.isdir(ext_data_path):
+            data_parent_dir = os.path.dirname(ext_data_path)
 
-    def _get_directory_size_thread(self, path):
+            threading.Thread(target=self._get_directory_size_thread, args=(ext_data_path, True), daemon=True).start()
+        else:
+            self.ui.update_data_size_display("Path Error")
+
+
+    def _get_directory_size_thread(self, path, is_ext):
         total_size_bytes = 0
         display_str = "Calculating..."
         try:
@@ -833,7 +841,7 @@ class App:
             display_str = "Error"
             self._log(f"Error calculating directory size: {e}")
         finally:
-            self.master.after(0, lambda: self.ui.update_data_size_display(display_str))
+            self.master.after(0, lambda: self.ui.update_data_size_display(display_str, is_ext))
 
     def format_size(self, size_bytes):
         if size_bytes == 0:

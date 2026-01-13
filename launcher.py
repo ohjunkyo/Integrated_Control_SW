@@ -224,7 +224,6 @@ class AppLauncher(tk.Tk):
     def update_file_status(self):
         print("Refreshing file status...")
         try:
-            # 레이저 컨트롤 SW 디렉토리도 스캔에 추가
             file_path, mtime = self.find_most_recent_file("DAQ_Control_SW", "HV_Control_SW", "Laser_Contorl_SW")
             if file_path:
                 relative_path = os.path.relpath(file_path)

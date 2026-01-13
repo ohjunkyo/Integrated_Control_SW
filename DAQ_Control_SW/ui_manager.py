@@ -367,11 +367,11 @@ class UIManager:
         frame = ttk.LabelFrame(parent, text="Run Control & Parameters", padding="10")
         frame.pack(fill=tk.X, pady=5, padx=5)
         ttk.Label(frame, text="Mode:").pack(anchor=tk.W)
-        laser_radio = ttk.Radiobutton(frame, text="Laser (0)", variable=self.run_mode, value="laser", command=self.controller.update_latest_run_number)
-        dark_radio = ttk.Radiobutton(frame, text="Dark (1)", variable=self.run_mode, value="dark", command=self.controller.update_latest_run_number)
+        laser_radio = ttk.Radiobutton(frame, text="Laser & External trigger (0)", variable=self.run_mode, value="laser", command=self.controller.update_latest_run_number)
+        dark_radio = ttk.Radiobutton(frame, text="Dark & Self trigger (1)", variable=self.run_mode, value="dark", command=self.controller.update_latest_run_number)
         laser_radio.pack(anchor=tk.W)
         dark_radio.pack(anchor=tk.W)
-        ttk.Label(frame, text="Run number (produce & analyis):").pack(anchor=tk.W, pady=(10, 0))
+        ttk.Label(frame, text="Run number (waveform inspection, produce & analyis):").pack(anchor=tk.W, pady=(10, 0))
         run_entry = ttk.Entry(frame, textvariable=self.run_number_var)
         run_entry.pack(fill=tk.X)
         self.run_num_status_label = ttk.Label(frame, text="", foreground="gray", font=("Helvetica", 8))
@@ -471,11 +471,18 @@ class UIManager:
 
         bottom_frame = ttk.Frame(frame)
         bottom_frame.pack(fill=tk.X, pady=(5,0))
+        bottom_frame2 = ttk.Frame(frame)
+        bottom_frame2.pack(fill=tk.X, pady=(5,0))
 
         self.data_size_var = tk.StringVar(value="Calculating...")
+        self.ext_data_size_var = tk.StringVar(value="Calculating...")
         ttk.Label(bottom_frame, text="Data Capacity:").pack(side=tk.LEFT)
+        ttk.Label(bottom_frame2, text="External HDD Capacity:").pack(side=tk.LEFT)
         self.data_size_label = ttk.Label(bottom_frame, textvariable=self.data_size_var, foreground="blue", font=("Helvetica", 10, "bold"))
         self.data_size_label.pack(side=tk.LEFT, padx=5)
+
+        self.data_size_label2 = ttk.Label(bottom_frame2, textvariable=self.ext_data_size_var, foreground="blue", font=("Helvetica", 10, "bold"))
+        self.data_size_label2.pack(side=tk.LEFT, padx=5)
 
 
         def configure_wraplength(event):
@@ -485,8 +492,11 @@ class UIManager:
 
         self.path_container.bind("<Configure>", configure_wraplength)
 
-    def update_data_size_display(self, size_str):
-        self.data_size_var.set(size_str)
+    def update_data_size_display(self, size_str, is_external=False):
+        if is_external:
+            self.ext_data_size_var.set(size_str)
+        else:
+            self.data_size_var.set(size_str)
 
     def update_path_display(self):
         if not self.controller.config_manager:
@@ -512,7 +522,7 @@ class UIManager:
         self.data_notebook = ttk.Notebook(left_data_frame)
         self.data_notebook.pack(fill=tk.BOTH, expand=True, pady=5)
 
-        for tab_name in ["Raw", "Production"]:
+        for tab_name in ["Raw", "Production", "Result", "External Disk"]:
             tab_frame = ttk.Frame(self.data_notebook)
             self.data_notebook.add(tab_frame, text=f"{tab_name} Data")
             self._create_file_browser_tab(tab_frame, tab_name)
@@ -704,8 +714,8 @@ class UIManager:
 
             current_data_tab_index = self.data_notebook.index(self.data_notebook.select())
             tab_text = self.data_notebook.tab(current_data_tab_index, "text")
-            tab_type = "Raw" if "Raw" in tab_text else "Production"
-
+           # tab_type = "Raw" if "Raw" in tab_text else "Production"
+            tab_type = tab_text.replace(" Data", "")
             if tab_type not in self.data_view_vars: return
 
             tree = self.data_view_vars[tab_type]["tree"]
@@ -735,7 +745,10 @@ class UIManager:
 
             current_data_tab_index = self.data_notebook.index(self.data_notebook.select())
             tab_text = self.data_notebook.tab(current_data_tab_index, "text")
-            tab_type = "Raw" if "Raw" in tab_text else "Production"
+           # tab_type = "Raw" if "Raw" in tab_text else "Production"
+            tab_type = tab_text.replace(" Data", "")
+
+
 
             if tab_type not in self.data_view_vars: 
                 return []
