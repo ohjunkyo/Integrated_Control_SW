@@ -858,14 +858,29 @@ class UIManager:
 
         self._create_laser_settings_frames(left_pane) # 제어 버튼들 생성
 
-        # 좌측 하단: 과거 데이터 그래프 영역 (작은 화면)
-        hist_plot_container = ttk.LabelFrame(left_pane, text="Historical Trend View (CSV)", padding=5)
-        hist_plot_container.pack(fill=tk.BOTH, expand=True, pady=10)
-        
+# --- [861번 라인부터 교체] 좌측 하단: 노트북(탭)으로 그래프와 로그 분리 ---
+        self.laser_left_notebook = ttk.Notebook(left_pane)
+        self.laser_left_notebook.pack(fill=tk.BOTH, expand=True, pady=10)
+
+        # Tab 1: 과거 데이터 그래프 (기존 기능)
+        hist_frame = ttk.Frame(self.laser_left_notebook)
+        self.laser_left_notebook.add(hist_frame, text=" Historical Plot ")
+
         self.fig_hist, self.ax_hist = plt.subplots(figsize=(4, 2.5), dpi=80)
-        self.canvas_hist = FigureCanvasTkAgg(self.fig_hist, master=hist_plot_container)
+        self.canvas_hist = FigureCanvasTkAgg(self.fig_hist, master=hist_frame)
         self.canvas_hist.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
+        # Tab 2: 사용 기록 로그 (Laser Session Log) - [신규 추가]
+        log_view_frame = ttk.Frame(self.laser_left_notebook)
+        self.laser_left_notebook.add(log_view_frame, text=" Laser Session Log ")
+
+        # 실제 로그가 출력될 텍스트 위젯 (scrolledtext 사용)
+        from tkinter import scrolledtext
+        self.laser_log_text = scrolledtext.ScrolledText(log_view_frame, wrap=tk.WORD,
+                                                       state="disabled", height=10,
+                                                       bg="#f8f9fa", font=("Monaco", 9))
+        self.laser_log_text.pack(fill=tk.BOTH, expand=True)
+        
         # --- 우측 패널 (Live Monitoring + Real-time Plot) ---
         right_pane = ttk.Frame(laser_pane)
         laser_pane.add(right_pane, weight=2)

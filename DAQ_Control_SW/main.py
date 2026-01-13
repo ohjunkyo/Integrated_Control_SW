@@ -15,6 +15,9 @@ import queue
 import collections
 import serial.tools.list_ports
 import matplotlib.pyplot as plt
+import logging 
+from logging.handlers import TimedRotatingFileHandler 
+import random 
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from datetime import datetime
 from ui_manager import UIManager
@@ -126,6 +129,12 @@ class App:
         if self.laser:
             self.update_laser_status_loop()
         self.on_laser_trigger_change()
+
+        self.setup_laser_logger()      # 로그 파일 경로 설정
+        self.load_today_laser_log()    # 오늘 기록이 있다면 불러오기
+        self._log_laser("Laser Control Module Integrated Successfully.")
+    
+
     def check_dir_size_queue(self):
         try:
             while not self.dir_size_queue.empty():
@@ -1051,7 +1060,6 @@ class App:
         times = list(self.plot_history["time"])
         temps = list(self.plot_history["temp"])
         pulses = list(self.plot_history["pulse"])
-
         if not times: return
 
         # 1. 상단: 온도 그래프
@@ -1114,6 +1122,62 @@ class App:
                 self._log(f"Historical data loaded: {file_path}")
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to load data: {e}")
+
+    def _log_laser(self, msg):
+        """레이저 전용 로그 위젯과 파일에 동시에 기록"""
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        if hasattr(self.ui, 'laser_log_text'):
+            self.ui.laser_log_text.config(state="normal")
+            self.ui.laser_log_text.insert(tk.END, f"[{timestamp}] {msg}\n")
+            self.ui.laser_log_text.config(state="disabled")
+            self.ui.laser_log_text.yview(tk.END)
+
+    def setup_laser_logger(self):
+        """Laser 사용 기록을 위한 로거 설정 (laser_gui 이식)"""
+        self.laser_log_dir = "/home/precalkor/ADC/ADC_test/LOG/LASER"
+        os.makedirs(self.laser_log_dir, exist_ok=True)
+
+        self.laser_logger = logging.getLogger('LaserSession')
+        self.laser_logger.setLevel(logging.INFO)
+
+        if not self.laser_logger.handlers:
+            log_path = os.path.join(self.laser_log_dir, "laser_log")
+            # 자정마다 새 파일 생성 (laser_log_2026-01-13.txt 형식)
+            handler = TimedRotatingFileHandler(log_path, when='midnight', interval=1)
+            handler.suffix = "_%Y-%m-%d.txt"
+            handler.setFormatter(logging.Formatter('%(asctime)s | %(message)s'))
+            self.laser_logger.addHandler(handler)
+
+    def load_today_laser_log(self):
+        """프로그램 시작 시 오늘 작성된 로그가 있다면 불러와서 UI에 표시"""
+        today_str = datetime.now().strftime('%Y-%m-%d')
+        log_file = os.path.join(self.laser_log_dir, f"laser_log_{today_str}.txt")
+
+        if os.path.exists(log_file):
+            try:
+                with open(log_file, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    self.ui.laser_log_text.config(state="normal")
+                    self.ui.laser_log_text.insert(tk.END, content)
+                    self.ui.laser_log_text.config(state="disabled")
+                    self.ui.laser_log_text.yview(tk.END)
+            except Exception as e:
+                print(f"Failed to load today's laser log: {e}")
+
+    # 기존 _log_laser 메서드를 아래와 같이 업데이트 (파일 저장 로직 포함)
+    def _log_laser(self, msg):
+        """레이저 전용 로그 위젯과 파일에 동시에 기록"""
+        # 1. 파일에 기록
+        if hasattr(self, 'laser_logger'):
+            self.laser_logger.info(msg)
+
+        # 2. UI 텍스트 위젯에 기록
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        if hasattr(self.ui, 'laser_log_text'):
+            self.ui.laser_log_text.config(state="normal")
+            self.ui.laser_log_text.insert(tk.END, f"[{timestamp}] {msg}\n")
+            self.ui.laser_log_text.config(state="disabled")
+            self.ui.laser_log_text.yview(tk.END)
 
 
     #################### UPS Monitoring ##############################
