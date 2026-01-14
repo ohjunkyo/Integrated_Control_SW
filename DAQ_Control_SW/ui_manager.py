@@ -26,12 +26,12 @@ class UIManager:
                 "temp": tk.StringVar(value="--.- °C"),
                 "bias_live": tk.StringVar(value="---.- mA"),
                 "pulse_live": tk.StringVar(value="---.- mA"),
+                "check_interval": tk.StringVar(value="1s"),
                 "bias_set": tk.DoubleVar(value=0.0),
                 "pulse_set": tk.DoubleVar(value=0.0),
                 "trigger_mode": tk.StringVar(value="External"),
                 "freq_hz": tk.StringVar(value="10000000")
                 }
-
 
         self.ups_vars = {
                 "conn_status": tk.StringVar(value="Disconnected"),
@@ -47,6 +47,13 @@ class UIManager:
         style.configure("TLabel", font=("Helvetica", 11)) # 일반 글자 크기 13
         style.configure("TButton", font=("Helvetica", 11, "bold")) # 버튼 크기
         style.configure("TLabelframe.Label", font=("Helvetica", 12, "bold")) # 섹션 제목 크기 15
+        
+        self.tab_led_green = tk.PhotoImage(width=10, height=10)
+        self.tab_led_green.put(("#28a745",), to=(0, 0, 10, 10))
+        self.tab_led_red = tk.PhotoImage(width=10, height=10)
+        self.tab_led_red.put(("#dc3545",), to=(0, 0, 10, 10))
+
+        self.ups_value_labels = []
 
         self.run_mode = tk.StringVar(value="laser")
         self.run_number_var = tk.StringVar(value="1")
@@ -846,7 +853,11 @@ class UIManager:
 
         self.laser_conn_btn = ttk.Button(conn_frame, text="Connect Laser", 
                                          command=self.controller.toggle_laser_connection)
-        self.laser_conn_btn.pack(side=tk.LEFT, padx=5) # 라벨 바로 옆
+        self.laser_conn_btn.pack(side=tk.LEFT, padx=5)
+
+        self.laser_refresh_btn = ttk.Button(conn_frame, text="Refresh Status 🔄", 
+                                         command=self.controller.manual_refresh_laser)
+        self.laser_refresh_btn.pack(side=tk.LEFT, padx=5)
 
         self.load_history_btn = ttk.Button(conn_frame, text="Load Historical Data 📂", 
                                           command=self.controller.load_historical_laser_data)
@@ -973,6 +984,12 @@ class UIManager:
             ttk.Label(row, text=f"{label}:", width=15, font=("Helvetica", 10, "bold")).pack(side=tk.LEFT)
             ttk.Label(row, textvariable=self.laser_vars[var_key], width=15, relief="groove").pack(side=tk.LEFT)
 
+        interval_row = ttk.Frame(status_grid)
+        interval_row.pack(fill=tk.X, pady=2)
+        ttk.Label(interval_row, text="Check Interval:", width=15, font=("Helvetica", 10, "bold")).pack(side=tk.LEFT)
+        ttk.Label(interval_row, textvariable=self.laser_vars["check_interval"], 
+                  width=15, relief="groove", foreground="blue").pack(side=tk.LEFT)
+
     def _create_laser_slider(self, parent, label, var):
         frame = ttk.Frame(parent)
         frame.pack(fill=tk.X, pady=2)
@@ -1000,10 +1017,13 @@ class UIManager:
                                         command=self.controller.toggle_ups_connection)
         self.ups_conn_btn.pack(side=tk.LEFT, padx=5)
 
+        self.ups_refresh_btn = ttk.Button(conn_frame, text="Refresh Status 🔄", 
+                                        command=self.controller.manual_refresh_ups)
+        self.ups_refresh_btn.pack(side=tk.LEFT, padx=5)
+
         ttk.Label(conn_frame, textvariable=self.ups_vars["conn_status"], 
                   font=("Helvetica", 10, "bold")).pack(side=tk.RIGHT)
 
-        # --- [2] 중간: 가로 3분할 레이아웃 ---
         mid_frame = ttk.Frame(container)
         mid_frame.pack(fill=tk.X, pady=5)
 
@@ -1035,17 +1055,19 @@ class UIManager:
             row = ttk.Frame(info_pane)
             row.pack(fill=tk.X, pady=2)
             ttk.Label(row, text=f"{label}:", width=16, font=label_font).pack(side=tk.LEFT)
-            ttk.Label(row, textvariable=self.ups_vars[var_key], font=large_font).pack(side=tk.LEFT)
+            val_lbl = ttk.Label(row, textvariable=self.ups_vars[var_key], font=large_font, foreground="blue")
+            val_lbl.pack(side=tk.LEFT)
+            self.ups_value_labels.append(val_lbl) 
 
         # 2-3: Outlet Status (2x2 Grid)
-        outlet_pane = ttk.LabelFrame(mid_frame, text=" Outlet Status (2x2) ", padding=10)
+        outlet_pane = ttk.LabelFrame(mid_frame, text=" Outlet Status (2x2), You can change this outlet and YOU Must FIX THE CODE (main.py)", padding=10)
         outlet_pane.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 0))
 
         self.outlet_canvas = tk.Canvas(outlet_pane, width=180, height=140, highlightthickness=0)
         self.outlet_canvas.pack(pady=5)
 
         self.outlet_circles = []
-        labels = ["DAQ PC", "Laser Controller", "Empty", "Empty"]
+        labels = ["DAQ, PC, Electroncis, etc.", "High voltage", "Empty", "Empty"]
 
         # ui_manager.py 내부 수정
 
@@ -1054,13 +1076,26 @@ class UIManager:
             x0, y0 = 30 + (col * 80), 15 + (row * 60)
             x1, y1 = x0 + 40, y0 + 40
             
-            # [수정 전] color = "#28a745" if i < 2 else "#adb5bd" 
-            # [수정 후] 일단 모두 회색(Off)으로 시작하고, 실제 데이터가 오면 녹색으로 바뀝니다.
             color = "#adb5bd" 
             
             circle = self.outlet_canvas.create_oval(x0, y0, x1, y1, fill=color, outline="#333", width=2)
             self.outlet_canvas.create_text(x0 + 20, y1 + 10, text=labels[i], font=("Helvetica", 8, "bold"))
             self.outlet_circles.append(circle)
+
+        ctrl_bar = ttk.Frame(container)
+        ctrl_bar.pack(fill=tk.X, pady=(10, 0), side=tk.BOTTOM)
+
+        #ttk.Label(ctrl_bar, text="Target:").pack(side=tk.LEFT)
+        #self.shutdown_target_var = tk.StringVar(value="All Outlets")
+        #self.shutdown_combo = ttk.Combobox(ctrl_bar, textvariable=self.shutdown_target_var,
+         #                                  values=["All Outlets", "Outlet 1 (DAQ)", "Outlet 2 (Laser)", "Outlet 3", "Outlet 4"],
+         #                                  state="readonly", width=15)
+        #self.shutdown_combo.pack(side=tk.LEFT, padx=10)
+
+        self.btn_ups_shutdown = tk.Button(ctrl_bar, text="⚠️ EXECUTE SYSTEM WIDE SHUTDOWN",
+                                          bg="#dc3545", fg="white", font=("Helvetica", 12, "bold"),
+                                          height=2, command=self.controller.shutdown_ups_all)
+        self.btn_ups_shutdown.pack(fill=tk.X, padx=100)
 
         graph_frame = ttk.LabelFrame(container, text=" UPS Real-time Trend ", padding=5)
         graph_frame.pack(fill=tk.BOTH, expand=True, pady=5)
@@ -1081,21 +1116,7 @@ class UIManager:
         self.ups_toolbar.update()
         self.ups_toolbar.pack(side=tk.TOP, fill=tk.X)
 
-        ctrl_bar = ttk.Frame(container)
-        ctrl_bar.pack(fill=tk.X, pady=(10, 0))
-
-        ttk.Label(ctrl_bar, text="Target:").pack(side=tk.LEFT)
-        self.shutdown_target_var = tk.StringVar(value="All Outlets")
-        self.shutdown_combo = ttk.Combobox(ctrl_bar, textvariable=self.shutdown_target_var,
-                                           values=["All Outlets", "Outlet 1 (DAQ)", "Outlet 2 (Laser)", "Outlet 3", "Outlet 4"],
-                                           state="readonly", width=15)
-        self.shutdown_combo.pack(side=tk.LEFT, padx=10)
-
-        self.btn_ups_shutdown = tk.Button(ctrl_bar, text="⚠️ EXECUTE SHUTDOWN",
-                                          bg="#dc3545", fg="white", font=("Helvetica", 10, "bold"),
-                                          command=self.controller.handle_ups_shutdown)
-        self.btn_ups_shutdown.pack(side=tk.RIGHT)
-
+        
     def update_ups_outlet_display(self, load_percent):
         """부하량(Load)이 있을 때 아울렛 전원이 공급 중임을 시각화합니다."""
         # 0보다 크면 실제 전력이 흐르는 것으로 간주하여 녹색 점등
@@ -1107,12 +1128,15 @@ class UIManager:
         dashboard = ttk.LabelFrame(parent, text=" System Connection Overview ", padding=10)
         dashboard.pack(fill=tk.X, pady=(0, 10), padx=5)
 
+        inner_container = ttk.Frame(dashboard)
+        inner_container.pack(expand=True)
+
         self.status_widgets = {}
         devices = [("DAQ System", "DAQ"), ("Laser Controller", "Laser"), ("OMRON UPS", "UPS")]
 
         for i, (label, key) in enumerate(devices):
             frame = ttk.Frame(dashboard)
-            frame.pack(side=tk.LEFT, expand=True)
+            frame.pack(side=tk.LEFT, padx=30)
 
             canvas = tk.Canvas(frame, width=20, height=20, highlightthickness=0)
             canvas.pack(side=tk.LEFT, padx=5)
@@ -1124,14 +1148,22 @@ class UIManager:
             self.status_widgets[key] = {"led": led, "canvas": canvas}
 
         self.master.after(100, self._update_dashboard_loop)
+    
 
     def _update_dashboard_loop(self):
-        """App으로부터 상태를 받아와 LED 색상을 변경합니다."""
         statuses = self.controller.get_system_status()
+        tab_map = {"DAQ": 0, "Laser": 1, "UPS": 2}
 
         for key, connected in statuses.items():
-            color = "#28a745" if connected else "#dc3545" # 초록색 / 빨간색
+            color = "#28a745" if connected else "#dc3545"
+            img = self.tab_led_green if connected else self.tab_led_red
+
+            # 1. 중앙 대시보드 LED 원형 업데이트
             if key in self.status_widgets:
                 self.status_widgets[key]["canvas"].itemconfig(self.status_widgets[key]["led"], fill=color)
+
+            if key in tab_map:
+                idx = tab_map[key]
+                self.main_notebook.tab(idx, image=img, compound=tk.RIGHT)
 
         self.master.after(2000, self._update_dashboard_loop)
