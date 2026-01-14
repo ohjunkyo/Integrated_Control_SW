@@ -20,8 +20,6 @@ class UIManager:
         self.default_font.configure(size=11) 
         self.master.option_add("*Font", self.default_font)
 
-
-
         self.laser_vars = {
                 "ld_status": tk.StringVar(value="OFF"),
                 "tec_status": tk.StringVar(value="OFF"),
@@ -35,7 +33,6 @@ class UIManager:
                 }
 
 
-            # ui_manager.py의 __init__ 내부
         self.ups_vars = {
                 "conn_status": tk.StringVar(value="Disconnected"),
                 "input_volt": tk.StringVar(value="--- V"),
@@ -46,6 +43,10 @@ class UIManager:
                 "status_msg": tk.StringVar(value="Unknown")
                  }
 
+        style = ttk.Style()
+        style.configure("TLabel", font=("Helvetica", 11)) # 일반 글자 크기 13
+        style.configure("TButton", font=("Helvetica", 11, "bold")) # 버튼 크기
+        style.configure("TLabelframe.Label", font=("Helvetica", 12, "bold")) # 섹션 제목 크기 15
 
         self.run_mode = tk.StringVar(value="laser")
         self.run_number_var = tk.StringVar(value="1")
@@ -107,6 +108,7 @@ class UIManager:
         self.laser_main_frame = ttk.Frame(self.main_notebook)
         self.main_notebook.add(self.laser_main_frame, text=" Laser Control ")
 
+        self._create_status_dashboard(self.daq_main_frame)
         #paned_window = ttk.PanedWindow(self.master, orient=tk.HORIZONTAL)
         paned_window = ttk.PanedWindow(self.daq_main_frame, orient=tk.HORIZONTAL)
         paned_window.pack(fill=tk.BOTH, expand=True)
@@ -177,6 +179,8 @@ class UIManager:
         self.local_ip_value.config(text=ip_info.get('local_ip', 'N/A'))
 
     def update_daq_connection_status(self, is_connected):
+        self.daq_connected_flag = is_connected 
+        
         if is_connected:
             self.connection_status_label.config(text="DAQ Status: Connected", foreground="#28a745")
         else:
@@ -897,6 +901,18 @@ class UIManager:
         self.canvas_live.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
 
+    def update_laser_status_colors(self, ld_on, tec_on):
+        """상태에 따라 UI 글자색과 배경색을 변경하여 가시성을 높입니다."""
+        # LD 상태 표시
+        ld_color = "#28a745" if ld_on else "#dc3545" # Green if ON, Red if OFF
+        if hasattr(self, 'ld_status_label'):
+            self.ld_status_label.config(foreground=ld_color)
+
+        # TEC 상태 표시
+        tec_color = "#28a745" if tec_on else "#dc3545"
+        self.tec_label.config(foreground=tec_color)
+
+
     def _create_laser_settings_frames(self, parent):
         """Power, Current, Trigger 설정을 위한 프레임들 생성"""
         # Power Control
@@ -932,25 +948,30 @@ class UIManager:
         self.laser_freq_apply_btn.pack(side=tk.LEFT)
 
     def _create_laser_live_labels(self, parent):
-        """실시간 수치를 보여주는 라벨 프레임 생성"""
         status_grid = ttk.LabelFrame(parent, text="Live Status", padding=10)
         status_grid.pack(fill=tk.X, pady=5)
         
-        monitor_items = [("LD Status", "ld_status"), ("Temperature", "temp"), 
-                         ("Live Bias", "bias_live"), ("Live Pulse", "pulse_live")]
-        for label, var_key in monitor_items:
-            row = ttk.Frame(status_grid)
-            row.pack(fill=tk.X, pady=2)
-            ttk.Label(row, text=f"{label}:", font=("Helvetica", 10, "bold"), width=15).pack(side=tk.LEFT)
-            ttk.Label(row, textvariable=self.laser_vars[var_key], width=15, relief="groove").pack(side=tk.LEFT)
+        # 1. LD Status
+        ld_row = ttk.Frame(status_grid)
+        ld_row.pack(fill=tk.X, pady=2)
+        ttk.Label(ld_row, text="LD Status:", width=15, font=("Helvetica", 10, "bold")).pack(side=tk.LEFT)
+        self.ld_status_label = ttk.Label(ld_row, textvariable=self.laser_vars["ld_status"], 
+                                         width=15, relief="groove", font=("Helvetica", 10, "bold"))
+        self.ld_status_label.pack(side=tk.LEFT)
 
         tec_row = ttk.Frame(status_grid)
-        tec_row.pack(fill=tk.X, pady=5)
-        ttk.Label(tec_row, text="TEC Status:", font=("Helvetica", 10, "bold"), width=15).pack(side=tk.LEFT)
+        tec_row.pack(fill=tk.X, pady=2)
+        ttk.Label(tec_row, text="TEC Status:", width=15, font=("Helvetica", 10, "bold")).pack(side=tk.LEFT)
         self.tec_label = ttk.Label(tec_row, textvariable=self.laser_vars["tec_status"], 
-                                   font=("Helvetica", 11, "bold"), relief="sunken", width=10, anchor="center")
+                                   width=15, relief="groove", font=("Helvetica", 10, "bold"))
         self.tec_label.pack(side=tk.LEFT)
 
+        other_items = [("Temperature", "temp"), ("Live Bias", "bias_live"), ("Live Pulse", "pulse_live")]
+        for label, var_key in other_items:
+            row = ttk.Frame(status_grid)
+            row.pack(fill=tk.X, pady=2)
+            ttk.Label(row, text=f"{label}:", width=15, font=("Helvetica", 10, "bold")).pack(side=tk.LEFT)
+            ttk.Label(row, textvariable=self.laser_vars[var_key], width=15, relief="groove").pack(side=tk.LEFT)
 
     def _create_laser_slider(self, parent, label, var):
         frame = ttk.Frame(parent)
@@ -1004,15 +1025,19 @@ class UIManager:
         info_pane = ttk.LabelFrame(mid_frame, text=" Electrical Info ", padding=10)
         info_pane.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
 
+        large_font = ("Helvetica", 30, "bold")
+        label_font = ("Helvetica", 14) 
+
         items = [("Input Voltage", "input_volt"), ("Output Voltage", "output_volt"),
                  ("Frequency", "frequency"), ("Current Status", "status_msg")]
+
         for label, var_key in items:
             row = ttk.Frame(info_pane)
             row.pack(fill=tk.X, pady=2)
-            ttk.Label(row, text=f"{label}:", width=14).pack(side=tk.LEFT)
-            ttk.Label(row, textvariable=self.ups_vars[var_key], font=("Helvetica", 10, "bold")).pack(side=tk.LEFT)
+            ttk.Label(row, text=f"{label}:", width=16, font=label_font).pack(side=tk.LEFT)
+            ttk.Label(row, textvariable=self.ups_vars[var_key], font=large_font).pack(side=tk.LEFT)
 
-        # 2-3: Outlet Status (2x2 Grid) - [핵심 수정]
+        # 2-3: Outlet Status (2x2 Grid)
         outlet_pane = ttk.LabelFrame(mid_frame, text=" Outlet Status (2x2) ", padding=10)
         outlet_pane.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 0))
 
@@ -1022,27 +1047,40 @@ class UIManager:
         self.outlet_circles = []
         labels = ["DAQ PC", "Laser Controller", "Empty", "Empty"]
 
+        # ui_manager.py 내부 수정
+
         for i in range(4):
             row, col = divmod(i, 2)
-            x0, y0 = 20 + (col * 80), 10 + (row * 65)
-            x1, y1 = x0 + 45, y0 + 45
-
-            color = "#28a745" if i < 2 else "#adb5bd"
+            x0, y0 = 30 + (col * 80), 15 + (row * 60)
+            x1, y1 = x0 + 40, y0 + 40
+            
+            # [수정 전] color = "#28a745" if i < 2 else "#adb5bd" 
+            # [수정 후] 일단 모두 회색(Off)으로 시작하고, 실제 데이터가 오면 녹색으로 바뀝니다.
+            color = "#adb5bd" 
+            
             circle = self.outlet_canvas.create_oval(x0, y0, x1, y1, fill=color, outline="#333", width=2)
-            self.outlet_canvas.create_text(x0 + 22, y1 + 10, text=labels[i], font=("Helvetica", 8, "bold"))
+            self.outlet_canvas.create_text(x0 + 20, y1 + 10, text=labels[i], font=("Helvetica", 8, "bold"))
             self.outlet_circles.append(circle)
 
-        # --- [3] 하단: 실시간 그래프 (높이 최적화) ---
         graph_frame = ttk.LabelFrame(container, text=" UPS Real-time Trend ", padding=5)
         graph_frame.pack(fill=tk.BOTH, expand=True, pady=5)
 
-        self.fig_ups, self.ax_ups_batt = plt.subplots(figsize=(6, 2.5), dpi=100)
-        self.ax_ups_load = self.ax_ups_batt.twinx()
-        self.fig_ups.tight_layout(pad=3.0)
+        self.fig_ups, self.axes_ups = plt.subplots(2, 2, figsize=(10, 8), dpi=100)
+        self.ax_ups_watt = self.axes_ups[0, 0] # 좌상: 전력
+        self.ax_ups_temp = self.axes_ups[0, 1] # 우상: 온도
+        self.ax_ups_vin  = self.axes_ups[1, 0] # 좌하: 입력전압
+        self.ax_ups_vout = self.axes_ups[1, 1] # 우하: 출력전압
+        
+        self.fig_ups.tight_layout(pad=4.0)
+        
         self.canvas_ups = FigureCanvasTkAgg(self.fig_ups, master=graph_frame)
         self.canvas_ups.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-        # --- [4] 최하단: Shutdown Control (선택형) ---
+        from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
+        self.ups_toolbar = NavigationToolbar2Tk(self.canvas_ups, graph_frame)
+        self.ups_toolbar.update()
+        self.ups_toolbar.pack(side=tk.TOP, fill=tk.X)
+
         ctrl_bar = ttk.Frame(container)
         ctrl_bar.pack(fill=tk.X, pady=(10, 0))
 
@@ -1058,3 +1096,42 @@ class UIManager:
                                           command=self.controller.handle_ups_shutdown)
         self.btn_ups_shutdown.pack(side=tk.RIGHT)
 
+    def update_ups_outlet_display(self, load_percent):
+        """부하량(Load)이 있을 때 아울렛 전원이 공급 중임을 시각화합니다."""
+        # 0보다 크면 실제 전력이 흐르는 것으로 간주하여 녹색 점등
+        state = 1 if load_percent > 0 else 0
+        # 현재는 DAQ PC와 Laser가 1, 2번에 연결된 것으로 가정
+        self.controller.update_ups_outlet_status([state, state, 0, 0])
+
+    def _create_status_dashboard(self, parent):
+        dashboard = ttk.LabelFrame(parent, text=" System Connection Overview ", padding=10)
+        dashboard.pack(fill=tk.X, pady=(0, 10), padx=5)
+
+        self.status_widgets = {}
+        devices = [("DAQ System", "DAQ"), ("Laser Controller", "Laser"), ("OMRON UPS", "UPS")]
+
+        for i, (label, key) in enumerate(devices):
+            frame = ttk.Frame(dashboard)
+            frame.pack(side=tk.LEFT, expand=True)
+
+            canvas = tk.Canvas(frame, width=20, height=20, highlightthickness=0)
+            canvas.pack(side=tk.LEFT, padx=5)
+            led = canvas.create_oval(2, 2, 18, 18, fill="#dc3545", outline="#333") 
+
+            lbl = ttk.Label(frame, text=label, font=("Helvetica", 10, "bold"))
+            lbl.pack(side=tk.LEFT, padx=(0, 20))
+
+            self.status_widgets[key] = {"led": led, "canvas": canvas}
+
+        self.master.after(100, self._update_dashboard_loop)
+
+    def _update_dashboard_loop(self):
+        """App으로부터 상태를 받아와 LED 색상을 변경합니다."""
+        statuses = self.controller.get_system_status()
+
+        for key, connected in statuses.items():
+            color = "#28a745" if connected else "#dc3545" # 초록색 / 빨간색
+            if key in self.status_widgets:
+                self.status_widgets[key]["canvas"].itemconfig(self.status_widgets[key]["led"], fill=color)
+
+        self.master.after(2000, self._update_dashboard_loop)

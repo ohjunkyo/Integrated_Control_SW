@@ -2,6 +2,7 @@
 import tkinter as tk
 from PIL import Image, ImageTk
 from tkinter import ttk, filedialog, messagebox
+import time
 import math
 import sys
 import os
@@ -13,6 +14,7 @@ import shutil
 import glob
 import queue
 import collections
+import serial
 import serial.tools.list_ports
 import matplotlib.pyplot as plt
 import logging 
@@ -31,9 +33,9 @@ parent_dir = os.path.dirname(current_dir)
 laser_dir = os.path.join(parent_dir, 'Laser_Control_SW', 'app')
 
 
-print(f"DEBUG: Current Script Dir: {current_dir}")
-print(f"DEBUG: Looking for Laser Dir at: {laser_dir}")
-print(f"DEBUG: Does it exist?: {os.path.exists(laser_dir)}")
+#print(f"DEBUG: Current Script Dir: {current_dir}")
+#print(f"DEBUG: Looking for Laser Dir at: {laser_dir}")
+#print(f"DEBUG: Does it exist?: {os.path.exists(laser_dir)}")
 LASER_AVAILABLE = False # 임포트 성공 여부 플래그
 
 if os.path.exists(laser_dir):
@@ -55,21 +57,16 @@ class App:
         master.title("DAQ/LASER/UPS Control Panel")
         master.geometry("1600x900")
 
+        # 1. 아이콘 및 기본 변수 초기화
         icon_path = os.path.join(self.base_dir, 'icons', 'DAQcontroller.png')
         img = Image.open(icon_path)
-        self.p_img = ImageTk.PhotoImage(img, master=master) 
+        self.p_img = ImageTk.PhotoImage(img, master=master)
         master.iconphoto(True, self.p_img)
 
-
-        daq_test_dir = "/home/precalkor/ADC/ADC_test/"
-
         self.start_time = datetime.now()
-
         self.config_manager = None
         self.terminal_preference = 'gnome-terminal'
-
         self.load_app_config()
-
 
         if LASER_AVAILABLE:
             try:
@@ -79,61 +76,55 @@ class App:
                 self.laser = None
         else:
             self.laser = None
-            print("ℹ️ Laser functions will be disabled (driver not found).")
-
-        self.plot_history = {
-            "time": collections.deque(maxlen=60),
-            "temp": collections.deque(maxlen=60),
-            "pulse": collections.deque(maxlen=60)
-        }    
 
         self.ups_serial = None
-        self.update_ups_status_loop()
-
         self.ups_plot_history = {
             "time": collections.deque(maxlen=60),
-            "batt": collections.deque(maxlen=60),
-            "load": collections.deque(maxlen=60)
+            "watt": collections.deque(maxlen=60),
+            "temp": collections.deque(maxlen=60),
+            "vin":  collections.deque(maxlen=60),
+            "vout": collections.deque(maxlen=60)
+        }
+        
+        self.master.after(5000, self.auto_connect_laser) 
+        self.plot_history = {
+            "time": collections.deque(maxlen=60), 
+            "temp": collections.deque(maxlen=60), 
+            "pulse": collections.deque(maxlen=60)
         }
 
-#		config_path = os.path.join(daq_test_dir, 'config2.h')
+        # 2. 상태바 및 UI 생성
         self.status_bar = ttk.Frame(master, relief=tk.SUNKEN, padding="2 5")
         self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
-
         self.elapsed_time_var = tk.StringVar()
-        ttk.Label(self.status_bar, textvariable=self.elapsed_time_var).pack(side=tk.RIGHT, padx=10)
-
         self.clock_var = tk.StringVar()
+        ttk.Label(self.status_bar, textvariable=self.elapsed_time_var).pack(side=tk.RIGHT, padx=10)
         ttk.Label(self.status_bar, textvariable=self.clock_var).pack(side=tk.LEFT, padx=10)
-
         self._update_status_bar()
 
+        # UI 생성 (한 번만 호출!)
         self.ui = UIManager(master, self)
 
+        # 3. 하드웨어 및 데이터 초기 로드 (중복 제거)
         if self.config_manager:
-            self.validate_config_paths() 
-            self.refresh_all_data()
-            ip_info = self.get_ip_addresses()
-            self.ui.update_ip_display(ip_info)
-            self.check_daq_connection()
+            self.validate_config_paths()
+            # [수정] 아래 함수들은 쓰레드를 생성하므로 UI가 안정화된 후 실행되도록 예약합니다.
+            self.master.after(500, self.refresh_all_data)
+            self.master.after(1000, self.check_daq_connection)
         else:
-            messagebox.showwarning("Warning", "Configuration not loaded. Application will have limited functionality.")
+            messagebox.showwarning("Warning", "Configuration not loaded.")
 
-        self.refresh_all_data()
-
-        ip_info = self.get_ip_addresses()
-        self.ui.update_ip_display(ip_info)
-
-        self.check_daq_connection()
-
+        # 4. 기타 모듈 설정
         if self.laser:
             self.update_laser_status_loop()
         self.on_laser_trigger_change()
+        self.setup_laser_logger()
+        self.load_today_laser_log()
 
-        self.setup_laser_logger()      # 로그 파일 경로 설정
-        self.load_today_laser_log()    # 오늘 기록이 있다면 불러오기
-        self._log_laser("Laser Control Module Integrated Successfully.")
-    
+        # UPS 자동 연결
+        self.master.after(1500, self.auto_connect_ups)
+
+
 
     def check_dir_size_queue(self):
         try:
@@ -854,9 +845,15 @@ class App:
                     is_connected = True
         except Exception: pass
         finally:
-            self.master.after(0, lambda: self.ui.update_daq_connection_status(is_connected))
-            # [MODIFIED] (Req 4) Check every 1 second
-            self.master.after(1000, self.check_daq_connection)
+            if hasattr(self, 'ui') and self.master.winfo_exists():
+              try:
+                  self.master.after(0, lambda: self.ui.update_daq_connection_status(is_connected))
+              except Exception:
+                pass
+
+        # 2초 후 재실행 예약
+        if self.master.winfo_exists():
+            self.master.after(2000, self.check_daq_connection)
 
     def update_data_directory_size(self):
         if not self.config_manager: return
@@ -878,7 +875,6 @@ class App:
             threading.Thread(target=self._get_directory_size_thread, args=(ext_data_path, True), daemon=True).start()
         else:
             self.ui.update_data_size_display("Path Error")
-
 
     def _get_directory_size_thread(self, path, is_ext):
         total_size_bytes = 0
@@ -908,7 +904,12 @@ class App:
             display_str = "Error"
             self._log(f"Error calculating directory size: {e}")
         finally:
-            self.master.after(0, lambda: self.ui.update_data_size_display(display_str, is_ext))
+            if hasattr(self, 'ui') and self.master.winfo_exists():
+                try:
+                    self.master.after(0, lambda: self.ui.update_data_size_display(display_str, is_ext))
+                except Exception:
+                    pass
+
 
     def format_size(self, size_bytes):
         if size_bytes == 0:
@@ -928,25 +929,31 @@ class App:
             messagebox.showwarning("Path Not Found", f"'{path_key}' is not defined in your config file.")
 
   ##          """"""""""" LASER """""""""""""""""
-  # main.py의 App 클래스 내부에 추가
+
+    def auto_connect_laser(self):
+        """프로그램 시작 시 레이저에 자동으로 연결합니다."""
+        if self.laser and not self.laser.is_connected():
+            self._log("Attempting to auto-connect Laser...")
+            self.toggle_laser_connection() 
+
     def set_laser_ld(self, state):
-       if self.laser:
+        if self.laser:
            self.laser.set_ld_on(state)
            self._log(f"Laser LD set to {'ON' if state else 'OFF'}")
-    
+
     def set_laser_tec(self, state):
-       if self.laser:
+        if self.laser:
            self.laser.set_tec_on(state)
            self._log(f"Laser TEC set to {'ON' if state else 'OFF'}")
-    
+
     def apply_laser_currents(self):
-       if self.laser:
+        if self.laser:
            bias = self.ui.laser_vars["bias_set"].get()
            pulse = self.ui.laser_vars["pulse_set"].get()
            self.laser.set_bias_current(bias)
            self.laser.set_pulse_current(pulse)
            self._log(f"Laser Currents applied: Bias={bias}mA, Pulse={pulse}mA")
-    
+
     def apply_laser_frequency(self):
         if self.laser:
             try:
@@ -969,20 +976,31 @@ class App:
             except ValueError:
                 messagebox.showerror("Error", "Frequency value must be an integer.")
 
-
     def update_laser_status_loop(self):
         if self.laser and self.laser.is_connected():
             if self.laser.update_status():
                 status = self.laser.status
-                self.ui.laser_vars["ld_status"].set("ON" if status.get('ld_on') else "OFF")
-                self.ui.laser_vars["tec_status"].set("ON" if status.get('tec_on') else "OFF")
-                self.ui.laser_vars["temp"].set(f"{status.get('ld_temp', 0):.2f} °C")
-                self.ui.laser_vars["bias_live"].set(f"{status.get('bias', 0):.2f} mA")
-                self.ui.laser_vars["pulse_live"].set(f"{status.get('pulse', 0):.2f} mA")
+                is_ld_on = status.get('ld_on', False)
+                is_tec_on = status.get('tec_on', False)
+                
+                self.ui.laser_vars["ld_status"].set("ON" if is_ld_on else "OFF")
+                self.ui.laser_vars["tec_status"].set("ON" if is_tec_on else "OFF")
+                
+                self.ui.update_laser_status_colors(is_ld_on, is_tec_on)
 
-        self.master.after(1000, self.update_laser_status_loop)
+                if is_ld_on:
+                    pulse = status.get('pulse', 0)
+                    self.ui.laser_vars["pulse_live"].set(f"{pulse:.2f} mA")
+                    self.plot_history["pulse"].append(pulse)
+                else:
+                    self.ui.laser_vars["pulse_live"].set("0.00 mA")
+                    self.plot_history["pulse"].append(0)
 
-    # main.py 내부 추가 및 수정
+                self.plot_history["time"].append(datetime.now().strftime("%H:%M:%S"))
+                self.refresh_laser_realtime_plot()
+
+        self.master.after(5000, self.update_laser_status_loop)
+
 
     def on_laser_trigger_change(self, event=None):
         """External 모드 시 주파수 입력창과 Apply 버튼을 완전히 비활성화합니다."""
@@ -996,22 +1014,26 @@ class App:
             self.ui.laser_freq_entry.config(state="normal")
             self.ui.laser_freq_apply_btn.config(state="normal")
             self.ui.trig_frame.config(text="Trigger Control - ENABLED (Internal)")
-        
+
         # 하드웨어에 모드 변경 적용
         if self.laser and self.laser.is_connected():
             self.apply_laser_frequency()
 
     def toggle_laser_connection(self):
-        """하나의 버튼으로 연결 및 해제를 관리합니다."""
+        """하나의 버튼으로 연결 및 해제를 관리하며 라벨을 업데이트합니다."""
         if not self.laser: return
         if self.laser.is_connected():
             self.laser.disconnect()
+            self.ui.laser_conn_label.config(text="Status: Disconnected", foreground="red")
+            self.ui.laser_conn_btn.config(text="Connect Laser")
             self._log("Laser disconnected.")
         else:
             success, msg = self.laser.connect()
             if success:
+                self.ui.laser_conn_label.config(text="Status: Connected", foreground="#28a745")
+                self.ui.laser_conn_btn.config(text="Disconnect Laser")
                 self._log("Laser connected.")
-                self.on_laser_trigger_change() # 초기 상태에 따른 Hz 비활성화 적용
+                self.on_laser_trigger_change()
             else:
                 messagebox.showerror("Connection Error", msg)
 
@@ -1025,7 +1047,7 @@ class App:
                 pulse = status.get('pulse', 0)
                 self.ui.laser_vars["temp"].set(f"{temp:.2f} °C")
                 self.ui.laser_vars["pulse_live"].set(f"{pulse:.2f} mA")
-                
+
                 # 그래프 데이터 축적 (Deque 활용)
                 self.plot_history["temp"].append(temp)
                 self.plot_history["pulse"].append(pulse)
@@ -1051,7 +1073,7 @@ class App:
             self.ui.laser_freq_entry.config(state="normal")
             self.ui.laser_freq_apply_btn.config(state="normal")
             self.ui.trig_frame.config(text="Trigger Control - ENABLED (Internal Mode)")
-        
+
         if self.laser and self.laser.is_connected():
             self.apply_laser_frequency()
 
@@ -1081,18 +1103,18 @@ class App:
 
         # X축 라벨 가독성 개선 (겹침 방지)
         self.ui.fig_live.autofmt_xdate() 
-        
+
         # 라벨이 너무 많을 경우 일정 간격으로만 표시
         for i, label in enumerate(self.ui.ax_curr.get_xticklabels()):
             if i % 10 != 0: label.set_visible(False)
 
         self.ui.canvas_live.draw()
-    
+
     def load_historical_laser_data(self):
         """과거 데이터를 좌측 하단에 상하로 나눠서 시간축으로 그려줍니다."""
         log_dir = "/home/precalkor/ADC/ADC_test/LOG/LASER"
         file_path = filedialog.askopenfilename(initialdir=log_dir, title="Select Laser Log CSV",
-                                              filetypes=(("CSV files", "*.csv"), ("All files", "*.*")))
+                                               filetypes=(("CSV files", "*.csv"), ("All files", "*.*")))
         if file_path:
             import pandas as pd
             try:
@@ -1185,13 +1207,11 @@ class App:
     def search_ups_ports(self):
         ports = serial.tools.list_ports.comports()
         port_list = []
-    
+
         for port in ports:
-        # 리눅스의 경우 /dev/ttyUSB0, /dev/ttyS0 등이 나옵니다.
-        # 제품명이 OMRON이거나 USB-to-Serial 케이블인 정보를 함께 표시하면 좋습니다.
-            display_name = f"{port.device}" # 예: /dev/ttyUSB0
+            display_name = f"{port.device}" 
             port_list.append(display_name)
-    
+
         if port_list:
             self.ui.ups_port_combo['values'] = port_list
             self.ui.ups_port_combo.current(0) # 첫 번째 항목 자동 선택
@@ -1201,50 +1221,170 @@ class App:
             self._log("No serial ports found. Check connection or drivers.")
             messagebox.showwarning("Search Result", "No serial ports detected.\nPlease check the USB-RS232 connection.")
 
+    def auto_connect_ups(self):
+        """lsusb에서 확인된 Prolific 장치를 찾아 2400bps로 연결합니다."""
+        import serial.tools.list_ports
+        ports = serial.tools.list_ports.comports()
+        target_port = None
+    
+        print("\n--- Scanning for OMRON UPS ---")
+        for port in ports:
+            vid = port.vid if port.vid is not None else 0
+            pid = port.pid if port.pid is not None else 0
+            if vid == 0x067B and pid == 0x23A3:
+                target_port = port.device
+                print(f"[SUCCESS] UPS Found on {target_port}")
+                break
+        
+        if target_port:
+            if hasattr(self, 'ui'):
+                self.ui.ups_vars["conn_status"].set(f"Connecting to {target_port}...")
+            self._try_ups_handshake(target_port)
+        else:
+            if hasattr(self, 'ui'):
+                self.ui.ups_vars["conn_status"].set("UPS H/W Not Found")
+
+    def _try_ups_handshake(self, port):
+        """스캐너로 확인된 BA100R 전용 설정(DTR=True, RTS=False, 2400bps)으로 연결합니다."""
+        try:
+            ser = serial.Serial(
+                port=port,
+                baudrate=2400,
+                parity=serial.PARITY_NONE,
+                stopbits=serial.STOPBITS_ONE,
+                bytesize=serial.EIGHTBITS,
+                timeout=1.0
+            )
+            
+            # [핵심] 스캐너에서 성공한 라인 신호 설정
+            ser.dtr = True
+            ser.rts = False
+            time.sleep(1.0) # 신호 안정화 대기
+
+            ser.reset_input_buffer()
+            # [핵심] 성공한 명령어 Q1 전송
+            ser.write(b'Q1\r')
+            time.sleep(0.5)
+            
+            response = ser.read(ser.in_waiting or 1).decode('ascii', errors='ignore').strip()
+            
+            if response.startswith('(') or ser.is_open:
+                self.ups_serial = ser
+                if hasattr(self, 'ui'):
+                    self.ui.ups_vars["conn_status"].set(f"Connected: {port}")
+                self._log(f"UPS Handshake Success with Q1: {repr(response)}")
+                self.update_ups_status_loop()
+            else:
+                ser.close()
+                if hasattr(self, 'ui'):
+                    self.ui.ups_vars["conn_status"].set("No Response")
+        except Exception as e:
+            self._log(f"UPS Handshake Error: {e}")
+            if hasattr(self, 'ui'):
+                self.ui.ups_vars["conn_status"].set("Connection Error")
+		
+    def update_ups_status_loop(self):
+        """Q1 데이터를 읽어 모든 정보(전력, 전압, 온도, 주파수)를 업데이트하고 그래프용 데이터를 저장합니다."""
+        if self.ups_serial and self.ups_serial.is_open:
+            try:
+                # Q1 명령어 전송
+                self.ups_serial.write(b'Q1\r')
+                time.sleep(0.3)
+
+                if self.ups_serial.in_waiting > 0:
+                    raw_data = self.ups_serial.read(self.ups_serial.in_waiting)
+                    response = raw_data.decode('ascii', errors='ignore').strip()
+
+                    if response.startswith('('):
+                        data = response[1:].split()
+                        if len(data) >= 7:
+                            # 1. 데이터 추출 (BA100R Q1 프로토콜 인덱스)
+                            input_v  = data[0]      # 입력 전압 (V)
+                            output_v = data[2]      # 출력 전압 (V)
+                            load_p   = float(data[3]) # 부하율 (%)
+                            freq     = data[4]      # 주파수 (Hz)
+                            batt_v   = float(data[5]) # 배터리 전압 (V)
+                            temp     = data[6]      # 온도 (°C)
+
+                            # 2. 계산 로직
+                            # 소비전력 (BA100R 최대 800W 기준)
+                            current_watt = 800 * (load_p / 100.0)
+                            # 배터리 잔량 % 계산 (21V~27.5V 범위를 0~100%로 변환)
+                            batt_pct = min(100, max(0, int((batt_v - 21) / (27.5 - 21) * 100)))
+
+                            # 3. UI 변수 업데이트
+                            if hasattr(self, 'ui'):
+                                self.ui.ups_vars["input_volt"].set(f"{input_v} V")
+                                self.ui.ups_vars["output_volt"].set(f"{output_v} V")
+                                self.ui.ups_vars["load_level"].set(int(load_p))
+                                self.ui.ups_vars["batt_level"].set(batt_pct) # 배터리 슬라이더 업데이트
+                                self.ui.ups_vars["frequency"].set(f"{freq} Hz")
+                                
+                                # 상태 메시지에 온도와 실시간 전력 표시
+                                status_txt = f"Normal ({current_watt:.1f} W) / Temp: {temp}°C"
+                                self.ui.ups_vars["status_msg"].set(status_txt)
+
+                                # 출력 전압에 따른 아울렛 LED 상태 업데이트
+                                if float(output_v) > 50:
+                                    self.update_ups_outlet_status([1, 1, 0, 0])
+                                else:
+                                    self.update_ups_outlet_status([0, 0, 0, 0])
+
+                            # 4. 그래프용 데이터 축적
+                            now_str = datetime.now().strftime("%H:%M:%S")
+                            self.ups_plot_history["time"].append(now_str)
+                            self.ups_plot_history["batt"].append(batt_v)       # 배터리 전압 저장
+                            self.ups_plot_history["watt"].append(current_watt) # 실시간 전력 저장
+                            
+                            # 5. 그래프 갱신 호출
+                            self.refresh_ups_plot()
+
+            except Exception as e:
+                self._log(f"UPS Loop Error: {e}")
+
+        if hasattr(self, 'master') and self.master.winfo_exists():
+            self.master.after(2000, self.update_ups_status_loop)
+
+
     def toggle_ups_connection(self):
+        """수동 연결/해제 버튼 동작 (BA100R 전용 설정 적용)"""
         if self.ups_serial and self.ups_serial.is_open:
             self.ups_serial.close()
-            self.ui.ups_vars["conn_status"].set("Disconnected")
+            if hasattr(self, 'ui'):
+                self.ui.ups_vars["conn_status"].set("Disconnected")
             self._log("UPS Serial Disconnected.")
         else:
-            port = self.ui.ups_port_combo.get()
+            if hasattr(self, 'ui'):
+                port = self.ui.ups_port_combo.get()
+            else:
+                port = None
+                
             if not port:
                 messagebox.showwarning("Warning", "Please select a port first.")
                 return
             try:
-                import serial
-                self.ups_serial = serial.Serial(port, 9600, timeout=1)
-                self.ui.ups_vars["conn_status"].set(f"Connected to {port}")
-                self._log(f"UPS Serial Connected: {port}")
+                # 1. 시리얼 포트 열기 (2400bps)
+                self.ups_serial = serial.Serial(port, 2400, timeout=1)
+                
+                # [중요] 스캐너 성공 설정: DTR은 켜고, RTS는 끕니다.
+                self.ups_serial.dtr = True
+                self.ups_serial.rts = False
+                time.sleep(1.0)
+                
+                # 2. 접속 확인
+                self.ups_serial.reset_input_buffer()
+                self.ups_serial.write(b'Q1\r')
+                time.sleep(0.5)
+                
+                if hasattr(self, 'ui'):
+                    self.ui.ups_vars["conn_status"].set(f"Connected to {port}")
+                
+                self._log(f"UPS Manual Connect Success: {port}")
                 self.update_ups_status_loop()
+                
             except Exception as e:
-
-                messagebox.showerror("UPS Connection Error", str(e))
-
-    def update_ups_status_loop(self):
-        if self.ups_serial and self.ups_serial.is_open:
-            try:
-
-                curr_time = datetime.now()
-                batt = random.randint(95, 100) # 가상 데이터
-                load = random.randint(15, 25)  # 가상 데이터
-
-                self.ui.ups_vars["batt_level"].set(batt)
-                self.ui.ups_vars["load_level"].set(load)
-
-            # 3. 데이터 기록 (CSV 저장)
-                self.save_ups_log(curr_time, batt, load)
-
-                self.ups_plot_history["time"].append(curr_time.strftime("%H:%M:%S"))
-                self.ups_plot_history["batt"].append(batt)
-                self.ups_plot_history["load"].append(load)
-                self.refresh_ups_plot()
-
-
-            except Exception as e:
-                print(f"UPS Polling Error: {e}")
-            
-        self.master.after(2000, self.update_ups_status_loop)
+                self.ups_serial = None
+                messagebox.showerror("UPS Connection Error", f"Failed to connect: {str(e)}")
 
     def save_ups_log(self, dt, batt, load):
         # 경로 설정: /home/precalkor/ADC/ADC_test/LOG/UPS
@@ -1262,33 +1402,26 @@ class App:
             f.write(f"{dt.strftime('%H:%M:%S')},{batt},{load}\n")
 
     def refresh_ups_plot(self):
-        #UPS 그래프 갱신"""
-        times = list(self.ups_plot_history["time"])
-        batts = list(self.ups_plot_history["batt"])
-        loads = list(self.ups_plot_history["load"])
-
+        h = self.ups_plot_history
+        times = list(h["time"])
         if not times: return
 
-        self.ui.ax_ups_batt.clear()
-        self.ui.ax_ups_load.clear()
+        plots = [
+            (self.ui.ax_ups_watt, list(h["watt"]), "Power (W)", "red"),
+            (self.ui.ax_ups_temp, list(h["temp"]), "Internal Temp (C)", "orange"),
+            (self.ui.ax_ups_vin,  list(h["vin"]),  "Input Voltage (V)", "blue"),
+            (self.ui.ax_ups_vout, list(h["vout"]), "Output Voltage (V)", "green")
+        ]
 
-    # 배터리 (좌측 축 - 파란색)
-        self.ui.ax_ups_batt.plot(times, batts, 'b-', label="Battery (%)")
-        self.ui.ax_ups_batt.set_ylabel("Battery (%)", color='b')
-        self.ui.ax_ups_batt.set_ylim(0, 110)
+        for ax, data, title, color in plots:
+            ax.clear()
+            ax.plot(times, data, color=color, linewidth=1.5, label=title)
+            ax.set_title(title, fontsize=10, fontweight='bold')
+            ax.grid(True, alpha=0.3)
+            ax.tick_params(labelsize=8)
 
-        # 부하 (우측 축 - 주황색)
-        self.ui.ax_ups_load.plot(times, loads, 'orange', linestyle='--', label="Load (%)")
-        self.ui.ax_ups_load.set_ylabel("Load (%)", color='orange')
-        self.ui.ax_ups_load.set_ylim(0, 100)
-
-    # X축 가독성 (10개마다 표시)
-        for i, label in enumerate(self.ui.ax_ups_batt.get_xticklabels()):
-            label.set_visible(i % 10 == 0)
-
-        plt.setp(self.ui.ax_ups_batt.get_xticklabels(), rotation=30, ha='right')
+        self.ui.fig_ups.autofmt_xdate()
         self.ui.canvas_ups.draw()
-
 
     def update_ups_outlet_status(self, states):
         """
@@ -1303,7 +1436,7 @@ class App:
         """UPS 출력을 완전히 차단합니다."""
         # 1. 사용자 재확인 (매우 중요!)
         confirmed = messagebox.askseriousquestion("WARNING",
-            "Are you sure you want to SHUT DOWN all outputs?\nThis will cut power to all connected devices immediately!")
+                                                  "Are you sure you want to SHUT DOWN all outputs?\nThis will cut power to all connected devices immediately!")
 
         if confirmed == 'yes':
             if self.ups_serial and self.ups_serial.is_open:
@@ -1331,7 +1464,7 @@ class App:
     def handle_ups_shutdown(self):
         """콤보박스 선택에 따라 전체 혹은 개별 셧다운을 실행합니다."""
         target = self.ui.shutdown_target_var.get()
-        
+
         confirm = messagebox.askyesno("Confirm Shutdown", 
                                       f"Are you sure you want to SHUTDOWN [{target}]?\nConnected device power will be cut.")
         if not confirm:
@@ -1354,18 +1487,45 @@ class App:
             try:
                 # 개별 제어 명령 전송 (매뉴얼의 해당 커맨드 입력 필요)
                 # self.ups_serial.write(f"OFF {index+1}\r".encode()) 
-                
+
                 self._log(f"UPS Individual Shutdown Command Sent: Outlet {index+1}")
-                
+
                 # 시각적 피드백: 해당 아울렛만 빨간색(2)으로 변경
                 current_states = [1, 1, 0, 0] # 실제 상태 읽어오기 전 임시
                 current_states[index] = 2 
                 self.update_ups_outlet_status(current_states)
-                
+
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to shut down individual outlet: {e}")
         else:
             messagebox.showwarning("Connection Error", "UPS Serial is not connected.")
+
+
+
+    def get_system_status(self):
+        status = {
+                "DAQ": False,
+                "Laser": False,
+                "UPS": False
+                }
+
+        if hasattr(self, 'ui') and hasattr(self.ui, 'daq_connected_flag'):
+            status["DAQ"] = self.ui.daq_connected_flag
+
+        # 2. Laser 상태
+        if self.laser and self.laser.is_connected():
+            status["Laser"] = True
+
+        # 3. UPS 상태 (시리얼 포트 체크)
+        if self.ups_serial and self.ups_serial.is_open:
+            # UI 변수가 안전하게 로드되었는지 확인 후 상태 반영
+            if hasattr(self, 'ui'):
+                msg = self.ui.ups_vars["status_msg"].get()
+                if "Normal" in msg or "Battery" in msg:
+                    status["UPS"] = True
+
+        return status
+
 
 if __name__ == "__main__":
     base_directory = os.path.dirname(os.path.abspath(__file__))
