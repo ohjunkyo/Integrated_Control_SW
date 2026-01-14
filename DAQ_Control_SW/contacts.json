@@ -1,0 +1,62 @@
+[
+    {
+        "role": "Jikken-to H.P",
+        "name": "Public",
+        "phone": "0578-86-9250",
+        "note": "Bldg: Kamioka Jikken-to / Addr: 1020 Tono Kamioka, Hida, Gifu (岐阜県飛騨市神岡町殿 1020)"
+    },
+    {
+        "role": "Emergency Contact",
+        "name": "--------",
+        "phone": "--------",
+        "note": "--------"
+    },
+    {
+        "role": "Kamioka shift",
+        "name": "",
+        "phone": "0578-85-9669",
+        "note": "Emergency contact"
+    },
+    {
+        "role": "Police office",
+        "name": "",
+        "phone": "0578-82-0110",
+        "note": "In emergency: call 110"
+    },
+    {
+        "role": "Fire station",
+        "name": "",
+        "phone": "0578-82-1119",
+        "note": "In emergency: call 119"
+    },
+    {
+        "role": "Nearest hospital",
+        "name": "Hida city hospital",
+        "phone": "0578-82-1150",
+        "note": "In emergency: call 119"
+    },
+    {
+        "role": "Guard Company",
+        "name": "ALSOK",
+        "phone": "058-274-8100",
+        "note": "In emergency: call 119 or 110"
+    },
+    {
+        "role": "----",
+        "name": "----",
+        "phone": "Pre-calibration Korean group",
+        "note": "---------------"
+    },
+    {
+        "role": "Main expert(1)",
+        "name": "Junkyo Oh",
+        "phone": "+82-10-6503-2581",
+        "note": "e-mail: gs1706@naver.com"
+    },
+    {
+        "role": "Main expert(2)",
+        "name": "Jeeseung Jang",
+        "phone": "+82-10-8666-1025",
+        "note": "e-mail: jsjang@gist.ac.kr"
+    }
+]

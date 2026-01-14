@@ -31,12 +31,10 @@ APP_CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".daq_control_config.jso
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 laser_dir = os.path.join(parent_dir, 'Laser_Control_SW', 'app')
-
-
 #print(f"DEBUG: Current Script Dir: {current_dir}")
 #print(f"DEBUG: Looking for Laser Dir at: {laser_dir}")
 #print(f"DEBUG: Does it exist?: {os.path.exists(laser_dir)}")
-LASER_AVAILABLE = False # 임포트 성공 여부 플래그
+LASER_AVAILABLE = False 
 
 if os.path.exists(laser_dir):
     if laser_dir not in sys.path:
@@ -62,6 +60,9 @@ class App:
         img = Image.open(icon_path)
         self.p_img = ImageTk.PhotoImage(img, master=master)
         master.iconphoto(True, self.p_img)
+
+        self.contacts_file = os.path.join(self.base_dir, "contacts.json")
+        self.load_contacts()
 
         self.start_time = datetime.now()
         self.config_manager = None
@@ -113,7 +114,6 @@ class App:
         # 3. 하드웨어 및 데이터 초기 로드 (중복 제거)
         if self.config_manager:
             self.validate_config_paths()
-            # [수정] 아래 함수들은 쓰레드를 생성하므로 UI가 안정화된 후 실행되도록 예약합니다.
             self.master.after(500, self.refresh_all_data)
             self.master.after(1000, self.check_daq_connection)
         else:
@@ -121,7 +121,7 @@ class App:
 
         # 4. 기타 모듈 설정
         if self.laser:
-            self.master.after(1000, self.auto_connect_laser) 
+            self.master.after(5000, self.auto_connect_laser) 
             self.update_laser_status_loop()
         self.on_laser_trigger_change()
         self.setup_laser_logger()
@@ -129,8 +129,46 @@ class App:
         self.preload_laser_history()
         self.preload_ups_history()
 
-        # UPS 자동 연결
+        self.ui.is_dark_mode = True 
+        self.ui.toggle_theme()
+
         self.master.after(1500, self.auto_connect_ups)
+
+    def load_contacts(self):
+        """contacts.json 파일에서 연락망을 불러옵니다."""
+        self.contacts_file = os.path.join(self.base_dir, "contacts.json")
+        if os.path.exists(self.contacts_file):
+            try:
+                with open(self.contacts_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except Exception as e:
+                self._log(f"Error loading contacts: {e}")
+        return [] 
+
+    # main.py
+
+    def update_plots_theme(self, is_dark):
+        bg_color = "#2d2d2d" if is_dark else "white"
+        fg_color = "white" if is_dark else "black"
+        grid_color = "#444444" if is_dark else "#dddddd"
+
+        figures = [self.ui.fig_live, self.ui.fig_ups, self.ui.fig_hist]
+        
+        for fig in figures:
+            fig.patch.set_facecolor(bg_color)
+            for ax in fig.get_axes():
+                ax.set_facecolor(bg_color)
+                ax.tick_params(colors=fg_color)
+                ax.xaxis.label.set_color(fg_color)
+                ax.yaxis.label.set_color(fg_color)
+                ax.title.set_color(fg_color)
+                for spine in ax.spines.values():
+                    spine.set_color(fg_color)
+                ax.grid(True, color=grid_color, alpha=0.5)
+
+        self.ui.canvas_live.draw()
+        self.ui.canvas_ups.draw()
+        self.ui.canvas_hist.draw()
 
     def check_dir_size_queue(self):
         try:
@@ -141,7 +179,7 @@ class App:
             pass
         finally:
             # 1초마다 큐를 다시 확인
-            self.master.after(60000, self.check_dir_size_queue)
+            self.master.after(1000, self.check_dir_size_queue)
 
     def _update_status_bar(self):
         """1초마다 현재 시간과 경과 시간을 계산하여 상태 표시줄을 업데이트합니다."""
@@ -854,64 +892,72 @@ class App:
               except Exception:
                 pass
 
-        # 2초 후 재실행 예약
         if self.master.winfo_exists():
             self.master.after(2000, self.check_daq_connection)
 
+    # main.py 수정 (약 1430번 라인 근처)
+
     def update_data_directory_size(self):
-        if not self.config_manager: return
+        print("DEBUG: update_data_directory_size called") # [디버깅] 함수 호출 확인
+
+        if not self.config_manager:
+            print("DEBUG: ConfigManager is None") # [디버깅] 설정 파일 로드 실패 확인
+            self.ui.update_data_size_display("Config Not Loaded", False)
+            self.ui.update_data_size_display("Config Not Loaded", True)
+            return
 
         raw_data_path = self.config_manager.get_config_value("RawDataPath")
         ext_data_path = self.config_manager.get_config_value("ExternalPath")
 
-        if raw_data_path and os.path.isdir(raw_data_path):
-            data_parent_dir = os.path.dirname(raw_data_path)
+        print(f"DEBUG: RawDataPath from config: '{raw_data_path}'") # [디버깅] 경로 확인
+        print(f"DEBUG: ExternalPath from config: '{ext_data_path}'")
 
-            thread = threading.Thread(target=self._get_directory_size_thread, args=(raw_data_path, False), daemon=True)
-            thread.start()
+        # 1. 로컬 경로 체크
+        if raw_data_path and os.path.exists(raw_data_path):
+            print(f"DEBUG: Starting thread for Local Path: {raw_data_path}")
+            threading.Thread(target=self._get_directory_size_thread, args=(raw_data_path, False), daemon=True).start()
         else:
-            self.ui.update_data_size_display("Path Error")
+            print(f"DEBUG: Local Path invalid. Exists? {os.path.exists(raw_data_path) if raw_data_path else 'N/A'}")
+            msg = "Path Not Found" if raw_data_path else "Path Not Set"
+            self.ui.update_data_size_display(msg, False)
 
-        if ext_data_path and os.path.isdir(ext_data_path):
-            data_parent_dir = os.path.dirname(ext_data_path)
-
+        # 2. 외부 하드 경로 체크
+        if ext_data_path and os.path.exists(ext_data_path):
+            print(f"DEBUG: Starting thread for External Path: {ext_data_path}")
             threading.Thread(target=self._get_directory_size_thread, args=(ext_data_path, True), daemon=True).start()
         else:
-            self.ui.update_data_size_display("Path Error")
+            print(f"DEBUG: External Path invalid. Exists? {os.path.exists(ext_data_path) if ext_data_path else 'N/A'}")
+            msg = "Path Not Found" if ext_data_path else "Path Not Set"
+            self.ui.update_data_size_display(msg, True)
 
     def _get_directory_size_thread(self, path, is_ext):
-        total_size_bytes = 0
-        display_str = "Calculating..."
+        """디버깅 프린트가 추가된 용량 계산 함수"""
+        print(f"DEBUG: Thread started for {path}") # [디버깅] 쓰레드 시작 확인
+        display_str = "Error"
+        
         try:
-            for dirpath, dirnames, filenames in os.walk(path):
-                for f in filenames:
-                    fp = os.path.join(dirpath, f)
-                    if not os.path.islink(fp):
-                        total_size_bytes += os.path.getsize(fp)
-
-            human_readable_size = self.format_size(total_size_bytes)
-
-            try:
-                disk_usage = shutil.disk_usage(path)
-                total_disk_bytes = disk_usage.total
-
-                if total_disk_bytes > 0:
-                    percentage = (total_size_bytes / total_disk_bytes) * 100
-                    display_str = f"{human_readable_size} ({percentage:.1f}%)"
-                else:
-                    display_str = human_readable_size
-            except FileNotFoundError:
-                display_str = human_readable_size
+            # df -h와 동일한 기능
+            usage = shutil.disk_usage(path)
+            print(f"DEBUG: shutil.disk_usage result: {usage}") # [디버깅] 계산 결과 확인
+            
+            used_human = self.format_size(usage.used)
+            total_human = self.format_size(usage.total)
+            percent = (usage.used / usage.total) * 100
+            
+            display_str = f"{used_human} / {total_human} ({percent:.1f}%)"
+            print(f"DEBUG: Final string: {display_str}") # [디버깅] 최종 문자열 확인
 
         except Exception as e:
-            display_str = "Error"
-            self._log(f"Error calculating directory size: {e}")
+            print(f"DEBUG: Error in thread: {e}") # [디버깅] 에러 발생 시 출력
+            display_str = "Calc Error"
+            self._log(f"Error checking disk usage for {path}: {e}")
+            
         finally:
             if hasattr(self, 'ui') and self.master.winfo_exists():
-                try:
-                    self.master.after(0, lambda: self.ui.update_data_size_display(display_str, is_ext))
-                except Exception:
-                    pass
+                print(f"DEBUG: Updating UI with {display_str}") # [디버깅] UI 업데이트 시도
+                self.master.after(0, lambda: self.ui.update_data_size_display(display_str, is_ext))
+            else:
+                print("DEBUG: UI object not found or window closed")
 
 
     def format_size(self, size_bytes):
@@ -1262,8 +1308,16 @@ class App:
 
         if port_list:
             self.ui.ups_port_combo['values'] = port_list
-            self.ui.ups_port_combo.current(0) # 첫 번째 항목 자동 선택
+            self.ui.ups_port_combo.current(0) 
             self._log(f"Found {len(port_list)} serial ports.")
+
+        if hasattr(self, 'ui'):
+            self.ui.ups_conn_btn.config(state="normal")
+            self.ui.ups_refresh_btn.config(state="normal")
+            self._log("UPS Control buttons enabled.")
+
+        if not port_list:
+            self._log("No serial ports found. You can still type the port manually.")
         else:
             self.ui.ups_port_combo['values'] = []
             self._log("No serial ports found. Check connection or drivers.")
@@ -1548,7 +1602,6 @@ class App:
         else:
             messagebox.showwarning("Connection Error", "UPS Serial is not connected.")
 
-    # main.py - App 클래스 내부에 추가
     def check_ups_alerts(self, watt, temp, batt, load, vin):
         """UPS 수치를 분석하여 경고 메시지 및 색상을 결정합니다."""
         status_msg = "Normal"
@@ -1575,17 +1628,18 @@ class App:
             status_msg = f"⚠️ UPS OVERHEAT ({temp}°C)"
             alert_color = "#fd7e14"
 
-        # UI 텍스트 및 색상 적용
         self.ui.ups_vars["status_msg"].set(f"{status_msg} ({watt:.1f} W) / Temp: {temp:.1f}°C")
         for lbl in self.ui.ups_value_labels:
             lbl.config(foreground=alert_color)
 
-        # 심각한 상황 시 팝업 (1회만 발생하도록 변수 활용 가능)
         if is_critical and not hasattr(self, '_ups_alert_active'):
             self._ups_alert_active = True
-            messagebox.showwarning("UPS CRITICAL ALERT", f"Critical Condition Detected:\n{status_msg}")
+            emergency_info = "\n\n[Emergency Contacts]\nLab: 0578-86-9250\nJunkyo: +82-10-6503-2581"
+            messagebox.showwarning("UPS CRITICAL ALERT", 
+                                   f"Critical Condition Detected:\n{status_msg}{emergency_info}")
         elif not is_critical:
-            if hasattr(self, '_ups_alert_active'): del self._ups_alert_active
+            if hasattr(self, '_ups_alert_active'):
+                del self._ups_alert_active
 
 
     def get_system_status(self):
@@ -1604,7 +1658,6 @@ class App:
 
         # 3. UPS 상태 (시리얼 포트 체크)
         if self.ups_serial and self.ups_serial.is_open:
-            # UI 변수가 안전하게 로드되었는지 확인 후 상태 반영
             if hasattr(self, 'ui'):
                 msg = self.ui.ups_vars["status_msg"].get()
                 if "Normal" in msg or "Battery" in msg:

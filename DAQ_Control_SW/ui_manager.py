@@ -44,16 +44,40 @@ class UIManager:
                  }
 
         style = ttk.Style()
-        style.configure("TLabel", font=("Helvetica", 11)) # 일반 글자 크기 13
-        style.configure("TButton", font=("Helvetica", 11, "bold")) # 버튼 크기
-        style.configure("TLabelframe.Label", font=("Helvetica", 12, "bold")) # 섹션 제목 크기 15
+        style.configure("TLabel", font=("Helvetica", 11)) 
+        style.configure("TButton", font=("Helvetica", 11, "bold")) 
+        style.configure("TLabelframe.Label", font=("Helvetica", 12, "bold")) 
         
         self.tab_led_green = tk.PhotoImage(width=10, height=10)
         self.tab_led_green.put(("#28a745",), to=(0, 0, 10, 10))
         self.tab_led_red = tk.PhotoImage(width=10, height=10)
         self.tab_led_red.put(("#dc3545",), to=(0, 0, 10, 10))
+        
+        self.data_size_var = tk.StringVar(value="Calculating...")
+        self.ext_data_size_var = tk.StringVar(value="Calculating...")
+
+        self.is_dark_mode = False
+        self.colors = {
+            "light": {
+                "bg": "#f0f0f0", 
+                "fg": "#000000", 
+                "frame_bg": "#ffffff", 
+                "text_bg": "#ffffff", 
+                "text_fg": "#212529", 
+                "accent": "blue"      
+            },
+            "dark": {
+                "bg": "#2d2d2d", 
+                "fg": "#ffffff", 
+                "frame_bg": "#3d3d3d", 
+                "text_bg": "#1e1e1e", 
+                "text_fg": "#d4d4d4", 
+                "accent": "#00bcff"    
+            }
+        }
 
         self.ups_value_labels = []
+
 
         self.run_mode = tk.StringVar(value="laser")
         self.run_number_var = tk.StringVar(value="1")
@@ -97,6 +121,10 @@ class UIManager:
         menubar.add_cascade(label="Help", menu=help_menu)
         help_menu.add_command(label="About", command=self.show_about)
 
+        view_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="View", menu=view_menu)
+        view_menu.add_command(label="Toggle Dark Mode 🌙", command=self.toggle_theme)
+
     def show_about(self):
         messagebox.showinfo("About DAQ Control",
                             """DAQ Control Application 
@@ -137,10 +165,10 @@ class UIManager:
         self.notebook.pack(fill=tk.BOTH, expand=True)
 
         # Tab 1: Configuration
-        config_tab = ttk.Frame(self.notebook, padding=(10, 10, 0, 0))
-        self.notebook.add(config_tab, text="Configuration")
+        config_tab = ttk.Frame(self.notebook, padding=(10, 10, 10, 10))
+        self.notebook.add(config_tab, text="PMT Rotation Helper")
         self._create_status_frame(config_tab)
-        self._create_config_viewer(config_tab)
+        #self._create_config_viewer(config_tab)
 
         # Tab 2: Data Files
         data_tab = ttk.Frame(self.notebook, padding=10)
@@ -159,6 +187,10 @@ class UIManager:
         self.main_notebook.add(self.ups_main_frame, text=" UPS Status ")
         self._create_ups_monitoring_tab(self.ups_main_frame)
 
+        self.contact_frame = ttk.Frame(self.main_notebook)
+        self.main_notebook.add(self.contact_frame, text=" ☎️ Emergency ")
+        self._create_contact_tab(self.contact_frame)
+
     def on_config_loaded(self):
         self._update_pmt_status_and_helper() 
         self.update_config_display()
@@ -166,6 +198,56 @@ class UIManager:
         if hasattr(self, 'data_tree'):
             self.update_data_viewer(force_refresh=True)
 
+    # ui_manager.py
+
+    def toggle_theme(self):
+        self.is_dark_mode = not self.is_dark_mode
+        theme = "dark" if self.is_dark_mode else "light"
+        c = self.colors[theme]
+
+        style = ttk.Style()
+        style.theme_use('clam') 
+        
+        style.configure(".", background=c["bg"], foreground=c["fg"])
+        style.configure("TFrame", background=c["bg"])
+        style.configure("TLabel", background=c["bg"], foreground=c["fg"])
+        style.configure("TLabelframe", background=c["bg"])
+        style.configure("TLabelframe.Label", background=c["bg"], foreground=c["fg"])
+        
+        style.configure("TNotebook", background=c["bg"], borderwidth=0)
+        style.configure("TNotebook.Tab", background=c["frame_bg"], foreground=c["fg"], padding=[10, 5])
+        style.map("TNotebook.Tab", background=[("selected", c["accent"])], foreground=[("selected", "white")])
+
+        style.configure("Treeview", 
+                        background=c["text_bg"], 
+                        foreground=c["text_fg"], 
+                        fieldbackground=c["text_bg"])
+        style.configure("Treeview.Heading", 
+                        background=c["frame_bg"], 
+                        foreground=c["fg"])
+        style.map("Treeview", background=[('selected', '#4b4b4b')])
+
+        self.master.config(bg=c["bg"])
+        self.log_text.config(bg=c["text_bg"], fg=c["text_fg"], insertbackground=c["fg"])
+        #self.config_text.config(bg=c["text_bg"], fg=c["text_fg"], insertbackground=c["fg"])
+        if hasattr(self, 'laser_log_text'):
+            self.laser_log_text.config(bg=c["text_bg"], fg=c["text_fg"])
+
+        accent_color = c["accent"]
+        for lbl in self.ups_value_labels:
+            lbl.config(foreground=accent_color)
+
+        if hasattr(self, 'data_size_label'):
+            self.data_size_label.config(foreground=accent_color)
+            self.data_size_label2.config(foreground=accent_color)
+
+        for indicator in self.status_indicators.values():
+            indicator["canvas"].config(bg=c["bg"])
+        
+        self.outlet_canvas.config(bg=c["bg"])
+        self._update_pmt_status_and_helper() 
+
+        self.controller.update_plots_theme(self.is_dark_mode)
 
     def _create_connection_status_frame(self, parent):
         frame = ttk.LabelFrame(parent, text="Connection Status", padding="10")
@@ -201,132 +283,167 @@ class UIManager:
         else:
             messagebox.showwarning("Warning", "Configuration manager not initialized.")
 
+    # ui_manager.py - 286번 라인부터 교체
+
     def _create_status_frame(self, parent):
-        self.pmt_status_frame = ttk.LabelFrame(parent, text="PMT Status & Rotation Helper", padding="10")
-        self.pmt_status_frame.pack(fill=tk.BOTH, expand=True, pady=5, padx=5) 
+        self.pmt_status_frame = ttk.LabelFrame(parent, text=" PMT Status & Storage Overview (2x2) ", padding="10")
+        self.pmt_status_frame.pack(fill=tk.BOTH, expand=True, pady=5, padx=5)
 
     def _update_pmt_status_and_helper(self):
+        """2x2 그리드 내부에 PMT 상세 정보와 용량 모니터를 배치합니다."""
         if not self.controller.config_manager: return
 
         for widget in self.pmt_status_frame.winfo_children():
             widget.destroy()
-        self.status_indicators.clear()
+        
+        self.pmt_status_frame.columnconfigure(0, weight=1)
+        self.pmt_status_frame.columnconfigure(1, weight=1)
+        self.pmt_status_frame.rowconfigure(0, weight=1) # 행 높이 확장
+        self.pmt_status_frame.rowconfigure(1, weight=1)
 
         cfg = self.controller.config_manager.get_all_variables()
-
-        X_MAP = [0, 45, 90, 135, 180, -45, -90, -135]
-        Y_MAP = [90, 135, 180, -45, -90, -135, 0, 45]
-        # PMT 고유 좌표 (A=180도, G=90도)
         POS_MAP_ORIGINAL = { 'E': 0, 'F': 45, 'G': 90, 'H': 135, 'A': 180, 'B': 225, 'C': 270, 'D': 315 }
 
         for i in range(1, 4):
-            sn_val = cfg.get(f'SN{i}')
-            dir_val = cfg.get(f'direction{i}')
-            is_active = sn_val and sn_val.strip()
+            row, col = divmod(i-1, 2)
+            cell = ttk.Frame(self.pmt_status_frame, padding=5, relief="groove")
+            cell.grid(row=row, column=col, sticky="nsew", padx=3, pady=3)
 
-            pmt_row_frame = ttk.Frame(self.pmt_status_frame)
-            pmt_row_frame.pack(fill=tk.X, pady=5)
+            sn = cfg.get(f'SN{i}', "N/A")
+            direction = cfg.get(f'direction{i}', "N/A")
+            hv = cfg.get(f'HV{i}', "0")
+            rot = cfg.get(f'RotateAngle{i}', "0")
+            tilt = cfg.get(f'TiltAngle{i}', "0")
+            is_active = sn != "N/A" and sn.strip() != ""
 
-            self._create_status_indicator(pmt_row_frame, f"SN{i}", is_active, side=tk.LEFT)
-            self._create_helper_diagram(pmt_row_frame, dir_val, POS_MAP_ORIGINAL) 
-            self._create_helper_text(pmt_row_frame, i, sn_val, dir_val, X_MAP, Y_MAP)
+            self._create_status_indicator(cell, f"SN{i}", is_active, side=tk.TOP)
+            
+            self._create_helper_diagram(cell, direction, POS_MAP_ORIGINAL)
+            
+            info_text = (f"{sn} - {direction}\n"
+                         f"HV: {hv} V\n"
+                         f"Rotation: {rot}° / Tilt: {tilt}°")
+            
+            txt_color = "white" if self.is_dark_mode else "black"
+            lbl = ttk.Label(cell, text=info_text, font=("Helvetica", 12, "bold"), 
+                            foreground=txt_color, justify=tk.CENTER) # 중앙 정렬
+            lbl.pack(pady=5)
 
-            ttk.Separator(self.pmt_status_frame, orient='horizontal').pack(fill='x', pady=5)
-
+        storage_cell = ttk.LabelFrame(self.pmt_status_frame, text=" Storage Capacity ", padding=10)
+        storage_cell.grid(row=1, column=1, sticky="nsew", padx=3, pady=3)
+        self._create_grid_storage_widget(storage_cell)
 
     def _create_status_indicator(self, parent, name, is_active, side=tk.TOP):
+        bg_color = "#2d2d2d" if self.is_dark_mode else "white"
+        txt_color = "white" if self.is_dark_mode else "black"
+        
         color = 'gold' if is_active else '#adb5bd'
         canvas_frame = ttk.Frame(parent)
         canvas_frame.pack(side=side, padx=10, pady=5)
-        #canvas = tk.Canvas(canvas_frame, width=80, height=80, bg="white", highlightthickness=1, cursor="hand2")
-        canvas = tk.Canvas(canvas_frame, width=80, height=80, bg="white", highlightthickness=1, cursor="hand2")
+        
+        canvas = tk.Canvas(canvas_frame, width=82, height=82, bg=bg_color, highlightthickness=0, cursor="hand2")
         canvas.pack()
-        canvas.create_rectangle(2, 2, 80, 80, outline='black', width=1)
+        
+        canvas.create_rectangle(1, 1, 81, 81, outline=txt_color, width=1)
         oval_id = canvas.create_oval(10, 10, 72, 72, fill=color, outline='')
-        canvas.create_text(41, 41, text=name, font=("Helvetica", 13, "bold"))
+        canvas.create_text(41, 41, text=name, font=("Helvetica", 13, "bold"), fill=txt_color)
+        
         canvas.bind("<Button-1>", lambda event, pmt_name=name: self.controller.open_pmt_config_window(pmt_name))
         self.status_indicators[name] = {"canvas": canvas, "oval_id": oval_id}
 
-    # --- [*** 여기가 완전히 수정된 부분 ***] ---
+    def _create_grid_storage_widget(self, parent):
+        """2x2 그리드 마지막 칸 전용 용량 위젯"""
+        accent = self.colors["dark" if self.is_dark_mode else "light"]["accent"]
+        
+        title_font = ("Helvetica", 11)
+        val_font = ("Helvetica", 16, "bold") # 크고 굵게
+
+        ttk.Label(parent, text="DAQ Storage (Local):", font=title_font).pack(pady=(15, 0))
+        
+        self.data_size_label = ttk.Label(parent, textvariable=self.data_size_var, 
+                                          foreground=accent, font=val_font)
+        self.data_size_label.pack(pady=5)
+
+        ttk.Separator(parent, orient='horizontal').pack(fill='x', pady=20)
+
+        ttk.Label(parent, text="External HDD (Backup):", font=title_font).pack()
+        
+        self.data_size_label2 = ttk.Label(parent, textvariable=self.ext_data_size_var, 
+                                           foreground=accent, font=val_font)
+        self.data_size_label2.pack(pady=5)
+
+
     def _create_helper_diagram(self, parent, direction, pos_map_original):
-        # 캔버스 크기를 늘려 +X, +Y 라벨 공간 확보
+        bg_color = "#2d2d2d" if self.is_dark_mode else "white"
+        
+        canvas = tk.Canvas(parent, width=280, height=200, bg=bg_color, highlightthickness=0) 
+        canvas.pack(side=tk.LEFT, padx=10, expand=True)
 
-        #canvas = tk.Canvas(canvas_frame, width=80, height=80, bg="white", highlightthickness=1, cursor="hand2")
-        canvas = tk.Canvas(parent, width=150, height=150) 
-        canvas.pack(side=tk.LEFT, padx=10)
+        # 중심점 및 반지름 확대
+        C_X, C_Y, R = 140, 100, 65 
+        LABEL_R = R + 22  # +X, +Y 라벨이 위치할 거리
 
-        C_X, C_Y, R = 60, 60, 40 # 중심과 반지름
-        LABEL_R = R + 12 # +X, +Y 라벨을 그릴 반지름
+        # Scan Axis 배경색
+        scan_axis_bg = "#3d3d3d" if self.is_dark_mode else "#e7f5ff"
+        canvas.create_rectangle(C_X - 8, C_Y - R - 20, C_X + 8, C_Y + R + 20, 
+                                fill=scan_axis_bg, outline="")
 
         # --- 1. 회전 각도 계산 ---
-        # 'direction' 라벨이 9시(180도)에 오도록 전체를 회전시킴
-        TARGET_CABLE_ANGLE = 180 # 9시 방향 (케이블 고정 위치)
+        TARGET_CABLE_ANGLE = 180 
         rotation_offset = 0
-        current_dir_char = 'A' # 기본값
+        current_dir_char = 'A'
 
         if direction and direction.upper() in pos_map_original:
             current_dir_char = direction.upper()
-            # PMT 고유 좌표계에서 현재 direction의 각도 (예: B=225도)
-            original_angle_of_current_dir = pos_map_original[current_dir_char]
-            # (목표 각도 - 현재 각도) 만큼 회전
-            rotation_offset = TARGET_CABLE_ANGLE - original_angle_of_current_dir
-            # 예: direction='B' (225도) -> offset = 180 - 225 = -45도
-            # 예: direction='G' (90도)  -> offset = 180 - 90  = 90도
+            rotation_offset = TARGET_CABLE_ANGLE - pos_map_original[current_dir_char]
 
-        # --- 2. 고정된 "Scan Axis" 그리기 (12시-6시) ---
-        # 파워포인트의 파란색 영역처럼 표시
-        canvas.create_rectangle(C_X - 6, C_Y - R - 15, C_X + 6, C_Y + R + 15, 
-                                fill="#e7f5ff", outline="")
-        canvas.create_line(C_X, C_Y - R + 5, C_X, C_Y - R - 12, arrow=tk.LAST, fill="#1971c2", width=2)
-        canvas.create_line(C_X, C_Y + R - 5, C_X, C_Y + R + 12, arrow=tk.LAST, fill="#1971c2", width=2)
-        canvas.create_text(C_X, C_Y - R - 18, text="Scan Axis", font=("Helvetica", 9, "bold"), fill="#1971c2")
+        # Scan Axis 화살표
+        canvas.create_line(C_X, C_Y - R + 5, C_X, C_Y - R - 15, arrow=tk.LAST, fill="#1971c2", width=3)
+        canvas.create_line(C_X, C_Y + R - 5, C_X, C_Y + R + 15, arrow=tk.LAST, fill="#1971c2", width=3)
+        canvas.create_text(C_X, C_Y - R - 25, text="Scan Axis", font=("Helvetica", 10, "bold"), fill="#1971c2")
 
-        # --- 3. 고정된 "Cable" 표시 그리기 (9시) ---
-        canvas.create_line(C_X - R + 5, C_Y, C_X - R - 12, C_Y, arrow=tk.LAST, fill='red', width=3)
-        canvas.create_text(C_X - R - 15, C_Y, text="Cable", font=("Helvetica", 9, "bold"), fill="red", anchor="e")
+        # Cable 화살표
+        canvas.create_line(C_X - R + 5, C_Y, C_X - R - 15, C_Y, arrow=tk.LAST, fill='red', width=3)
+        canvas.create_text(C_X - R - 20, C_Y, text="Cable", font=("Helvetica", 10, "bold"), fill="red", anchor="e")
 
-        # --- 4. 회전하는 PMT 원과 라벨 ---
-        canvas.create_oval(C_X - R, C_Y - R, C_X + R, C_Y + R, outline='gray')
+        # PMT 원
+        canvas.create_oval(C_X - R, C_Y - R, C_X + R, C_Y + R, outline='gray', width=2)
 
-        # --- 5. 회전하는 DY1 / DY2 ---
-        DY_R = 5 # Dynode 라벨 반지름
-        DY_FONT = ("Helvetica", 9, "bold")
-        # PMT 고유 좌표 (DY1=9시, DY2=3시)
-        DY1_ORIGINAL_ANGLE_DEG = 180 
-        DY2_ORIGINAL_ANGLE_DEG = 0   
-
-        # 회전 적용
-        new_dy1_angle_rad = math.radians((DY1_ORIGINAL_ANGLE_DEG + rotation_offset) % 360)
+        # --- 회전하는 DY1 / DY2 ---
+        DY_R = 8 
+        DY_FONT = ("Helvetica", 10, "bold")
+        
+        # DY1 (기본 180도)
+        new_dy1_angle_rad = math.radians((180 + rotation_offset) % 360)
         dy1_x = C_X + DY_R * math.cos(new_dy1_angle_rad)
         dy1_y = C_Y - DY_R * math.sin(new_dy1_angle_rad) # Y축 반전
-
-        new_dy2_angle_rad = math.radians((DY2_ORIGINAL_ANGLE_DEG + rotation_offset) % 360)
+        
+        # DY2 (기본 0도)
+        new_dy2_angle_rad = math.radians((0 + rotation_offset) % 360)
         dy2_x = C_X + DY_R * math.cos(new_dy2_angle_rad)
         dy2_y = C_Y - DY_R * math.sin(new_dy2_angle_rad)
 
-        canvas.create_text(dy1_x, dy1_y, text="DY1", font=DY_FONT, fill='black')
-        canvas.create_text(dy2_x, dy2_y, text="DY2", font=DY_FONT, fill='black')
+        txt_fill = 'white' if self.is_dark_mode else 'black'
+        canvas.create_text(dy1_x, dy1_y, text="DY1", font=DY_FONT, fill=txt_fill)
+        canvas.create_text(dy2_x, dy2_y, text="DY2", font=DY_FONT, fill=txt_fill)
 
-        # --- 6. 회전하는 A-H 라벨 및 +X/+Y ---
-        label_font = ("Helvetica", 10, "bold")
-        axis_label_font = ("Helvetica", 10, "bold")
+        # --- [에러 해결 부분] 회전하는 A-H 라벨 및 +X/+Y ---
+        label_font = ("Helvetica", 12, "bold")      # 폰트 키움
+        axis_label_font = ("Helvetica", 11, "bold")
 
         for char, original_angle_deg in pos_map_original.items():
-
-            # 라벨의 새 각도 계산
             new_angle_deg = (original_angle_deg + rotation_offset) % 360
             new_angle_rad = math.radians(new_angle_deg)
-
+            
             # A-H 라벨 위치 (원 안쪽)
-            x = C_X + (R - 8) * math.cos(new_angle_rad)
-            y = C_Y - (R - 8) * math.sin(new_angle_rad) # Y축 반전
+            x = C_X + (R - 15) * math.cos(new_angle_rad)
+            y = C_Y - (R - 15) * math.sin(new_angle_rad)
 
-            # +X/+Y 라벨 위치 (원 바깥쪽)
-            x_ax = C_X + (LABEL_R) * math.cos(new_angle_rad)
-            y_ax = C_Y - (LABEL_R) * math.sin(new_angle_rad)
+            # [누락되었던 부분 복구] +X/+Y 라벨 위치 (원 바깥쪽)
+            x_ax = C_X + LABEL_R * math.cos(new_angle_rad)
+            y_ax = C_Y - LABEL_R * math.sin(new_angle_rad)
 
-            # 'direction'과 일치하는 라벨은 빨간색으로 표시
-            color = 'red' if char == current_dir_char else 'black'
+            color = 'red' if char == current_dir_char else txt_fill
             canvas.create_text(x, y, text=char, font=label_font, fill=color)
 
             # PMT의 고유 X축(G), Y축(A) 라벨 추가
@@ -334,7 +451,7 @@ class UIManager:
                 canvas.create_text(x_ax, y_ax, text="+Y", font=axis_label_font, fill="#c92a2a")
             elif char == 'G':
                 canvas.create_text(x_ax, y_ax, text="+X", font=axis_label_font, fill="#1971c2")
-            # --- [*** 수정 끝 ***] ---
+
     def _create_helper_text(self, parent, pmt_index, sn, direction, x_map, y_map):
         """회전/틸트 각도를 알려주는 텍스트를 생성합니다."""
         text_frame = ttk.Frame(parent)
@@ -481,13 +598,14 @@ class UIManager:
 
 
     def update_config_display(self):
+        """
         if not self.controller.config_manager: return
         self.config_text.tag_configure("comment", foreground="#228B22", font=("Helvetica", 12, "bold"), spacing1=8, spacing3=2)
         self.config_text.tag_configure("key", foreground="#333333", font=("Helvetica", 11, "bold"))
         #self.config_text.tag_configure("key", foreground="#D4D4D4", font=("Helvetica", 11, "bold"))
         self.config_text.tag_configure("value", foreground="#c92a2a", font=("Helvetica", 11))
         self.config_text.tag_configure("error", foreground="#FF0000")
-        self.config_text.config(state="normal")
+        #self.config_text.config(state="normal")
         self.config_text.delete('1.0', tk.END)
         parsed_data = self.controller.config_manager.get_all_configs_and_comments()
         for item_type, *data in parsed_data:
@@ -499,8 +617,8 @@ class UIManager:
                 self.config_text.insert(tk.END, f"{value}\n", "value")
             elif item_type == 'error':
                 self.config_text.insert(tk.END, f"Error: {data[0]}\n", "error")
-        self.config_text.config(state="disabled")
-
+        """
+        pass
     def _create_path_viewer_frame(self, parent):
         frame = ttk.LabelFrame(parent, text="File & Directory Paths", padding="10")
         frame.pack(fill=tk.X, pady=5, padx=5)
@@ -509,8 +627,9 @@ class UIManager:
         self.path_container.pack(fill=tk.X, pady=(0, 5))
 
         self.path_labels = {}
-        #path_keys = ['BasePath', 'RawDataPath'] #DaqProgramPath
-        path_keys = []
+        path_keys = ['BasePath', 'RawDataPath', 'ExternalPath'] #DaqProgramPath
+        #path_keys = [] #DaqProgramPath
+
         for key in path_keys:
             path_frame_inner = ttk.Frame(self.path_container)
             path_frame_inner.pack(fill=tk.X, pady=2)
@@ -527,22 +646,6 @@ class UIManager:
                     command=lambda p=key: self.controller.open_terminal_at_path_by_key(p)
                     )
             open_term_btn.pack(side=tk.RIGHT, padx=(5,0))
-
-        bottom_frame = ttk.Frame(frame)
-        bottom_frame.pack(fill=tk.X, pady=(5,0))
-        bottom_frame2 = ttk.Frame(frame)
-        bottom_frame2.pack(fill=tk.X, pady=(5,0))
-
-        self.data_size_var = tk.StringVar(value="Calculating...")
-        self.ext_data_size_var = tk.StringVar(value="Calculating...")
-        ttk.Label(bottom_frame, text="Data Capacity:").pack(side=tk.LEFT)
-        ttk.Label(bottom_frame2, text="External HDD Capacity:").pack(side=tk.LEFT)
-        self.data_size_label = ttk.Label(bottom_frame, textvariable=self.data_size_var, foreground="blue", font=("Helvetica", 10, "bold"))
-        self.data_size_label.pack(side=tk.LEFT, padx=5)
-
-        self.data_size_label2 = ttk.Label(bottom_frame2, textvariable=self.ext_data_size_var, foreground="blue", font=("Helvetica", 10, "bold"))
-        self.data_size_label2.pack(side=tk.LEFT, padx=5)
-
 
         def configure_wraplength(event):
             width = event.width - 150 
@@ -1006,7 +1109,7 @@ class UIManager:
         conn_frame.pack(fill=tk.X, pady=(0, 15))
         ttk.Label(conn_frame, text="Port:").pack(side=tk.LEFT)
     
-        self.ups_port_combo = ttk.Combobox(conn_frame, width=20, state="readonly")
+        self.ups_port_combo = ttk.Combobox(conn_frame, width=20, state="normal")
         self.ups_port_combo.pack(side=tk.LEFT, padx=5)
 
         self.ups_search_btn = ttk.Button(conn_frame, text="Search Ports 🔍", 
@@ -1014,11 +1117,13 @@ class UIManager:
         self.ups_search_btn.pack(side=tk.LEFT, padx=5)
 
         self.ups_conn_btn = ttk.Button(conn_frame, text="Connect UPS", 
-                                        command=self.controller.toggle_ups_connection)
+                                        command=self.controller.toggle_ups_connection,
+                                       state="disabled")
         self.ups_conn_btn.pack(side=tk.LEFT, padx=5)
 
         self.ups_refresh_btn = ttk.Button(conn_frame, text="Refresh Status 🔄", 
-                                        command=self.controller.manual_refresh_ups)
+                                        command=self.controller.manual_refresh_ups,
+                                          state="disabled")
         self.ups_refresh_btn.pack(side=tk.LEFT, padx=5)
 
         ttk.Label(conn_frame, textvariable=self.ups_vars["conn_status"], 
@@ -1118,13 +1223,11 @@ class UIManager:
 
         
     def update_ups_outlet_display(self, load_percent):
-        """부하량(Load)이 있을 때 아울렛 전원이 공급 중임을 시각화합니다."""
-        # 0보다 크면 실제 전력이 흐르는 것으로 간주하여 녹색 점등
         state = 1 if load_percent > 0 else 0
-        # 현재는 DAQ PC와 Laser가 1, 2번에 연결된 것으로 가정
         self.controller.update_ups_outlet_status([state, state, 0, 0])
 
     def _create_status_dashboard(self, parent):
+        """상단 대시보드: 장치 상태 LED들을 다시 중앙에 배치합니다."""
         dashboard = ttk.LabelFrame(parent, text=" System Connection Overview ", padding=10)
         dashboard.pack(fill=tk.X, pady=(0, 10), padx=5)
 
@@ -1135,7 +1238,7 @@ class UIManager:
         devices = [("DAQ System", "DAQ"), ("Laser Controller", "Laser"), ("OMRON UPS", "UPS")]
 
         for i, (label, key) in enumerate(devices):
-            frame = ttk.Frame(dashboard)
+            frame = ttk.Frame(inner_container) # inner_container를 부모로 설정
             frame.pack(side=tk.LEFT, padx=30)
 
             canvas = tk.Canvas(frame, width=20, height=20, highlightthickness=0)
@@ -1143,12 +1246,11 @@ class UIManager:
             led = canvas.create_oval(2, 2, 18, 18, fill="#dc3545", outline="#333") 
 
             lbl = ttk.Label(frame, text=label, font=("Helvetica", 10, "bold"))
-            lbl.pack(side=tk.LEFT, padx=(0, 20))
+            lbl.pack(side=tk.LEFT)
 
             self.status_widgets[key] = {"led": led, "canvas": canvas}
 
         self.master.after(100, self._update_dashboard_loop)
-    
 
     def _update_dashboard_loop(self):
         statuses = self.controller.get_system_status()
@@ -1156,14 +1258,46 @@ class UIManager:
 
         for key, connected in statuses.items():
             color = "#28a745" if connected else "#dc3545"
-            img = self.tab_led_green if connected else self.tab_led_red
-
-            # 1. 중앙 대시보드 LED 원형 업데이트
+            # [수정] ui_manager 내부이므로 self.ui가 아닌 self를 사용합니다.
+            img = self.tab_led_green if connected else self.tab_led_red 
+            
+            # 1. 중앙 대시보드 LED 업데이트
             if key in self.status_widgets:
                 self.status_widgets[key]["canvas"].itemconfig(self.status_widgets[key]["led"], fill=color)
-
+            
+            # 2. 메인 탭 이름 옆에 LED 아이콘 표시
             if key in tab_map:
                 idx = tab_map[key]
                 self.main_notebook.tab(idx, image=img, compound=tk.RIGHT)
 
         self.master.after(2000, self._update_dashboard_loop)
+
+    def _create_contact_tab(self, parent):
+        container = ttk.Frame(parent, padding=20)
+        container.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(container, text="🚨 Emergency Contact Network",
+                  font=("Helvetica", 16, "bold"), foreground="#dc3545").pack(pady=(0, 20))
+
+        columns = ("role", "name", "phone", "note")
+        tree = ttk.Treeview(container, columns=columns, show="headings", height=15)
+
+        tree.heading("role", text="Role / Affiliation")
+        tree.heading("name", text="Name")
+        tree.heading("phone", text="Phone Number")
+        tree.heading("note", text="Note")
+
+        tree.column("role", width=180, anchor="center")
+        tree.column("name", width=150, anchor="center")
+        tree.column("phone", width=180, anchor="center")
+        tree.column("note", width=500, anchor="w")
+
+        contacts_data = self.controller.load_contacts()
+        for c in contacts_data:
+            tree.insert("", tk.END, values=(c["role"], c["name"], c["phone"], c["note"]))
+
+        tree.pack(fill=tk.BOTH, expand=True)
+
+        scrollbar = ttk.Scrollbar(container, orient=tk.VERTICAL, command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
