@@ -1,250 +1,304 @@
-# image_viewer.py
 import tkinter as tk
-from tkinter import ttk, Toplevel, messagebox, Listbox
+from tkinter import ttk, Toplevel, messagebox, Listbox, filedialog
 import os
+from datetime import datetime
+
+# 이미지 처리를 위한 Pillow 임포트
 try:
     from PIL import Image, ImageTk
 except ImportError:
     messagebox.showerror("Error", "Pillow library not found. Please run 'pip install Pillow'")
 
-class ImageViewer(Toplevel):
-    def __init__(self, master, config_manager): 
-        super().__init__(master)
-        self.title("Image Viewer")
-        self.geometry("1600x800")
+# PDF 지원을 위한 라이브러리 임포트 및 체크
+try:
+    from pdf2image import convert_from_path
+    PDF_SUPPORT = True
+except ImportError:
+    PDF_SUPPORT = False
+    # print("Warning: 'pdf2image' not installed. PDF viewing will be disabled.")
+except Exception as e:
+    PDF_SUPPORT = False
+    # print(f"Warning: PDF support disabled: {e}. (Poppler installation may be required)")
 
+class ImageViewer(Toplevel):
+    def __init__(self, master, config_manager):
+        super().__init__(master)
+        self.title("Image & PDF Viewer")
+        self.geometry("1600x900")
+
+        # 설정에서 이미지 경로 가져오기
         self.base_image_dir = config_manager.get_config_value("ImagePath")
         if not self.base_image_dir:
             messagebox.showerror("Error", "ImagePath not found in config file.")
             self.destroy()
             return
 
-        self.image_paths = []
+        # 데이터 변수 초기화
+        self.full_image_paths = [] # 원본 전체 경로 목록
+        self.display_paths = []    # 필터링/정렬된 현재 표시 목록
         self.pil_image = None
         self.tk_image = None
         self.zoom_factor = 1.0
         self.view_mode = tk.StringVar(value="All")
         self.sort_mode = tk.StringVar(value="name")
+        self.search_var = tk.StringVar()
+        
+        # 캔버스 크기 변경 감지용 타이머
+        self.resize_timer = None
 
-        self.pan_sensitivity = 0.05
-
+        # 레이아웃 구성
         paned_window = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
         paned_window.pack(fill=tk.BOTH, expand=True)
 
-        list_frame = ttk.Frame(paned_window, width=350)
+        # --- 좌측 사이드바 (컨트롤 패널) ---
+        list_frame = ttk.Frame(paned_window, width=400)
         paned_window.add(list_frame, weight=1)
 
+        # 1. 뷰 모드 선택
         mode_frame = ttk.LabelFrame(list_frame, text="View Mode", padding=5)
-        mode_frame.pack(fill=tk.X, padx=5, pady=(5, 0))
-        ttk.Radiobutton(mode_frame, text="All", variable=self.view_mode, value="All", command=self.load_image_list).pack(side=tk.LEFT, expand=True)
-        ttk.Radiobutton(mode_frame, text="Produce", variable=self.view_mode, value="ByProduce", command=self.load_image_list).pack(side=tk.LEFT, expand=True)
-        ttk.Radiobutton(mode_frame, text="Analysis", variable=self.view_mode, value="ByAnalysis", command=self.load_image_list).pack(side=tk.LEFT, expand=True)
-        ttk.Radiobutton(mode_frame, text="Contour", variable=self.view_mode, value="Contour", command=self.load_image_list).pack(side=tk.LEFT, expand=True)
-        ttk.Radiobutton(mode_frame, text="Uniformity", variable=self.view_mode, value="Uniformity", command=self.load_image_list).pack(side=tk.LEFT, expand=True)
-        ttk.Radiobutton(mode_frame, text="Noise", variable=self.view_mode, value="Noise", command=self.load_image_list).pack(side=tk.LEFT, expand=True)
+        mode_frame.pack(fill=tk.X, padx=5, pady=5)
+        modes = ["All", "ByProduce", "ByAnalysis", "Contour", "Uniformity", "Noise"]
+        for m in modes:
+            ttk.Radiobutton(mode_frame, text=m.replace("By", ""), variable=self.view_mode, 
+                            value=m, command=self.load_image_list).pack(side=tk.LEFT, expand=True)
 
+        # 2. 검색창
+        search_frame = ttk.LabelFrame(list_frame, text="Search (File Name)", padding=5)
+        search_frame.pack(fill=tk.X, padx=5, pady=5)
+        self.search_entry = ttk.Entry(search_frame, textvariable=self.search_var)
+        self.search_entry.pack(fill=tk.X, padx=5, pady=2)
+        self.search_var.trace_add("write", lambda *args: self.filter_images())
 
-        sort_frame = ttk.LabelFrame(list_frame, text="Sort By", padding=5)
-        sort_frame.pack(fill=tk.X, padx=5, pady=5)
-        ttk.Button(sort_frame, text="Name (A-Z)", command=lambda: self.set_sort_mode_and_update('name')).pack(side=tk.LEFT, expand=True, padx=2)
-        ttk.Button(sort_frame, text="Time (Newest)", command=lambda: self.set_sort_mode_and_update('time')).pack(side=tk.LEFT, expand=True, padx=2)
+        # 3. 정렬 버튼
+        sort_btn_frame = ttk.Frame(list_frame)
+        sort_btn_frame.pack(fill=tk.X, padx=5)
+        ttk.Button(sort_btn_frame, text="Sort by Name", command=lambda: self.set_sort_mode('name')).pack(side=tk.LEFT, expand=True)
+        ttk.Button(sort_btn_frame, text="Sort by Time", command=lambda: self.set_sort_mode('time')).pack(side=tk.LEFT, expand=True)
+
+        # 4. 목록창 (스크롤바 포함)
+        list_container = ttk.Frame(list_frame)
+        list_container.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        self.listbox = Listbox(list_frame, selectmode=tk.EXTENDED)
-        self.listbox.pack(fill=tk.BOTH, expand=True, padx=5, pady=(0, 5))
+        self.scrollbar = ttk.Scrollbar(list_container, orient=tk.VERTICAL)
+        # --- [수정] 폰트 크기 10 -> 12로 증가 ---
+        self.listbox = Listbox(list_container, selectmode=tk.EXTENDED, 
+                               yscrollcommand=self.scrollbar.set, font=("Helvetica", 12))
+        self.scrollbar.config(command=self.listbox.yview)
+        
+        self.listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
+        # 5. 하단 액션 버튼
         action_frame = ttk.Frame(list_frame)
-        action_frame.pack(fill=tk.X, padx=5, pady=(0, 5))
-        delete_button = ttk.Button(action_frame, text="Delete Selected Image(s) 🗑️", command=self.delete_selected_images)
-        delete_button.pack(fill=tk.X, expand=True)
+        action_frame.pack(fill=tk.X, padx=5, pady=5)
+        ttk.Button(action_frame, text="Convert Selected to PDF 📄", command=self.convert_to_pdf).pack(fill=tk.X, pady=2)
+        ttk.Button(action_frame, text="Delete Selected 🗑️", command=self.delete_selected).pack(fill=tk.X, pady=2)
 
-        canvas_container = ttk.Frame(paned_window)
-        paned_window.add(canvas_container, weight=4)
+        # --- 우측 메인 패널 (이미지 뷰어) ---
+        viewer_frame = ttk.Frame(paned_window)
+        paned_window.add(viewer_frame, weight=4)
 
-        self.v_scrollbar = ttk.Scrollbar(canvas_container, orient=tk.VERTICAL)
-        self.h_scrollbar = ttk.Scrollbar(canvas_container, orient=tk.HORIZONTAL)
+        # 캔버스 생성 (배경색 지정)
+        self.canvas = tk.Canvas(viewer_frame, bg="#2b2b2b", highlightthickness=0)
+        self.canvas.pack(fill=tk.BOTH, expand=True)
 
-        self.canvas = tk.Canvas(
-            canvas_container, bg="gray",
-            yscrollcommand=self.v_scrollbar.set,
-            xscrollcommand=self.h_scrollbar.set
-        )
-        self.canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        # 줌 컨트롤 바
+        zoom_bar = ttk.Frame(viewer_frame, padding=5)
+        zoom_bar.pack(fill=tk.X)
+        ttk.Button(zoom_bar, text="Zoom In (+)", command=self.zoom_in).pack(side=tk.LEFT, padx=5)
+        ttk.Button(zoom_bar, text="Zoom Out (-)", command=self.zoom_out).pack(side=tk.LEFT, padx=5)
+        ttk.Button(zoom_bar, text="Center Fit", command=self.fit_to_screen).pack(side=tk.LEFT, padx=5)
+        self.info_label = ttk.Label(zoom_bar, text="Zoom: 100%")
+        self.info_label.pack(side=tk.RIGHT, padx=10)
 
-        self.v_scrollbar.config(command=self.canvas.yview)
-        self.v_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.h_scrollbar.config(command=self.canvas.xview)
-        self.h_scrollbar.pack(side=tk.BOTTOM, fill=tk.X)
-        
-        zoom_frame = ttk.Frame(canvas_container, padding=5)
-        zoom_frame.pack(side=tk.BOTTOM, fill=tk.X)
-        ttk.Button(zoom_frame, text="Zoom In (+)", command=self.zoom_in).pack(side=tk.LEFT, expand=True, padx=2)
-        ttk.Button(zoom_frame, text="Zoom Out (-)", command=self.zoom_out).pack(side=tk.LEFT, expand=True, padx=2)
-        ttk.Button(zoom_frame, text="Fit to Screen", command=self.fit_to_screen).pack(side=tk.LEFT, expand=True, padx=2)
-        # --- [수정됨] 새로고침 버튼 추가 ---
-        ttk.Button(zoom_frame, text="Refresh 🔄", command=self.load_image_list).pack(side=tk.LEFT, expand=True, padx=2)
-
-
+        # 이벤트 바인딩
         self.listbox.bind("<<ListboxSelect>>", self.on_listbox_select)
-        self.canvas.bind("<MouseWheel>", self.on_mouse_wheel)
-        self.canvas.bind("<Button-4>", self.on_mouse_wheel)
-        self.canvas.bind("<Button-5>", self.on_mouse_wheel)
-        self.canvas.bind("<ButtonPress-1>", self.on_canvas_press_for_pan)
-        self.canvas.bind("<B1-Motion>", self.on_canvas_drag_for_pan)
+        self.canvas.bind("<Configure>", self.on_canvas_resize)
+        
+        # --- [추가] 이미지 이동(Pan)을 위한 마우스 이벤트 바인딩 ---
+        self.canvas.bind("<ButtonPress-1>", self.pan_start)
+        self.canvas.bind("<B1-Motion>", self.pan_move)
+        # 드래그 가능함을 나타내는 커서 설정
+        self.canvas.config(cursor="hand2")
 
-
+        # 데이터 로드
         self.load_image_list()
 
+    # --- [추가] 이미지 이동 시작 ---
+    def pan_start(self, event):
+        """마우스 클릭 시 이동 시작점 기록"""
+        self.canvas.scan_mark(event.x, event.y)
+
+    # --- [추가] 이미지 이동 중 ---
+    def pan_move(self, event):
+        """마우스 드래그 시 캔버스 뷰 이동"""
+        # gain 값이 클수록 더 빠르게 이동합니다.
+        self.canvas.scan_dragto(event.x, event.y, gain=1)
+
+    def load_image_list(self):
+        """파일 시스템에서 이미지 및 PDF 목록을 불러옴"""
+        self.full_image_paths.clear()
+        mode = self.view_mode.get()
+        
+        # 허용 확장자 설정
+        valid_ext = ['.png', '.jpg', '.jpeg']
+        if PDF_SUPPORT:
+            valid_ext.append('.pdf')
+        valid_ext = tuple(valid_ext)
+
+        # 대상 디렉토리 결정
+        sub_dirs = ["ByProduce", "ByAnalysis", "Contour", "Uniformity", "Noise"]
+        target_dirs = [os.path.join(self.base_image_dir, d) for d in (sub_dirs if mode == "All" else [mode])]
+
+        for d in target_dirs:
+            if os.path.exists(d):
+                for f in os.listdir(d):
+                    if f.lower().endswith(valid_ext):
+                        self.full_image_paths.append(os.path.join(d, f))
+        
+        self.sort_images()
+        self.filter_images()
+
+    def sort_images(self):
+        """설정된 정렬 모드에 따라 목록 정렬"""
+        if self.sort_mode.get() == 'name':
+            self.full_image_paths.sort(key=lambda x: os.path.basename(x).lower())
+        else:
+            self.full_image_paths.sort(key=os.path.getmtime, reverse=True)
+
+    def set_sort_mode(self, mode):
+        self.sort_mode.set(mode)
+        self.sort_images()
+        self.filter_images()
+
+    def filter_images(self):
+        """검색어에 따라 목록 필터링 후 표시"""
+        query = self.search_var.get().lower()
+        self.display_paths = [p for p in self.full_image_paths if query in os.path.basename(p).lower()]
+        
+        self.listbox.delete(0, tk.END)
+        for p in self.display_paths:
+            name = os.path.basename(p)
+            if self.view_mode.get() == "All":
+                category = os.path.basename(os.path.dirname(p))
+                name = f"[{category}] {name}"
+            self.listbox.insert(tk.END, name)
+
+    def on_listbox_select(self, event):
+        """목록 선택 시 이미지/PDF 로드"""
+        idx = self.listbox.curselection()
+        if not idx: return
+        
+        path = self.display_paths[idx[0]]
+        try:
+            if path.lower().endswith('.pdf') and PDF_SUPPORT:
+                # PDF의 첫 페이지만 이미지로 변환하여 로드
+                pages = convert_from_path(path, first_page=1, last_page=1)
+                self.pil_image = pages[0]
+            else:
+                self.pil_image = Image.open(path)
+            
+            # 새 이미지 로드 시 뷰 위치 초기화
+            self.canvas.xview_moveto(0)
+            self.canvas.yview_moveto(0)
+            self.fit_to_screen()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load file:\n{e}")
+
+    def on_canvas_resize(self, event):
+        """창 크기가 변할 때 이미지를 화면에 맞춤 (약간의 딜레이)"""
+        if self.resize_timer:
+            self.after_cancel(self.resize_timer)
+        self.resize_timer = self.after(100, self.fit_to_screen)
+
+    def fit_to_screen(self):
+        """이미지를 캔버스 중앙에 비율 유지하며 가득 채우기"""
+        if not self.pil_image: return
+        
+        # 캔버스 크기 가져오기
+        cw = self.canvas.winfo_width()
+        ch = self.canvas.winfo_height()
+        if cw <= 1: cw, ch = 1200, 700 # 초기값 대응
+
+        # 이미지 크기 가져오기
+        iw, ih = self.pil_image.size
+        
+        # 최적 비율 계산
+        self.zoom_factor = min(cw / iw, ch / ih)
+        self.show_image()
+
+    def show_image(self):
+        """캔버스에 최종 이미지 렌더링"""
+        if not self.pil_image: return
+        
+        # 현재 줌 비율에 맞춰 리사이즈
+        nw = int(self.pil_image.width * self.zoom_factor)
+        nh = int(self.pil_image.height * self.zoom_factor)
+        
+        if nw < 1 or nh < 1: return
+        
+        resized = self.pil_image.resize((nw, nh), Image.Resampling.LANCZOS)
+        self.tk_image = ImageTk.PhotoImage(resized, master=self.canvas)
+        
+        self.canvas.delete("all")
+        # 중앙 배치 (앵커를 중앙으로 설정)
+        self.canvas.create_image(self.canvas.winfo_width()//2, self.canvas.winfo_height()//2, 
+                                 anchor=tk.CENTER, image=self.tk_image)
+        
+        self.info_label.config(text=f"Zoom: {int(self.zoom_factor * 100)}%")
+
     def zoom_in(self):
-        self.zoom_factor *= 1.1
+        self.zoom_factor *= 1.2
         self.show_image()
 
     def zoom_out(self):
-        self.zoom_factor /= 1.1
+        self.zoom_factor /= 1.2
         self.show_image()
 
-    def fit_to_screen(self):
-        self.zoom_factor = self._calculate_fit_zoom()
-        self.show_image()
-        self.canvas.xview_moveto(0)
-        self.canvas.yview_moveto(0)
-
-    def on_canvas_press_for_pan(self, event):
-        self._x = event.x
-        self._y = event.y
-
-    def on_canvas_drag_for_pan(self, event):
-        # 민감도 변수 self.pan_sensitivity를 사용하여 이동량 조절
-        self.canvas.xview_scroll(int((self._x - event.x) * self.pan_sensitivity), "units")
-        self.canvas.yview_scroll(int((self._y - event.y) * self.pan_sensitivity), "units")
-        self._x = event.x
-        self._y = event.y
-
-
-    def delete_selected_images(self, *args):
-        selected_indices = self.listbox.curselection()
-        if not selected_indices:
-            messagebox.showwarning("Warning", "Please select image(s) to delete.")
-            return
-        
-        num_selected = len(selected_indices)
-        confirmed = messagebox.askyesno(
-            "Confirm Deletion",
-            f"Are you sure you want to permanently delete {num_selected} selected image(s)?\n\nThis action cannot be undone."
-        )
-
-        if confirmed:
-            try:
-                for index in sorted(selected_indices, reverse=True):
-                    file_to_delete = self.image_paths[index]
-                    os.remove(file_to_delete)
-                    self.image_paths.pop(index)
-                    self.listbox.delete(index)
-                self.canvas.delete("all")
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to delete file(s):\n{e}")
-
-    def set_sort_mode_and_update(self, mode):
-        self.sort_mode.set(mode)
-        self.sort_and_display_images()
-
-    def sort_and_display_images(self):
-        sort_by = self.sort_mode.get()
-        if sort_by == 'name':
-            self.image_paths.sort(key=lambda p: os.path.basename(p))
-        elif sort_by == 'time':
-            self.image_paths.sort(key=os.path.getmtime, reverse=True)
-
-        self.listbox.delete(0, tk.END)
-        show_prefix = self.view_mode.get() == "All"
-        for path in self.image_paths:
-            display_name = os.path.basename(path)
-            if show_prefix:
-                parent_dir = os.path.basename(os.path.dirname(path))
-                if parent_dir in ["ByProduce", "ByAnalysis", "Contour", "Uniformity", "Noise"]:
-                    display_name = f"{parent_dir}/{display_name}"
-            self.listbox.insert(tk.END, display_name)
-
-    def load_image_list(self):
-        self.image_paths.clear()
-        self.canvas.delete("all")
-
-        try:
-            if not os.path.isdir(self.base_image_dir):
-                raise FileNotFoundError
-
-            mode = self.view_mode.get()
-            dirs_to_scan = []
-            
-            if mode == "All":
-                dirs_to_scan.extend([
-                    os.path.join(self.base_image_dir, 'ByProduce'),
-                    os.path.join(self.base_image_dir, 'ByAnalysis'),
-                    os.path.join(self.base_image_dir, 'Contour'),
-                    os.path.join(self.base_image_dir, 'Uniformity'),
-                    os.path.join(self.base_image_dir, 'Noise')
-                ])
-            else:
-                dirs_to_scan.append(os.path.join(self.base_image_dir, mode))
-
-            valid_extensions = ('.png', '.jpg', '.jpeg', '.gif', '.bmp')
-            
-            for dir_path in dirs_to_scan:
-                if os.path.isdir(dir_path):
-                    for f in os.listdir(dir_path):
-                        if f.lower().endswith(valid_extensions):
-                            self.image_paths.append(os.path.join(dir_path, f))
-            
-            self.sort_and_display_images()
-
-            if not self.image_paths:
-                self.listbox.insert(tk.END, "No images found in this mode.")
-
-        except FileNotFoundError:
-            messagebox.showerror("Error", f"Base image directory not found: {self.base_image_dir}")
-            self.destroy()
-
-    def _calculate_fit_zoom(self):
-        if not self.pil_image: return 1.0
-        canvas_width = self.canvas.winfo_width()
-        canvas_height = self.canvas.winfo_height()
-        if canvas_width <= 1 or canvas_height <= 1: return 1.0
-        img_width, img_height = self.pil_image.size
-        width_ratio = canvas_width / img_width
-        height_ratio = canvas_height / img_height
-        fit_zoom = min(width_ratio, height_ratio) * 0.95
-        return fit_zoom if fit_zoom > 0 else 1.0
-
-    def on_listbox_select(self, event):
-        selected_indices = self.listbox.curselection()
-        if not selected_indices: return
-        
-        index = selected_indices[0]
-        if not self.image_paths or index >= len(self.image_paths):
+    def convert_to_pdf(self):
+        """선택된 여러 이미지들을 하나의 PDF로 합쳐 저장"""
+        indices = self.listbox.curselection()
+        if not indices:
+            messagebox.showwarning("Warning", "Please select images from the list first.")
             return
 
-        image_path = self.image_paths[index]
+        selected_files = [self.display_paths[i] for i in indices if not self.display_paths[i].lower().endswith('.pdf')]
+        if not selected_files:
+            messagebox.showwarning("Warning", "No images selected (PDFs are excluded from merge).")
+            return
+
+        # 기본 파일명 제안: Report_YYYYMMDD_HHMM.pdf
+        default_name = f"Report_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
+        save_path = filedialog.asksaveasfilename(defaultextension=".pdf", 
+                                                 filetypes=[("PDF files", "*.pdf")],
+                                                 initialfile=default_name)
+        if not save_path: return
+
         try:
-            self.pil_image = Image.open(image_path)
-            self.zoom_factor = self._calculate_fit_zoom()
-            self.show_image()
+            image_list = []
+            for f in selected_files:
+                img = Image.open(f).convert('RGB')
+                image_list.append(img)
+            
+            if image_list:
+                image_list[0].save(save_path, save_all=True, append_images=image_list[1:])
+                messagebox.showinfo("Success", f"PDF created successfully:\n{os.path.basename(save_path)}")
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to open image:\n{e}")
+            messagebox.showerror("Error", f"Failed to create PDF:\n{e}")
 
-    def show_image(self):
-        if not self.pil_image: return
-        width = int(self.pil_image.width * self.zoom_factor)
-        height = int(self.pil_image.height * self.zoom_factor)
-        if width < 1 or height < 1: return
-        resized_image = self.pil_image.resize((width, height), Image.Resampling.LANCZOS)
-        # *** 여기가 수정된 부분입니다 (master=self.canvas 추가) ***
-        self.tk_image = ImageTk.PhotoImage(resized_image, master=self.canvas)
+    def delete_selected(self):
+        """선택된 파일 삭제"""
+        indices = self.listbox.curselection()
+        if not indices: return
         
-        self.canvas.delete("all")
-        self.canvas.create_image(0, 0, anchor=tk.NW, image=self.tk_image)
-        self.canvas.config(scrollregion=(0, 0, width, height))
-
-    def on_mouse_wheel(self, event):
-        if hasattr(event, 'delta') and event.delta > 0 or getattr(event, 'num', 0) == 4:
-            self.zoom_in()
-        elif hasattr(event, 'delta') and event.delta < 0 or getattr(event, 'num', 0) == 5:
-            self.zoom_out()
+        if messagebox.askyesno("Confirm", f"Are you sure you want to delete {len(indices)} files?"):
+            for i in sorted(indices, reverse=True):
+                path = self.display_paths[i]
+                try:
+                    os.remove(path)
+                    self.full_image_paths.remove(path)
+                except Exception as e:
+                    print(f"Error deleting {path}: {e}")
+            self.filter_images()
+            self.canvas.delete("all")
+            self.pil_image = None

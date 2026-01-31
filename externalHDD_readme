@@ -1,0 +1,3 @@
+sudo ntfsfix /dev/sda1 
+
+external hdd disk mounting error solution

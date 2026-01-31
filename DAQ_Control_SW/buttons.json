@@ -1,45 +1,55 @@
 [
     {
         "frame": "scripts",
-        "label": "1. Configuration",
+        "label": "1. Configuration (Ctrl + O)",
         "command": "open_config",
         "style": "Normal.TButton"
     },
     {
         "frame": "scripts",
-        "label": "2. Run DAQ",
+        "label": "2. Run DAQ (Only Click)",
         "command": "run_daq",
         "style": "Normal.TButton"
     },
     {
         "frame": "scripts",
-        "label": "3. Produce",
+        "label": "3. Produce (Ctrl + P)",
         "command": "run_produce",
         "style": "Normal.TButton"
     },
     {
         "frame": "scripts",
-        "label": "4. Analysis",
+        "label": "4. Analysis (Ctrl + A)",
         "command": "run_analysis",
         "style": "Normal.TButton"
     },
     {
         "frame": "scripts",
-        "label": "5. Waveform inspection",
+        "label": "5. Waveform inspection (Ctrl + S)",
         "command": "run_waveform",
         "style": "Normal.TButton"
     },
     {
         "frame": "scripts",
-        "label": "6. Waveform (2D)",
+        "label": "6. Waveform (2D Contour)",
         "command": "run_contour",
         "style": "Normal.TButton"
     },
     {
         "frame": "view",
-        "label": "Image Viewer",
+        "label": "Image Viewer (Ctrl + I)",
         "command": "open_image_viewer",
         "style": "Normal.TButton"
+    },
+    { 
+        "frame": "view", 
+        "label": "SUKAP Connection (Cisco)", 
+        "command": "run_cisco", 
+        "style": "Normal.TButton" 
     }
+
+
+
+
 
 ]

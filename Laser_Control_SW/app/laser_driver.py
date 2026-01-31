@@ -304,69 +304,74 @@ class TamadenshiLaser:
     # ===================================================
     # 4. Public Functions (GET) - Device Status Reading
     # ===================================================
-
     def update_status(self) -> bool:
         """
         Reads all key device statuses at once and stores them in the internal 'self.status' dict.
         """
-        # Send the "GET_ALL_STATUS" command and wait for the response
         data = self._read_command(self.CMD_GET_ALL_STATUS)
         
         if data is None:
             return False
 
         try:
-            # Parsing data based on Log Analysis & Decompiler
-            
             # PD Current (Bytes [1] and [2])
             self.status['pd_raw'] = (data[1] << 8) | data[2]
-            
             # LD Temperature (Bytes [4] and [5])
             raw_ld_temp = (data[4] << 8) | data[5]
-            self.status['ld_temp'] = (raw_ld_temp / 1023.0) * 40.0 
+            self.status['ld_temp'] = (raw_ld_temp / 1023.0) * 40.0
             
-            # TEC Current (Bytes [17] and [8]) - Index adjusted
-            # 로그상 길이를 고려해 안전하게 예외처리
             if len(data) > 17:
                  self.status['tec_current_raw'] = (data[17] << 8) | data[8]
             else:
                  self.status['tec_current_raw'] = 0
 
-            # Currents (Pulse: 9,10 / Bias: 11,12)
             self.status['pulse'] = self._dac_to_val(data[9], data[10], 200.0)
             self.status['bias'] = self._dac_to_val(data[11], data[12], 200.0)
             
-            # --- [*** FINAL FIX: Index is 14 ***] ---
-            # 로그 분석 결과: 0x44 뒤에 오는 값이 상태값입니다.
-            # Index 14 contains the status flags (0xc, 0x8, etc.)
-            info_byte = data[14] 
-            
-            # Bit 2 (4) = LD, Bit 3 (8) = TEC
+            info_byte = data[14]
             self.status['ld_on'] = (info_byte & 4) == 4
-            self.status['tec_on'] = (info_byte & 8) == 8 
-            # --- [*** END FIX ***] ---
+            self.status['tec_on'] = (info_byte & 8) == 8
 
-            #try:
-            #    timestamp = datetime.now().isoformat()
-            #    csv_line = "{},{ld},{tec},{temp:.3f},{bias:.3f},{pulse:.3f}".format(
-            #        timestamp,
-            #        ld=self.status['ld_on'],
-            #        tec=self.status['tec_on'],
-            #        temp=self.status['ld_temp'],
-            #        bias=self.status['bias'],
-            #        pulse=self.status['pulse']
-            #    )
-            #    data_logger.info(csv_line)
-           # except Exception as e:
-           #     print(f"Failed to write data log: {e}")
+            # --- [수정 사항] 날짜별 로그 관리 및 LD ON 조건부 저장 ---
+            if self.status.get('ld_on', False):
+                now = datetime.now()
+                today_str = now.strftime('%Y%m%d')
+                current_log_file = os.path.join(DATA_LOG_DIR, f"laser_data_{today_str}.csv")
+                
+                # 날짜가 바뀌었는지 확인 (파일이 존재하지 않으면 핸들러 교체)
+                if not os.path.exists(current_log_file):
+                    self._setup_daily_logger(current_log_file)
+
+                try:
+                    timestamp = now.isoformat()
+                    csv_line = "{},{ld},{tec},{temp:.3f},{bias:.3f},{pulse:.3f}".format(
+                        timestamp,
+                        ld=self.status['ld_on'],
+                        tec=self.status['tec_on'],
+                        temp=self.status['ld_temp'],
+                        bias=self.status['bias'],
+                        pulse=self.status['pulse']
+                    )
+                    data_logger.info(csv_line)
+                except Exception as e:
+                    print(f"Failed to write data log: {e}")
+
             return True
-        except IndexError:
-            print("❌ Status parse failed: Device returned unexpected data.")
-            return False
-        except Exception as e:
-            print(f"❌ Unknown error during status parsing: {e}")
+        except (IndexError, Exception) as e:
+            print(f"❌ Status parse error: {e}")
             return False
 
     def get_cached_status(self, key: str, default_val=0.0):
-        """Safely gets a value from the internal self.status dictionary."""
         return self.status.get(key, default_val)
+
+    def _setup_daily_logger(self, file_path):
+        """날짜가 바뀔 때 핸들러를 새로 고침하여 새 파일에 기록하게 함"""
+        for handler in data_logger.handlers[:]:
+            data_logger.removeHandler(handler)
+
+        new_handler = logging.FileHandler(file_path)
+        if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
+            # 파일이 없거나 비어있을 때만 헤더 추가
+            with open(file_path, 'w') as f:
+                f.write("timestamp,ld_on,tec_on,temp_c,bias_ma,pulse_ma\n")
+        data_logger.addHandler(new_handler)

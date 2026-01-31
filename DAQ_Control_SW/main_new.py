@@ -23,7 +23,8 @@ import random
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from datetime import datetime
 from ui_manager import UIManager
-from config_manager import ConfigManager
+from daq_config_manager import DAQConfigManager
+from daq_db_manager import DAQDBManager
 from pmt_config_window import PMTConfigWindow
 
 APP_CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".daq_control_config.json")
@@ -53,8 +54,7 @@ class App:
         self.master = master
         self.base_dir = base_dir
         master.title("DAQ/LASER/UPS Control Panel")
-        master.geometry("1600x950")
-        self.master.minsize(1400, 900)
+        master.geometry("1600x900")
 
         # 1. 아이콘 및 기본 변수 초기화
         icon_path = os.path.join(self.base_dir, 'icons', 'DAQcontroller.png')
@@ -69,6 +69,9 @@ class App:
         self.config_manager = None
         self.terminal_preference = 'gnome-terminal'
         self.load_app_config()
+
+        self.config_mgr = DAQConfigManager()
+        self.db_mgr = DAQDBManager()
 
         if LASER_AVAILABLE:
             try:
@@ -87,19 +90,20 @@ class App:
         self.ups_after_id = None      
 
         self.ups_plot_history = {
-            "time": collections.deque(maxlen=90000),
-            "watt": collections.deque(maxlen=90000),
-            "temp": collections.deque(maxlen=90000),
-            "vin":  collections.deque(maxlen=90000),
-            "vout": collections.deque(maxlen=90000)
+            "time": collections.deque(maxlen=60),
+            "watt": collections.deque(maxlen=60),
+            "temp": collections.deque(maxlen=60),
+            "vin":  collections.deque(maxlen=60),
+            "vout": collections.deque(maxlen=60)
         }
         
         self.plot_history = {
-            "time": collections.deque(maxlen=90000), 
-            "temp": collections.deque(maxlen=90000), 
-            "pulse": collections.deque(maxlen=90000)
+            "time": collections.deque(maxlen=60), 
+            "temp": collections.deque(maxlen=60), 
+            "pulse": collections.deque(maxlen=60)
         }
 
+        # 2. 상태바 및 UI 생성
         self.status_bar = ttk.Frame(master, relief=tk.SUNKEN, padding="2 5")
         self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
         self.elapsed_time_var = tk.StringVar()
@@ -110,7 +114,6 @@ class App:
 
         # UI 생성 (한 번만 호출!)
         self.ui = UIManager(master, self)
-        self.ui.setup_shortcuts()
 
         # 3. 하드웨어 및 데이터 초기 로드 (중복 제거)
         if self.config_manager:
@@ -167,8 +170,6 @@ class App:
                     spine.set_color(fg_color)
                 ax.grid(True, color=grid_color, alpha=0.5)
 
-        self.ui.fig_live.tight_layout() 
-        self.ui.fig_ups.tight_layout(rect=[0, 0, 1, 0.96])
         self.ui.canvas_live.draw()
         self.ui.canvas_ups.draw()
         self.ui.canvas_hist.draw()
@@ -213,7 +214,7 @@ class App:
             print(f"Error loading app config: {e}")
 
         if config_path and os.path.exists(config_path):
-            self.config_manager = ConfigManager(config_path)
+            self.config_manager = DAQConfigManager()
         else:
             self.select_and_set_config_path(initial_setup=True)
 
@@ -352,71 +353,72 @@ class App:
 
     def open_image_viewer(self):
         self.ui.open_image_viewer()
-    
+
     def open_pmt_config_window(self, pmt_name):
-        """Config 수정 후 화면상의 Configuration 및 파일 목록 자동 새로고침"""
         if self.config_manager:
             pmt_win = PMTConfigWindow(self.master, self.config_manager, pmt_name)
             self.master.wait_window(pmt_win)
-            self.refresh_all_data() 
+            self.ui.on_config_loaded()
         else:
             messagebox.showwarning("Warning", "Configuration manager not initialized.")
 
-    def run_cisco(self):
-        """찾은 정확한 경로를 포함하여 Cisco vpnui를 실행합니다."""
-        self._log("Attempting to launch SUKAP Connection (Cisco)...")
-        
-        # 확인된 경로를 가장 상단에 배치합니다.
-        cisco_paths = [
-            "/opt/cisco/secureclient/bin/vpnui", # 사용자님이 확인하신 경로
-            "/opt/cisco/anyconnect/bin/vpnui",
-            "/usr/local/bin/vpnui",
-            "vpnui"
-        ]
-        
-        executed = False
-        for path in cisco_paths:
-            try:
-                # 프로그램 실행 시도
-                subprocess.Popen([path])
-                self._log(f"Cisco launched successfully from: {path}")
-                executed = True
-                break
-            except FileNotFoundError:
-                continue
-            except Exception as e:
-                self._log(f"Error launching {path}: {e}")
-                continue
-        
-        if not executed:
-            self._log("ERROR: Cisco vpnui 실행 파일을 찾을 수 없습니다.")
-            messagebox.showerror("Execution Error", 
-                                 f"Cisco vpnui를 찾을 수 없습니다.\n\n"
-                                 f"확인된 경로: /opt/cisco/secureclient/bin/vpnui\n"
-                                 f"파일 권한(chmod +x)을 확인해 보세요.")
-
-
     def run_daq(self):
-        """DAQ 실행 전 중복 프로세스를 체크하여 버퍼 손상을 방지합니다."""
+        """새로운 C++ 엔진 연결 (script2.sh 안 씀)"""
+        # 1. 중복 실행 방지
+        if hasattr(self, 'daq_process') and self.daq_process.poll() is None:
+            messagebox.showwarning("Warning", "DAQ is already running!")
+            return
+
         try:
-            check_running = subprocess.run(['pgrep', '-f', 'execute_DAQ'], capture_output=True)
-            if check_running.returncode == 0:
-                messagebox.showwarning("DAQ Already Running", 
-                                       "An instance of 'execute_DAQ' is already running.\n"
-                                       "Starting multiple DAQ processes can be critical for the buffer.\n"
-                                       "Please stop the current run first.")
+            # 2. 다음 Run 번호 가져오기 (DB 자동 번호)
+            run_id = self.db_mgr.get_next_run_id()
+            
+            # 3. 설정 파일 내보내기 (엔진이 있는 폴더로 config_cpp.json 생성)
+            self.config_mgr.export_to_cpp(run_id)
+            
+            # 4. DB에 'Run 시작' 기록
+            mode = self.config_mgr.get("daq", "RunMode")
+            self.db_mgr.start_run(run_id, mode, self.config_mgr.config)
+            
+            # 5. C++ 엔진 실행 (절대 경로 사용)
+            # ★ 경로가 정확한지 꼭 확인하세요!
+            daq_exe = "/home/precalkor/ADC/PreCalibration/execute_DAQ"
+            config_path = "/home/precalkor/ADC/PreCalibration/config_cpp.json"
+            
+            if not os.path.exists(daq_exe):
+                messagebox.showerror("Error", f"Cannot find executable:\n{daq_exe}")
                 return
+
+            cmd = [daq_exe, "-r", str(run_id), "-c", config_path]
+            
+            print(f"[GUI] Starting Run {run_id} (Mode: {mode})...")
+            print(f"[GUI] Command: {' '.join(cmd)}")
+            
+            # 프로세스 실행
+            self.daq_process = subprocess.Popen(cmd)
+            
+            # 6. UI 상태 업데이트 (옵션)
+            if hasattr(self.ui, 'status_label'): self.ui.status_label.config(text=f"Run {run_id} Running...")
+            
+            # 7. 종료 감지 (스레드)
+            threading.Thread(target=self._monitor_daq_end, args=(run_id,), daemon=True).start()
+
         except Exception as e:
-            self._log(f"Check process error: {e}")
+            messagebox.showerror("Error", f"Failed to start DAQ: {e}")
+            print(f"[Error] {e}")
 
-        daq_path = self._get_daq_path()
-        if not daq_path: return
-        mode = self.ui.run_mode.get()
-        script_path = os.path.join(daq_path, 'script2.sh')
-        config_path = self.config_manager.filepath
-        command = [script_path, mode, config_path]
-        self._execute_in_new_terminal(command)
-
+    def _monitor_daq_end(self, run_id):
+        """C++ 프로그램이 꺼질 때까지 기다림"""
+        self.daq_process.wait()
+        print(f"[GUI] Run {run_id} Finished.")
+        
+        # 파일 경로 계산 (C++ 저장 규칙: Data/RAW/Mode/Run_Rotation_Data.xxxxxx.root)
+        mode = self.config_mgr.get("daq", "RunMode")
+        f_name = f"Run_Rotation_Data.{run_id:06d}.root"
+        full_path = f"/home/precalkor/ADC/PreCalibration/Data/RAW/{mode}/{f_name}"
+        
+        # DB에 'Run 종료' 기록
+        self.db_mgr.end_run(run_id, full_path)
 
     def run_produce(self):
         selected_files = self.ui.get_selected_file_paths()
@@ -1037,14 +1039,11 @@ class App:
             self.toggle_laser_connection()
 
     def set_laser_ld(self, state):
-        """LD ON/OFF 즉시 반영"""
         if self.laser:
-            self.laser.set_ld_on(state)
-            self._log(f"Laser LD set to {'ON' if state else 'OFF'}")
-            if self.laser_after_id:
-                self.master.after_cancel(self.laser_after_id)
-            self.laser_session_start = time.time()
-            self.master.after(200, self.update_laser_status_loop)
+           self.laser.set_ld_on(state)
+           self._log(f"Laser LD set to {'ON' if state else 'OFF'}")
+           self.laser_session_start = time.time()
+           self.master.after(500, self.update_laser_status_loop) # 0.5초 뒤 즉시 갱신
 
     def set_laser_tec(self, state):
         if self.laser:
@@ -1055,17 +1054,13 @@ class App:
 
     def apply_laser_currents(self):
         if self.laser:
-            bias = self.ui.laser_vars["bias_set"].get()
-            pulse = self.ui.laser_vars["pulse_set"].get()
-            self.laser.set_bias_current(bias)
-            self.laser.set_pulse_current(pulse)
-            self._log(f"Laser Currents applied: Bias={bias}mA, Pulse={pulse}mA")
-            
-            # 반응 속도 개선: 기존 루프 취소 후 200ms 뒤 즉시 실행
-            if self.laser_after_id:
-                self.master.after_cancel(self.laser_after_id)
-            self.laser_session_start = time.time()
-            self.master.after(200, self.update_laser_status_loop)
+           bias = self.ui.laser_vars["bias_set"].get()
+           pulse = self.ui.laser_vars["pulse_set"].get()
+           self.laser.set_bias_current(bias)
+           self.laser.set_pulse_current(pulse)
+           self._log(f"Laser Currents applied: Bias={bias}mA, Pulse={pulse}mA")
+           self.laser_session_start = time.time()
+           self.master.after(500, self.update_laser_status_loop)
 
     def apply_laser_frequency(self):
         if self.laser:
@@ -1193,40 +1188,40 @@ class App:
                 messagebox.showerror("Connection Error", msg)
 
     def refresh_laser_realtime_plot(self):
-        """성능 최적화 및 X축 가독성이 개선된 레이저 그래프 업데이트"""
+        """X축에 실제 시간을 바인딩하여 온도와 전류를 분리하여 그립니다."""
         times = list(self.plot_history["time"])
         temps = list(self.plot_history["temp"])
         pulses = list(self.plot_history["pulse"])
         if not times: return
 
-        step = max(1, len(times) // 1000) 
-        d_times = times[::step]
-        d_temps = temps[::step]
-        d_pulses = pulses[::step]
-
         # 1. 상단: 온도 그래프
         self.ui.ax_temp.clear()
-        self.ui.ax_temp.plot(d_times, d_temps, 'r-', linewidth=1, label="Temp (°C)") 
+        # [핵심] times를 첫 번째 인자로 전달
+        self.ui.ax_temp.plot(times, temps, 'r-', label="Temp (°C)") 
         self.ui.ax_temp.set_ylabel("Temp (°C)", color='r')
-        
-        import matplotlib.ticker as ticker
-        self.ui.ax_temp.xaxis.set_major_locator(ticker.MaxNLocator(8))
+        self.ui.ax_temp.legend(loc='upper right', fontsize='small')
         self.ui.ax_temp.grid(True, alpha=0.3)
 
-        # 2. 하단: 전류 그래프
+        # 2. 하단: 전류 그래프 (Pulse)
         self.ui.ax_curr.clear()
-        self.ui.ax_curr.plot(d_times, d_pulses, 'g-', linewidth=1, label="Pulse (mA)")
+        # [핵심] times를 첫 번째 인자로 전달
+        self.ui.ax_curr.plot(times, pulses, 'g-', label="Pulse (mA)")
         self.ui.ax_curr.set_ylabel("Current (mA)", color='g')
         self.ui.ax_curr.set_xlabel("Time (HH:MM:SS)")
-        
-        self.ui.ax_curr.xaxis.set_major_locator(ticker.MaxNLocator(8))
+        self.ui.ax_curr.legend(loc='upper right', fontsize='small')
         self.ui.ax_curr.grid(True, alpha=0.3)
+
+        # X축 라벨 가독성 개선 (겹침 방지)
         self.ui.fig_live.autofmt_xdate() 
+
+        # 라벨이 너무 많을 경우 일정 간격으로만 표시
+        for i, label in enumerate(self.ui.ax_curr.get_xticklabels()):
+            if i % 10 != 0: label.set_visible(False)
 
         self.ui.canvas_live.draw()
 
-
     def load_historical_laser_data(self):
+        """과거 데이터를 좌측 하단에 상하로 나눠서 시간축으로 그려줍니다."""
         log_dir = "/home/precalkor/ADC/ADC_test/LOG/LASER"
         file_path = filedialog.askopenfilename(initialdir=log_dir, title="Select Laser Log CSV",
                                                filetypes=(("CSV files", "*.csv"), ("All files", "*.*")))
@@ -1293,93 +1288,50 @@ class App:
             except Exception as e:
                 print(f"Failed to load today's laser log: {e}")
 
-    # main.py preload_laser_history 메서드
     def preload_laser_history(self):
-        """어제와 오늘의 데이터를 통합하여 최대 24시간 분량의 레이저 그래프를 복구합니다"""
-        import pandas as pd
-        from datetime import timedelta
+        """오늘 기록된 레이저 CSV 데이터 중 마지막 60개를 읽어 그래프를 복구합니다."""
+        today_str = datetime.now().strftime('%Y%m%d')
+        # laser_driver.py의 DATA_LOG_DIR 경로 참조
+        log_file = f"/home/precalkor/ADC/ADC_test/LOG/LASER/laser_data_{today_str}.csv"
 
-        now = datetime.now()
-        # 읽어올 날짜: 어제, 오늘
-        dates_to_check = [
-            (now - timedelta(days=1)).strftime('%Y%m%d'),
-            now.strftime('%Y%m%d')
-        ]
+        if os.path.exists(log_file):
+            try:
+                import pandas as pd
+                # 마지막 60개행만 읽기
+                df = pd.read_csv(log_file).tail(60)
+                for _, row in df.iterrows():
+                    # timestamp: 2026-01-14 21:02:19.123 -> 21:02:19
+                    ts = datetime.strptime(row['timestamp'], "%Y-%m-%d %H:%M:%S.%f")
+                    self.plot_history["time"].append(ts.strftime("%H:%M:%S"))
+                    self.plot_history["temp"].append(float(row['temp_c']))
+                    self.plot_history["pulse"].append(float(row['pulse_ma']))
 
-        total_points = 0
-        for date_str in dates_to_check:
-            # User Summary에 명시된 레이저 로그 경로 사용
-            log_file = f"/home/precalkor/ADC/ADC_test/LOG/LASER/laser_data_{date_str}.csv"
-            
-            if os.path.exists(log_file):
-                try:
-                    df = pd.read_csv(log_file)
-                    for _, row in df.iterrows():
-                        try:
-                            # 저장된 ISO 타임스탬프 파싱
-                            ts = datetime.fromisoformat(row['timestamp'])
-                            
-                            # 현재 시간 기준 24시간 이내 데이터만 메모리에 로드
-                            if now - ts <= timedelta(hours=24):
-                                self.plot_history["time"].append(ts.strftime("%H:%M:%S"))
-                                self.plot_history["temp"].append(float(row['temp_c']))
-                                self.plot_history["pulse"].append(float(row['pulse_ma']))
-                                total_points += 1
-                        except:
-                            continue
-                except Exception as e:
-                    self._log(f"Preload error for laser log {date_str}: {e}")
+                self._log(f"Laser graph history recovered ({len(df)} points).")
+                self.refresh_laser_realtime_plot()
+            except Exception as e:
+                self._log(f"Failed to preload Laser data: {e}")
 
-        if total_points > 0:
-            self._log(f"Laser 24h history recovered ({total_points} points).")
-            self.refresh_laser_realtime_plot()
-
-    # main.py preload_ups_history 메서드 수정
     def preload_ups_history(self):
-        """어제와 오늘의 데이터를 합쳐서 최대 24시간 분량의 UPS 그래프를 복구합니다."""
-        import pandas as pd
-        from datetime import timedelta
+        """오늘 기록된 UPS CSV 데이터 중 마지막 60개를 읽어 2x2 그래프를 복구합니다."""
+        today_str = datetime.now().strftime('%Y%m%d')
+        log_file = os.path.join(self.base_dir, "LOG", "UPS", f"ups_{today_str}.csv")
 
-        now = datetime.now()
-        # 어제와 오늘 날짜 생성
-        dates_to_load = [
-            (now - timedelta(days=1)).strftime('%Y%m%d'),
-            now.strftime('%Y%m%d')
-        ]
+        if os.path.exists(log_file):
+            try:
+                import pandas as pd
+                # 파일 구조: Time,Watt,Temp,Vin,Vout
+                df = pd.read_csv(log_file).tail(60)
+                for _, row in df.iterrows():
+                    self.ups_plot_history["time"].append(row['Time'])
+                    self.ups_plot_history["watt"].append(float(row['Watt']))
+                    self.ups_plot_history["temp"].append(float(row['Temp']))
+                    self.ups_plot_history["vin"].append(float(row['Vin']))
+                    self.ups_plot_history["vout"].append(float(row['Vout']))
 
-        total_pts = 0
-        for date_str in dates_to_load:
-            log_file = os.path.join(self.base_dir, "LOG", "UPS", f"ups_{date_str}.csv")
-            
-            if os.path.exists(log_file):
-                try:
-                    df = pd.read_csv(log_file)
-                    for _, row in df.iterrows():
-                        try:
-                            # timestamp 컬럼을 파싱 (ISO 포맷 또는 기존 포맷 대응)
-                            try:
-                                ts = datetime.fromisoformat(row['timestamp'])
-                            except:
-                                # 이전 포맷(HH:MM:SS)일 경우 오늘 날짜로 가정하여 처리
-                                ts_time = datetime.strptime(row['timestamp'], '%H:%M:%S').time()
-                                ts = datetime.combine(datetime.strptime(date_str, '%Y%m%d'), ts_time)
-
-                            # 현재 시간 기준 24시간 이내 데이터만 로드
-                            if now - ts <= timedelta(hours=24):
-                                self.ups_plot_history["time"].append(ts.strftime("%H:%M:%S"))
-                                self.ups_plot_history["watt"].append(float(row['Watt']))
-                                self.ups_plot_history["temp"].append(float(row['Temp']))
-                                self.ups_plot_history["vin"].append(float(row['Vin']))
-                                self.ups_plot_history["vout"].append(float(row['Vout']))
-                                total_pts += 1
-                        except:
-                            continue
-                except Exception as e:
-                    self._log(f"Error preloading UPS log {date_str}: {e}")
-
-        if total_pts > 0:
-            self._log(f"UPS 24h history recovered ({total_pts} points).")
-            self.refresh_ups_plot()
+                self._log(f"UPS graph history recovered ({len(df)} points).")
+                self.refresh_ups_plot()
+            except Exception as e:
+                self._log(f"Failed to preload UPS data: {e}")
 
     # 기존 _log_laser 메서드를 아래와 같이 업데이트 (파일 저장 로직 포함)
     def _log_laser(self, msg):
@@ -1603,29 +1555,22 @@ class App:
         times = list(h["time"])
         if not times: return
 
-        step = max(1, len(times) // 500) 
-        d_times = times[::step]
-
         plots = [
-            (self.ui.ax_ups_watt, list(h["watt"])[::step], "Power (W)", "red"),
-            (self.ui.ax_ups_temp, list(h["temp"])[::step], "Internal Temp (C)", "orange"),
-            (self.ui.ax_ups_vin,  list(h["vin"])[::step],  "Input Voltage (V)", "blue"),
-            (self.ui.ax_ups_vout, list(h["vout"])[::step], "Output Voltage (V)", "green")
+            (self.ui.ax_ups_watt, list(h["watt"]), "Power (W)", "red"),
+            (self.ui.ax_ups_temp, list(h["temp"]), "Internal Temp (C)", "orange"),
+            (self.ui.ax_ups_vin,  list(h["vin"]),  "Input Voltage (V)", "blue"),
+            (self.ui.ax_ups_vout, list(h["vout"]), "Output Voltage (V)", "green")
         ]
 
-        import matplotlib.ticker as ticker
         for ax, data, title, color in plots:
             ax.clear()
-            ax.plot(d_times, data, color=color, linewidth=1.2)
+            ax.plot(times, data, color=color, linewidth=1.5, label=title)
             ax.set_title(title, fontsize=10, fontweight='bold')
-            
-            ax.xaxis.set_major_locator(ticker.MaxNLocator(5)) 
-            ax.grid(True, alpha=0.2)
+            ax.grid(True, alpha=0.3)
             ax.tick_params(labelsize=8)
 
         self.ui.fig_ups.autofmt_xdate()
         self.ui.canvas_ups.draw()
-
 
     def update_ups_outlet_status(self, states):
         """
@@ -1659,13 +1604,8 @@ class App:
             else:
                 messagebox.showwarning("Connection Error", "UPS is not connected via RS232C.")
 
-    # main.py save_ups_realtime_data 메서드 수정
     def save_ups_realtime_data(self, watt, temp, vin, vout):
-        """UPS 데이터를 날짜별 CSV에 기록하며, 출력 전압이 있을 때만 저장합니다."""
-        # 0V인 경우(장비가 꺼진 상태로 간주) 저장을 건너뛰고 싶다면 아래 조건 사용
-        if vout <= 0.5: 
-            return
-
+        """UPS의 4개 핵심 데이터를 CSV에 기록합니다."""
         log_dir = os.path.join(self.base_dir, "LOG", "UPS")
         os.makedirs(log_dir, exist_ok=True)
         
@@ -1673,17 +1613,11 @@ class App:
         file_path = os.path.join(log_dir, f"ups_{today_str}.csv")
         file_exists = os.path.isfile(file_path)
         
-        try:
-            with open(file_path, "a") as f:
-                if not file_exists:
-                    # 새 날짜 파일 생성 시 헤더 작성
-                    f.write("timestamp,Watt,Temp,Vin,Vout\n")
-                
-                # ISO 포맷으로 타임스탬프 저장하여 나중에 preload 시 정확한 시간 계산 가능하게 함
-                now_iso = datetime.now().isoformat()
-                f.write(f"{now_iso},{watt:.1f},{temp:.1f},{vin:.1f},{vout:.1f}\n")
-        except Exception as e:
-            self._log(f"Failed to save UPS log: {e}")
+        with open(file_path, "a") as f:
+            if not file_exists:
+                f.write("Time,Watt,Temp,Vin,Vout\n") # 헤더 추가
+            now_str = datetime.now().strftime('%H:%M:%S')
+            f.write(f"{now_str},{watt:.1f},{temp:.1f},{vin:.1f},{vout:.1f}\n")
 
     def handle_ups_shutdown(self):
         """콤보박스 선택에 따라 전체 혹은 개별 셧다운을 실행합니다."""
@@ -1726,28 +1660,28 @@ class App:
     def check_ups_alerts(self, watt, temp, batt, load, vin):
         """UPS 수치를 분석하여 경고 메시지 및 색상을 결정합니다."""
         status_msg = "Normal"
-        alert_color = "blue"
+        alert_color = "blue" # 기본 파란색
         is_critical = False
 
         # 1. 정전 감지 (입력 전압 10V 미만)
         if vin < 10:
             status_msg = "🚨 POWER FAILURE! BATTERY MODE"
-            alert_color = "#fd1414" # Red
+            alert_color = "#fd1414" # 빨간색
             is_critical = True
         # 2. 배터리 부족 (30% 미만)
         elif batt < 30:
             status_msg = f"⚠️ LOW BATTERY ({batt}%)"
-            alert_color = "#fd7e14" # Orange
+            alert_color = "#fd7e14" # 주황색
             if batt < 15: is_critical = True
         # 3. 과부하 (85% 초과)
         elif load > 85:
             status_msg = f"🚨 UPS OVERLOAD! ({load}%)"
-            alert_color = "#e214fd" # Magenta 
+            alert_color = "#e214fd" # 마젠타 
             is_critical = True
         # 4. 과열 (45도 초과)
         elif temp > 45:
             status_msg = f"⚠️ UPS OVERHEAT ({temp}°C)"
-            alert_color = "#edfd14" # YELLOW
+            alert_color = "#edfd14" # 노
 
         self.ui.ups_vars["status_msg"].set(f"{status_msg} ({watt:.1f} W) / Temp: {temp:.1f}°C")
         for lbl in self.ui.ups_value_labels:
@@ -1766,8 +1700,6 @@ class App:
     def get_system_status(self):
         status = {
                 "DAQ": False,
-                "HV": False, 
-                "Env": False, 
                 "Laser": False,
                 "UPS": False
                 }
@@ -1785,15 +1717,6 @@ class App:
                 msg = self.ui.ups_vars["status_msg"].get()
                 if "Normal" in msg or "Battery" in msg:
                     status["UPS"] = True
-
-        try:
-            # pgrep 등을 이용해 monitoring_app.py가 실행 중인지 간접 확인
-            check_hv = subprocess.run(['pgrep', '-f', 'monitoring_app.py'], capture_output=True)
-            if check_hv.returncode == 0:
-                status["HV"] = True
-                status["Env"] = True # 같은 앱에서 관리하므로 같이 True
-        except Exception:
-            pass
 
         return status
 

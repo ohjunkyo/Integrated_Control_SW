@@ -5,7 +5,7 @@ import os
 import json
 import math 
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from image_viewer import ImageViewer
 from config_window import ConfigWindow 
 from datetime import datetime
@@ -135,58 +135,88 @@ class UIManager:
 
     """ UPDATE 2026 01 03 """
 
+
     def create_widgets(self):
-        self.main_notebook = ttk.Notebook(self.master)
+        self.main_container = tk.Frame(self.master)
+        self.main_container.pack(fill=tk.BOTH, expand=True)
+
+        self.main_notebook = ttk.Notebook(self.main_container)
         self.main_notebook.pack(fill=tk.BOTH, expand=True)
+
         self.daq_main_frame = ttk.Frame(self.main_notebook)
         self.main_notebook.add(self.daq_main_frame, text=" DAQ System ")
+        
         self.laser_main_frame = ttk.Frame(self.main_notebook)
         self.main_notebook.add(self.laser_main_frame, text=" Laser Control ")
 
         self._create_status_dashboard(self.daq_main_frame)
-        #paned_window = ttk.PanedWindow(self.master, orient=tk.HORIZONTAL)
+
         paned_window = ttk.PanedWindow(self.daq_main_frame, orient=tk.HORIZONTAL)
         paned_window.pack(fill=tk.BOTH, expand=True)
+        
+        left_scroll_container = ttk.Frame(paned_window)
+        paned_window.add(left_scroll_container, weight=0)
 
-        left_pane = ttk.Frame(paned_window, width=450, padding="10")
-        left_pane.pack_propagate(False)
-        paned_window.add(left_pane, weight=1)
+        left_canvas = tk.Canvas(left_scroll_container, width=450, highlightthickness=0)
+        left_vbar = ttk.Scrollbar(left_scroll_container, orient="vertical", command=left_canvas.yview)
+        
+        left_pane = ttk.Frame(left_canvas, padding="10")
+        
+        left_canvas.create_window((0, 0), window=left_pane, anchor="nw", width=450)
+        left_canvas.configure(yscrollcommand=left_vbar.set)
+
+        left_pane.bind("<Configure>", lambda e: left_canvas.configure(scrollregion=left_canvas.bbox("all")))
+
+        left_canvas.pack(side="left", fill="both", expand=True)
+        left_vbar.pack(side="right", fill="y")
+
+        left_canvas.bind("<Enter>", lambda e: (
+            left_canvas.bind_all("<Button-4>", lambda ev: left_canvas.yview_scroll(-1, "units")),
+            left_canvas.bind_all("<Button-5>", lambda ev: left_canvas.yview_scroll(1, "units"))
+        ))
+        left_canvas.bind("<Leave>", lambda e: (
+            left_canvas.unbind_all("<Button-4>"),
+            left_canvas.unbind_all("<Button-5>")
+        ))
 
         self._create_connection_status_frame(left_pane)
         self._create_run_control_frame(left_pane)
         self._create_dynamic_buttons_frame(left_pane, "Execute Scripts", "scripts")
         self._create_dynamic_buttons_frame(left_pane, "View", "view")
-        self._create_path_viewer_frame(left_pane)
+        self._create_path_viewer_frame(left_pane) 
 
+        # 우측 패널: PMT Status 및 데이터 목록
         right_pane = ttk.Frame(paned_window, padding=(0, 10, 10, 10))
         paned_window.add(right_pane, weight=3)
 
-        self.notebook = ttk.Notebook(right_pane) 
+        # 우측 내부 Notebook (Helper, Data Files, Log)
+        self.notebook = ttk.Notebook(right_pane)
         self.notebook.pack(fill=tk.BOTH, expand=True)
 
-        # Tab 1: Configuration
+        # Tab 1: PMT Rotation Helper (이제 스크롤 없이 바로 보임)
         config_tab = ttk.Frame(self.notebook, padding=(10, 10, 10, 10))
         self.notebook.add(config_tab, text="PMT Rotation Helper")
         self._create_status_frame(config_tab)
-        #self._create_config_viewer(config_tab)
 
-        # Tab 2: Data Files
+        # Tab 2: Data Files (Treeview 자체 스크롤바 사용)
         data_tab = ttk.Frame(self.notebook, padding=10)
         self.notebook.add(data_tab, text="Data Files")
         self._create_data_viewer(data_tab)
 
-        # Tab 3: Log
+        # Tab 3: Log (ScrolledText 자체 스크롤바 사용)
         log_tab = ttk.Frame(self.notebook, padding=10)
         self.notebook.add(log_tab, text="Log")
         self._create_log_viewer(log_tab)
-        
-        # Main-Tab2 
+
+        # 메인 탭 2: Laser Control
         self._create_laser_control_tab(self.laser_main_frame)
-        # Main-Tab3
+        
+        # 메인 탭 3: UPS Status
         self.ups_main_frame = ttk.Frame(self.main_notebook)
         self.main_notebook.add(self.ups_main_frame, text=" UPS Status ")
         self._create_ups_monitoring_tab(self.ups_main_frame)
 
+        # 메인 탭 4: Emergency Contact
         self.contact_frame = ttk.Frame(self.main_notebook)
         self.main_notebook.add(self.contact_frame, text=" ☎️ Emergency ")
         self._create_contact_tab(self.contact_frame)
@@ -260,12 +290,13 @@ class UIManager:
         ip_frame.pack(fill=tk.X, padx=3)
         ip_frame.columnconfigure(1, weight=1)
 
-        ttk.Label(ip_frame, text="Local IP:").grid(row=0, column=0, sticky="w", padx=(0, 3))
-        self.local_ip_value = ttk.Label(ip_frame, text="Fetching...", anchor="w")
-        self.local_ip_value.grid(row=0, column=1, sticky="ew")
+#       ttk.Label(ip_frame, text="Local IP:").grid(row=0, column=0, sticky="w", padx=(0, 3))
+#       self.local_ip_value = ttk.Label(ip_frame, text="Fetching...", anchor="w")
+#       self.local_ip_value.grid(row=0, column=1, sticky="ew")
 
     def update_ip_display(self, ip_info):
-        self.local_ip_value.config(text=ip_info.get('local_ip', 'N/A'))
+#       self.local_ip_value.config(text=ip_info.get('local_ip', 'N/A'))
+        pass
 
     def update_daq_connection_status(self, is_connected):
         self.daq_connected_flag = is_connected 
@@ -286,7 +317,18 @@ class UIManager:
     # ui_manager.py - 286번 라인부터 교체
 
     def _create_status_frame(self, parent):
-        self.pmt_status_frame = ttk.LabelFrame(parent, text=" PMT Status & Storage Overview (2x2) ", padding="10")
+        """DAQ System 탭 내부에 리프레시 버튼과 상태 프레임 생성"""
+        header_frame = ttk.Frame(parent)
+        header_frame.pack(fill=tk.X, padx=5, pady=(5, 0))
+        
+        ttk.Label(header_frame, text=" PMT Status & Storage Overview (2x2) ", 
+                  font=("Helvetica", 12, "bold")).pack(side=tk.LEFT)
+        
+        # 수동 새로고침 버튼 (클릭 시 config 재로드 및 용량/파일목록 갱신)
+        ttk.Button(header_frame, text="Refresh All 🔄", 
+                   command=self.controller.refresh_all_data).pack(side=tk.RIGHT)
+
+        self.pmt_status_frame = ttk.LabelFrame(parent, text="", padding="10")
         self.pmt_status_frame.pack(fill=tk.BOTH, expand=True, pady=5, padx=5)
 
     def _update_pmt_status_and_helper(self):
@@ -619,6 +661,7 @@ class UIManager:
                 self.config_text.insert(tk.END, f"Error: {data[0]}\n", "error")
         """
         pass
+
     def _create_path_viewer_frame(self, parent):
         frame = ttk.LabelFrame(parent, text="File & Directory Paths", padding="10")
         frame.pack(fill=tk.X, pady=5, padx=5)
@@ -745,7 +788,6 @@ class UIManager:
             self.file_info_label.config(text=f"Could not get file info:\n{e}")
 
     def _create_file_browser_tab(self, parent_tab, tab_type):
-        """Raw 또는 Production 탭 내부의 UI 요소를 생성하는 헬퍼 함수"""
         control_frame = ttk.Frame(parent_tab, padding=5)
         control_frame.pack(fill=tk.X)
 
@@ -755,43 +797,60 @@ class UIManager:
         ttk.Radiobutton(filter_frame, text="All", variable=filter_mode, value="All", command=self.update_data_viewer).pack(side=tk.LEFT)
         ttk.Radiobutton(filter_frame, text="Dark", variable=filter_mode, value="Dark", command=self.update_data_viewer).pack(side=tk.LEFT)
         ttk.Radiobutton(filter_frame, text="Laser", variable=filter_mode, value="Laser", command=self.update_data_viewer).pack(side=tk.LEFT)
+        
+        search_frame = ttk.LabelFrame(control_frame, text="Search Files", padding=5)
+        search_frame.pack(side=tk.LEFT, padx=(10, 0), fill=tk.X, expand=True)
+
+        search_var = tk.StringVar()
+        search_entry = ttk.Entry(search_frame, textvariable=search_var)
+        search_entry.pack(fill=tk.X)
+        search_var.trace_add("write", lambda *args: self.update_data_viewer())
 
         sort_frame = ttk.LabelFrame(control_frame, text="Sort By", padding=5)
         sort_frame.pack(side=tk.LEFT)
-        sort_mode = tk.StringVar(value="time") 
+        sort_mode = tk.StringVar(value="time")
         ttk.Button(sort_frame, text="Name (A-Z)", command=lambda: self._set_sort_and_update(tab_type, 'name')).pack(side=tk.LEFT)
         ttk.Button(sort_frame, text="Time (Newest)", command=lambda: self._set_sort_and_update(tab_type, 'time')).pack(side=tk.LEFT)
 
         refresh_btn = ttk.Button(control_frame, text="Refresh 🔄", command=self.controller.refresh_all_data)
         refresh_btn.pack(side=tk.RIGHT, padx=5)
 
+        # 1. 여기서 생성한 tree_frame을 부모로 사용해야 합니다.
         tree_frame = ttk.Frame(parent_tab)
         tree_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        columns = ("filename", "path", "modified_time")
-        tree = ttk.Treeview(tree_frame, columns=columns, show="headings")
+        # 2. [수정됨] container -> tree_frame으로 변경
+        tree = ttk.Treeview(tree_frame, show="headings", selectmode="extended")
+
+        tree["columns"] = ("filename", "path", "mtime")
+        tree.column("#0", width=0, stretch=tk.NO) 
+
+        tree.column("filename", width=700, anchor="w", stretch=tk.YES)
+        tree.column("path", width=200, anchor="w", stretch=tk.NO)
+        tree.column("mtime", width=180, anchor="center", stretch=tk.NO)
+
         tree.heading("filename", text="File Name")
         tree.heading("path", text="Directory Path")
-        tree.heading("modified_time", text="Last Modified")
-        tree.column("filename", width=300)
-        tree.column("path", width=400)
-        tree.column("modified_time", width=150)
+        tree.heading("mtime", text="Last Modified")
 
+        # 3. [수정됨] Scrollbar의 부모도 tree_frame으로 변경
         vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
         hsb = ttk.Scrollbar(tree_frame, orient="horizontal", command=tree.xview)
         tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+
         vsb.pack(side=tk.RIGHT, fill=tk.Y)
         hsb.pack(side=tk.BOTTOM, fill=tk.X)
         tree.pack(fill=tk.BOTH, expand=True)
+
         tree.bind("<Double-1>", self.on_data_file_double_click)
         tree.bind("<<TreeviewSelect>>", self.on_data_file_select)
 
-
         self.data_view_vars[tab_type] = {
-                "tree": tree,
-                "filter_mode": filter_mode,
-                "sort_mode": sort_mode
-                }
+            "tree": tree,
+            "filter_mode": filter_mode,
+            "sort_mode": sort_mode,
+            "search_var": search_var
+        }
 
     def _set_sort_and_update(self, tab_type, mode):
         """정렬 모드를 설정하고 뷰를 업데이트합니다."""
@@ -807,6 +866,7 @@ class UIManager:
             tree = vars["tree"]
             filter_mode = vars["filter_mode"].get()
             sort_mode = vars["sort_mode"].get()
+            search_query = vars["search_var"].get().lower()
 
             # 1. Type Filetering ('Raw' or 'Production')
             filtered_list = [f for f in self.all_data_files if f["type"] == tab_type]
@@ -821,6 +881,9 @@ class UIManager:
                 filtered_list.sort(key=lambda x: x["filename"])
             else: # time
                 filtered_list.sort(key=lambda x: x["mtime_float"], reverse=True)
+
+            if search_query:
+                filtered_list = [f for f in filtered_list if search_query in f["filename"].lower()]
 
             # 4. Treeview 
             tree.delete(*tree.get_children())
@@ -985,7 +1048,11 @@ class UIManager:
         self.laser_left_notebook.add(hist_frame, text=" Historical Plot ")
 
         self.fig_hist, self.ax_hist = plt.subplots(figsize=(4, 2.5), dpi=80)
+
         self.canvas_hist = FigureCanvasTkAgg(self.fig_hist, master=hist_frame)
+        self.hist_toolbar = NavigationToolbar2Tk(self.canvas_hist, hist_frame)
+        self.hist_toolbar.update()
+        self.hist_toolbar.pack(side=tk.TOP, fill=tk.X) 
         self.canvas_hist.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
         # Tab 2: 사용 기록 로그 (Laser Session Log) - [신규 추가]
@@ -1012,6 +1079,9 @@ class UIManager:
         self.fig_live.tight_layout(pad=3.0) 
         
         self.canvas_live = FigureCanvasTkAgg(self.fig_live, master=realtime_container)
+        self.live_toolbar = NavigationToolbar2Tk(self.canvas_live, realtime_container)
+        self.live_toolbar.update()
+        self.live_toolbar.pack(side=tk.TOP, fill=tk.X)
         self.canvas_live.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
 
@@ -1214,12 +1284,10 @@ class UIManager:
         self.fig_ups.tight_layout(pad=4.0)
         
         self.canvas_ups = FigureCanvasTkAgg(self.fig_ups, master=graph_frame)
-        self.canvas_ups.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-
-        from matplotlib.backends.backend_tkagg import NavigationToolbar2Tk
         self.ups_toolbar = NavigationToolbar2Tk(self.canvas_ups, graph_frame)
         self.ups_toolbar.update()
-        self.ups_toolbar.pack(side=tk.TOP, fill=tk.X)
+        self.ups_toolbar.pack(side=tk.TOP, fill=tk.X, pady=(5,0))
+        self.canvas_ups.get_tk_widget().pack(fill=tk.BOTH, expand=True, pady=(5, 5))
 
         
     def update_ups_outlet_display(self, load_percent):
@@ -1235,11 +1303,11 @@ class UIManager:
         inner_container.pack(expand=True)
 
         self.status_widgets = {}
-        devices = [("DAQ System", "DAQ"), ("Laser Controller", "Laser"), ("OMRON UPS", "UPS")]
+        devices = [("DAQ System", "DAQ"), ("HV System", "HV"), ("Env Sensor", "Env"), ("Laser Controller", "Laser"), ("OMRON UPS", "UPS")]
 
         for i, (label, key) in enumerate(devices):
-            frame = ttk.Frame(inner_container) # inner_container를 부모로 설정
-            frame.pack(side=tk.LEFT, padx=30)
+            frame = ttk.Frame(inner_container)
+            frame.pack(side=tk.LEFT, padx=15)
 
             canvas = tk.Canvas(frame, width=20, height=20, highlightthickness=0)
             canvas.pack(side=tk.LEFT, padx=5)
@@ -1301,3 +1369,23 @@ class UIManager:
         scrollbar = ttk.Scrollbar(container, orient=tk.VERTICAL, command=tree.yview)
         tree.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+    def setup_shortcuts(self):
+        """DAQ 탭 전용 단축키 설정"""
+        # 1. Configuration: Ctrl + O
+        self.master.bind("<Control-o>", lambda e: self.controller.handle_button_click("open_config"))
+        
+        # 2. Produce: Ctrl + P
+        self.master.bind("<Control-p>", lambda e: self.controller.handle_button_click("run_produce"))
+        
+        # 3. Analysis: Ctrl + A
+        self.master.bind("<Control-a>", lambda e: self.controller.handle_button_click("run_analysis"))
+        
+        # 4. Waveform Inspection: Ctrl + S (요청하신 대로 s로 설정)
+        self.master.bind("<Control-s>", lambda e: self.controller.handle_button_click("run_waveform"))
+        
+        # 5. Image Viewer: Ctrl + I (i로 설정)
+        self.master.bind("<Control-i>", lambda e: self.controller.handle_button_click("open_image_viewer"))
+        
+        # 6. Refresh: F5
+        self.master.bind("<F5>", lambda e: self.controller.refresh_data())

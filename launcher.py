@@ -70,6 +70,13 @@ class AppLauncher(tk.Tk):
         self.update_clock()
         self.update_file_status()
 
+    def is_process_running(self, script_keyword):
+        try:
+            result = subprocess.run(['pgrep', '-f', script_keyword], capture_output=True)
+            return result.returncode == 0
+        except Exception:
+            return False
+
     # --- [MODIFIED] Process termination functions ---
     def terminate_all_processes(self):
         """
@@ -128,6 +135,9 @@ class AppLauncher(tk.Tk):
         return "python3"
 
     def launch_daq_control(self):
+        if self.is_process_running("DAQ_Control_SW/main.py"): # [추가]
+            messagebox.showwarning("Already Running", "DAQ Control Panel is already running.")
+            return
         print("Launching DAQ Control...")
         python_exe = self.get_python_executable()
 
@@ -145,6 +155,9 @@ class AppLauncher(tk.Tk):
 
 
     def launch_hv_monitor(self):
+        if self.is_process_running("HV_Control_SW/monitoring_app.py"): # [추가]
+            messagebox.showwarning("Already Running", "HV Monitor is already running.")
+            return
         print("Launching HV Monitor...")
         python_exe = self.get_python_executable()
 
@@ -163,6 +176,9 @@ class AppLauncher(tk.Tk):
             messagebox.showerror("Error", f"Failed to launch HV Monitor:\n{e}")
 
     def launch_laser_control(self):
+        if self.is_process_running("Laser_Control_SW/app/laser_gui.py"): # [추가]
+            messagebox.showwarning("Already Running", "Laser Control is already running.")
+            return
         print("Launching Laser Control (Python)...")
         python_exe = self.get_python_executable()
 

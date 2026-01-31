@@ -1,0 +1,63 @@
+{
+    "system": {
+        "BasePath": "/home/precalkor/ADC/PreCalibration/",
+        "RawDataPath": "/home/precalkor/ADC/PreCalibration/Data/RAW/",
+        "ProcessedDataPath": "/home/precalkor/ADC/PreCalibration/Data/production/",
+        "FinalResultPath": "/home/precalkor/ADC/PreCalibration/Data/FinalResult/",
+        "ImagePath": "/home/precalkor/ADC/PreCalibration/Data/image/",
+        "ExternalPath": "/home/precalkor/external_HDD_1_4T/Data_Backup/RAW/",
+        "LogDir": "/home/precalkor/ADC/PreCalibration/LOG/"
+    },
+    "daq": {
+        "Events": 200000,
+        "RecordLen": 1024,
+        "PostTrigger": 60,
+        "RunMode": "Laser"
+    },
+    "devices": [
+        {
+            "ch": 0,
+            "role": "Monitor",
+            "active": true,
+            "sn": "Legacy_Mon",
+            "cable_dir": "N/A",
+            "hv": 1500,
+            "tilt": 0,
+            "rot": 0
+        },
+        {
+            "ch": 1,
+            "role": "Target_A",
+            "active": false,
+            "sn": "EM2740",
+            "cable_dir": "A",
+            "hv": 1740,
+            "tilt": 0,
+            "rot": 45
+        },
+        {
+            "ch": 2,
+            "role": "Target_B",
+            "active": true,
+            "sn": "ED1950",
+            "cable_dir": "A",
+            "hv": 1750,
+            "tilt": 0,
+            "rot": 0
+        },
+        {
+            "ch": 3,
+            "role": "Trigger",
+            "active": true,
+            "sn": "Trig_Gen",
+            "cable_dir": "N/A",
+            "hv": 0,
+            "tilt": 0,
+            "rot": 0
+        }
+    ],
+    "meta": {
+        "NOTE": "",
+        "Expert": "Junkyo"
+    }
+}

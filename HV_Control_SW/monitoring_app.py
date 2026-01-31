@@ -532,7 +532,7 @@ if __name__ == '__main__':
     else:
         print(f"Warning: Icon file not found at {icon_path}")
 
-    default_config = 'config_n1470.json'
+    default_config = 'config_precal.json'
     config_file = sys.argv[1] if len(sys.argv) > 1 else default_config
     if not os.path.exists(config_file): print(f"Error: Config file '{config_file}' not found."); sys.exit(1)
     config = load_config(config_file)

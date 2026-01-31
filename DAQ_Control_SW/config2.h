@@ -16,51 +16,51 @@ const std::string ImagePath = "/home/precalkor/ADC/ADC_test/Data/image/";
 const std::string LogDir = "/home/precalkor/ADC/ADC_test/LOG/DAQ/";
 
 // --- DAQ Common Settings --- //
-const int Events = 100000;
+const int Events = 200000;
 const int TimeWindow = 1024;
 const int PostTrigger = 60;
 const std::string ChannelMask = "00001111";
 
 // --- Sequence Settings --- //
-const int NumSequences = 10;
-const int IntervalTime = 600;
+const int NumSequences = 1;
+const int IntervalTime = 0;
 
 // -- Laser (Current, mA) --- //
-const std::string Laser = "0";
+const std::string Laser = "133";
 
 // --- PMT configuration --- //
 // Ch0 - monitor, Ch1 - PMT 1, Ch2 - PMT 2 same as High voltage setting
-const std::string SN1 = "XX1111";
-const std::string direction1 = "H";
-const std::string SN2 = "ED1950";
-const std::string direction2 = "A";
+const std::string SN1 = "EM2740";
+const std::string direction1 = "A";
+const std::string SN2 = "EL5150";
+const std::string direction2 = "B";
 const std::string SN3 = "EL9590";
 const std::string direction3 = "B";
 
 // -- Angle Configuration --- //
-const std::string RotateAngle1 = "45";
-const std::string TiltAngle1 = "10";
+const std::string RotateAngle1 = "0";
+const std::string TiltAngle1 = "0";
 
-const std::string RotateAngle2 = "0";
+const std::string RotateAngle2 = "45";
 const std::string TiltAngle2 = "0";
 
-const std::string RotateAngle3 = "0";
+const std::string RotateAngle3 = "45";
 const std::string TiltAngle3 = "0";
 
 // --- High Voltage --- //
-const std::string HV1 = "1111";
-const std::string HV2 = "1750";
+const std::string HV1 = "1670";
+const std::string HV2 = "1810";
 const std::string HV3 = "1770";
 
 // --- NOTE ---
-const std::string NOTE = "test";
+const std::string NOTE = "20260131_2";
 
 // --- Trigger Channel ---
 const int TriggerCh = 3;
 
 // --- Shift Information ---
 const std::string Shift_worker = "";
-const std::string Expert = "Junkyo";
+const std::string Expert = "jsjang";
 
 
 #endif // CONFIG2_H
