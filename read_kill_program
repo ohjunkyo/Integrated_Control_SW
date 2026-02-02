@@ -1,0 +1,5 @@
+If the software fails to the close or the connection cannot be allowed, enter the following the command:
+
+python3 kill_stray_apps.py
+
+then preess y

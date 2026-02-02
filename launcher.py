@@ -135,19 +135,20 @@ class AppLauncher(tk.Tk):
         return "python3"
 
     def launch_daq_control(self):
-        if self.is_process_running("DAQ_Control_SW/main.py"): # [추가]
+        script_path = os.path.abspath(os.path.join("DAQ_Control_SW", "main.py"))
+        
+        if self.is_process_running(script_path):
             messagebox.showwarning("Already Running", "DAQ Control Panel is already running.")
             return
-        print("Launching DAQ Control...")
+
+        print(f"Launching DAQ Control: {script_path}")
         python_exe = self.get_python_executable()
 
-        script_path = os.path.join("DAQ_Control_SW", "main.py")
         script_dir = os.path.dirname(script_path)
-        if not script_dir: script_dir = "."
-        command = [python_exe, os.path.basename(script_path)]
+        
+        command = [python_exe, script_path] 
 
         try:
-            # [MODIFIED] Use preexec_fn=os.setsid to create a new process group
             proc = subprocess.Popen(command, cwd=script_dir, preexec_fn=os.setsid)
             self.processes.append(proc)
         except Exception as e:
@@ -155,45 +156,44 @@ class AppLauncher(tk.Tk):
 
 
     def launch_hv_monitor(self):
-        if self.is_process_running("HV_Control_SW/monitoring_app.py"): # [추가]
+        script_path = os.path.abspath(os.path.join("HV_Control_SW", "monitoring_app.py"))
+        
+        if self.is_process_running(script_path): 
             messagebox.showwarning("Already Running", "HV Monitor is already running.")
             return
-        print("Launching HV Monitor...")
+
+        print(f"Launching HV Monitor: {script_path}")
         python_exe = self.get_python_executable()
 
-        script_path = os.path.join("HV_Control_SW", "monitoring_app.py")
-        config_path = os.path.join("HV_Control_SW", "config_precal.json")
+        config_path = os.path.abspath(os.path.join("HV_Control_SW", "config_precal.json"))
         script_dir = os.path.dirname(script_path)
-        if not script_dir: script_dir = "."
 
-        command = [python_exe, os.path.basename(script_path), os.path.basename(config_path)]
+        command = [python_exe, script_path, config_path]
 
         try:
-            # [MODIFIED] Use preexec_fn=os.setsid to create a new process group
             proc = subprocess.Popen(command, cwd=script_dir, preexec_fn=os.setsid)
             self.processes.append(proc)
         except Exception as e:
             messagebox.showerror("Error", f"Failed to launch HV Monitor:\n{e}")
 
     def launch_laser_control(self):
-        if self.is_process_running("Laser_Control_SW/app/laser_gui.py"): # [추가]
+        script_path = os.path.abspath(os.path.join("Laser_Control_SW", "app", "laser_gui.py"))
+
+        if self.is_process_running(script_path): 
             messagebox.showwarning("Already Running", "Laser Control is already running.")
             return
-        print("Launching Laser Control (Python)...")
+            
+        print(f"Launching Laser Control: {script_path}")
         python_exe = self.get_python_executable()
-
-        script_path = os.path.join("Laser_Control_SW", "app", "laser_gui.py")
         script_dir = os.path.dirname(script_path)
-        if not script_dir: script_dir = "."
 
         if not os.path.exists(script_path):
             messagebox.showerror("Error", f"Laser script not found:\n{script_path}")
             return
 
-        command = [python_exe, os.path.basename(script_path)]
+        command = [python_exe, script_path]
 
         try:
-            # [MODIFIED] Use preexec_fn=os.setsid to create a new process group
             proc = subprocess.Popen(command, cwd=script_dir, preexec_fn=os.setsid)
             self.processes.append(proc)
         except Exception as e:

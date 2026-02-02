@@ -9,7 +9,15 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 from image_viewer import ImageViewer
 from config_window import ConfigWindow 
 from datetime import datetime
-
+import requests 
+import threading
+import io 
+import time 
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+from PIL import Image, ImageTk
 
 class UIManager:
     def __init__(self, master, controller):
@@ -126,13 +134,11 @@ class UIManager:
         view_menu.add_command(label="Toggle Dark Mode 🌙", command=self.toggle_theme)
 
     def show_about(self):
-        messagebox.showinfo("About DAQ Control",
+        messagebox.showinfo("About DAQ Control (2026. 02. 02)",
                             """DAQ Control Application 
                       Made by Korean group (CNU, Junkyo OH)
-                      For more information or to contribute, please visit the GitHub repository:
-                      https://github.com/ohjunkyo/HK_PRECALIB_KOR_SYSTEM""")
-
-
+                      If you have any problem, You can contact to here
+                      gs1706@naver.com or via Slack """)
     """ UPDATE 2026 01 03 """
 
 
@@ -208,15 +214,18 @@ class UIManager:
         self.notebook.add(log_tab, text="Log")
         self._create_log_viewer(log_tab)
 
-        # 메인 탭 2: Laser Control
+        #  2: Laser Control
         self._create_laser_control_tab(self.laser_main_frame)
+
+        # main tab 3
+        self._create_web_monitor_tab(self.main_notebook)
         
-        # 메인 탭 3: UPS Status
+        # 4: UPS Status
         self.ups_main_frame = ttk.Frame(self.main_notebook)
         self.main_notebook.add(self.ups_main_frame, text=" UPS Status ")
         self._create_ups_monitoring_tab(self.ups_main_frame)
 
-        # 메인 탭 4: Emergency Contact
+        # 5: Emergency Contact
         self.contact_frame = ttk.Frame(self.main_notebook)
         self.main_notebook.add(self.contact_frame, text=" ☎️ Emergency ")
         self._create_contact_tab(self.contact_frame)
@@ -1170,7 +1179,319 @@ class UIManager:
         ttk.Scale(frame, from_=0, to=200, variable=var, orient=tk.HORIZONTAL).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10)
         ttk.Entry(frame, textvariable=var, width=8).pack(side=tk.LEFT)
 
-        # UPS Monitoring    
+    # -----------------------------------------------------------
+    # [ Web Monitor ] 탭 관련 메서드
+    # -----------------------------------------------------------
+
+    def _on_admin_only_click(self, event):
+        """URL 입력창 클릭 시 관리자 권한 경고를 띄우고 클릭을 무효화함"""
+        messagebox.showwarning("Access Denied", "Only administrator can modify this URL.")
+        return "break" 
+
+    def _create_web_monitor_tab(self, parent_notebook):
+        """B-field Monitoring 탭 (스크롤 줌 + 시간 표시 위치 변경)"""
+        tab = ttk.Frame(parent_notebook)
+        parent_notebook.add(tab, text=" B-field Monitoring ") 
+
+        # 1. 제어 패널
+        ctrl_frame = ttk.Frame(tab, padding=5)
+        ctrl_frame.pack(fill=tk.X)
+
+        ttk.Label(ctrl_frame, text="Target URL:").pack(side=tk.LEFT, padx=5)
+        fixed_url = "https://www-sk1.icrr.u-tokyo.ac.jp/~yufei/precal_monitoring/"
+        self.web_url_var = tk.StringVar(value=fixed_url) 
+        
+        self.url_entry = ttk.Entry(ctrl_frame, textvariable=self.web_url_var, width=50)
+        self.url_entry.pack(side=tk.LEFT, padx=5)
+        self.url_entry.config(state="readonly", foreground="gray")
+        self.url_entry.bind("<Button-1>", self._on_admin_only_click)
+
+        # 줌 컨트롤
+        ttk.Label(ctrl_frame, text="Zoom:").pack(side=tk.LEFT, padx=(10, 2))
+        self.web_zoom_var = tk.DoubleVar(value=1.0) 
+        
+        self.zoom_scale = ttk.Scale(ctrl_frame, from_=0.5, to=2.5, 
+                                    variable=self.web_zoom_var, orient=tk.HORIZONTAL, length=150)
+        self.zoom_scale.pack(side=tk.LEFT, padx=2)
+        
+        self.zoom_label = ttk.Label(ctrl_frame, text="100%", width=5)
+        self.zoom_label.pack(side=tk.LEFT, padx=2)
+        
+        self.zoom_scale.configure(command=lambda v: self.zoom_label.config(text=f"{float(v)*100:.0f}%"))
+        self.zoom_scale.bind("<ButtonRelease-1>", self._on_zoom_release)
+        
+        ttk.Button(ctrl_frame, text="↺ 100%", width=8, command=self._reset_zoom).pack(side=tk.LEFT, padx=2)
+
+        self.web_btn = ttk.Button(ctrl_frame, text="Start Monitor", command=self.toggle_web_monitoring)
+        self.web_btn.pack(side=tk.LEFT, padx=10)
+
+        self.refresh_btn = ttk.Button(ctrl_frame, text="Refresh 🔄", command=self.manual_refresh_web)
+        self.refresh_btn.pack(side=tk.LEFT, padx=2)
+
+        self.web_time_label = ttk.Label(ctrl_frame, text="", font=("Helvetica", 14, "bold"), foreground="#007bff")
+        self.web_time_label.pack(side=tk.LEFT, padx=15)
+
+        # -------------------------------------------------------------
+        # Canvas 생성 (휠 이벤트 추가)
+        # -------------------------------------------------------------
+        self.canvas_frame = ttk.Frame(tab)
+        self.canvas_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        v_scroll = ttk.Scrollbar(self.canvas_frame, orient=tk.VERTICAL)
+        h_scroll = ttk.Scrollbar(self.canvas_frame, orient=tk.HORIZONTAL)
+
+        self.web_canvas = tk.Canvas(self.canvas_frame, bg="#e1e1e1",
+                                    yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
+        
+        v_scroll.config(command=self.web_canvas.yview)
+        h_scroll.config(command=self.web_canvas.xview)
+        
+        v_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        h_scroll.pack(side=tk.BOTTOM, fill=tk.X)
+        self.web_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # [기존] 드래그 이동 (Pan)
+        self.web_canvas.bind("<ButtonPress-1>", self._on_canvas_click)
+        self.web_canvas.bind("<B1-Motion>", self._on_canvas_drag)
+
+        # [추가] 마우스 휠로 줌 (Linux: Button-4/5, Windows: MouseWheel)
+        self.web_canvas.bind("<Button-4>", self._on_canvas_scroll_zoom) # Linux Scroll UP
+        self.web_canvas.bind("<Button-5>", self._on_canvas_scroll_zoom) # Linux Scroll DOWN
+        self.web_canvas.bind("<MouseWheel>", self._on_canvas_scroll_zoom) # Windows Scroll
+
+        # 안내 문구
+        w_center = 600
+        h_center = 350
+        self.canvas_text_id = self.web_canvas.create_text(
+            w_center, h_center, text="Click 'Start' to verify VPN & Monitor", font=("Helvetica", 14), fill="gray"
+        )
+        self.web_image_id = None 
+
+        # 변수 초기화
+        self.is_monitoring = False
+        self.driver = None
+        self.monitor_w = 1280
+        self.monitor_h = 720
+        self.web_connection_status = False
+        self.force_refresh_flag = False
+
+    def _on_canvas_click(self, event):
+        self.web_canvas.scan_mark(event.x, event.y)
+
+    def _on_canvas_drag(self, event):
+        self.web_canvas.scan_dragto(event.x, event.y, gain=1)
+
+    def _on_zoom_release(self, event):
+        if self.is_monitoring:
+            self.force_refresh_flag = True
+            self.web_time_label.config(text="Zooming...")
+
+    def _on_canvas_scroll_zoom(self, event):
+        """마우스 휠로 줌 확대/축소 (0.1 단위)"""
+        current_zoom = self.web_zoom_var.get()
+        new_zoom = current_zoom
+
+        # Linux (Button-4: Up, Button-5: Down) / Windows (delta) 판별
+        if event.num == 4 or event.delta > 0:
+            new_zoom += 0.1 # 확대
+        elif event.num == 5 or event.delta < 0:
+            new_zoom -= 0.1 # 축소
+
+        # 범위 제한 (0.5배 ~ 2.5배)
+        new_zoom = max(0.5, min(2.5, new_zoom))
+
+        # 값이 변했으면 적용
+        if new_zoom != current_zoom:
+            self.web_zoom_var.set(new_zoom)
+            self.zoom_label.config(text=f"{new_zoom*100:.0f}%")
+
+            # 모니터링 중이라면 즉시 화면 갱신 요청
+            if self.is_monitoring:
+                self.force_refresh_flag = True
+                # 캔버스 중앙에 줌 상태 표시 (잠깐)
+                if self.canvas_text_id:
+                     self.web_canvas.itemconfig(self.canvas_text_id, text=f"Zoom: {new_zoom*100:.0f}%")
+
+    def _reset_zoom(self):
+        """줌을 100%로 초기화하고 즉시 갱신 (Canvas 호환 수정)"""
+        self.web_zoom_var.set(1.0)
+        self.zoom_label.config(text="100%")
+        
+        if self.is_monitoring:
+            self.force_refresh_flag = True
+            # [수정] 이미지가 있으면 굳이 텍스트로 안 바꿔도 됨 (화면 깜빡임 방지)
+            # 텍스트가 살아있는 경우에만 업데이트
+            if self.canvas_text_id and not self.web_image_id:
+                self.web_canvas.itemconfig(self.canvas_text_id, text="Resetting Zoom...")
+
+    def manual_refresh_web(self):
+        """사용자가 Refresh 버튼을 누르면 즉시 화면을 갱신합니다."""
+        if self.is_monitoring:
+            self.force_refresh_flag = True
+            self.web_time_label.config(text="Refreshing...", foreground="orange")
+        else:
+            messagebox.showinfo("Info", "Monitoring is not running.")
+
+    def toggle_web_monitoring(self):
+        """모니터링 시작/정지 (Canvas 호환 수정)"""
+        if not self.is_monitoring:
+            # [시작]
+            target_url = self.web_url_var.get()
+            
+            if not self._check_connection(target_url):
+                ans = messagebox.askyesno(
+                    "Connection Failed",
+                    "Unable to access the website. (VPN verification required)\n\n"
+                    "Would you like to run Cisco AnyConnect (VPN) now?"
+                )
+                if ans:
+                    self.controller.run_cisco()
+                return
+
+            self.is_monitoring = True
+            self.web_btn.config(text="Stop Monitor (Running)") 
+            
+            if self.canvas_text_id:
+                self.web_canvas.itemconfig(self.canvas_text_id, text="Initializing Browser...")
+            
+            threading.Thread(target=self._start_browser_loop, daemon=True).start()
+
+        else:
+            self.is_monitoring = False
+            self.web_btn.config(text="Start Monitor") 
+            
+            self.web_canvas.delete("all")
+            self.web_image_id = None
+            
+            w = self.web_canvas.winfo_width() / 2
+            h = self.web_canvas.winfo_height() / 2
+            self.canvas_text_id = self.web_canvas.create_text(
+                w, h, text="Monitoring Stopped", font=("Helvetica", 14), fill="gray"
+            )
+
+            if self.driver:
+                self.driver.quit()
+                self.driver = None
+
+    def _check_connection(self, url):
+        """해당 URL로 짧은 요청을 보내 VPN 연결 여부를 판단"""
+        try:
+            requests.get(url, timeout=5) 
+            return True
+        except:
+            return False
+
+    def _start_browser_loop(self):
+        """[Enhanced] 페이지를 새로고침하여 연결 상태를 확실히 체크"""
+        try:
+            options = Options()
+            options.add_argument("--headless")
+            options.add_argument(f"--window-size={self.monitor_w},{self.monitor_h}")
+            options.add_argument("--disable-gpu")
+            options.add_argument("--no-sandbox")
+            
+            self.driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+            self.driver.get(self.web_url_var.get())
+
+            while self.is_monitoring:
+                if not self.driver: break
+                
+                try:
+                    # 1. 크기 및 줌 설정
+                    current_w = self.web_canvas.winfo_width()
+                    current_h = self.web_canvas.winfo_height()
+                    if current_w > 100: self.monitor_w = current_w
+                    if current_h > 100: self.monitor_h = current_h
+                    
+                    zoom_factor = self.web_zoom_var.get()
+                    target_h = int(self.monitor_h * zoom_factor)
+                    
+                    self.driver.set_window_size(self.monitor_w, target_h)
+                    
+                    self.driver.refresh()
+                    
+                    self.driver.execute_script(f"document.body.style.zoom='{zoom_factor}'")
+
+                    png_data = self.driver.get_screenshot_as_png()
+                    pil_image = Image.open(io.BytesIO(png_data))
+                    
+                    self.web_connection_status = True
+                    self.master.after(0, lambda img=pil_image: self._update_web_image(img))
+                    
+                    current_time = time.strftime("%Y-%m-%d %H:%M:%S")
+                    self.master.after(0, lambda: self.web_time_label.config(text=f"Updated: {current_time} (interval = 60sec)", foreground="#007bff"))
+                    
+                    self.force_refresh_flag = False 
+                    
+                except Exception as e:
+                    print(f"Capture Error: {e}")
+                    self.web_connection_status = False
+                    self.master.after(0, self._show_error_on_canvas)
+                    self.master.after(0, lambda: self.web_time_label.config(text="Connection Lost", foreground="red"))
+
+                for _ in range(60): 
+                    if not self.is_monitoring: break
+                    if self.force_refresh_flag: break 
+                    time.sleep(1)
+
+        except Exception as e:
+            print(f"Browser Init Error: {e}")
+            self.web_connection_status = False
+            self.is_monitoring = False
+            self.master.after(0, lambda: self.web_btn.config(text="Start Monitor"))
+        
+        finally:
+            self.web_connection_status = False
+
+
+    def _show_error_on_canvas(self):
+        self.web_canvas.delete("all")
+        self.web_image_id = None
+        w = self.web_canvas.winfo_width() / 2
+        h = self.web_canvas.winfo_height() / 2
+        self.canvas_text_id = self.web_canvas.create_text(
+            w, h, text="Connection Lost\nRetrying...", font=("Helvetica", 14), fill="red", justify="center"
+        )
+
+    def _update_web_image(self, pil_image):
+        """메인 스레드: 캔버스에 이미지를 그리고 스크롤 영역을 갱신"""
+        try:
+            # 1. Tkinter 호환 이미지 생성
+            photo = ImageTk.PhotoImage(pil_image)
+            
+            # 2. 기존 이미지 삭제 및 새 이미지 생성
+            if self.web_image_id:
+                self.web_canvas.delete(self.web_image_id)
+                
+            # 3. 안내 문구 삭제 (첫 실행 시)
+            if self.canvas_text_id:
+                self.web_canvas.delete(self.canvas_text_id)
+                self.canvas_text_id = None
+
+            # 4. 이미지 그리기 (좌상단 0,0 기준)
+            self.web_image_id = self.web_canvas.create_image(0, 0, image=photo, anchor="nw")
+            
+            # 5. [핵심] 스크롤 영역(ScrollRegion)을 이미지 크기에 맞춤
+            # 이렇게 해야 드래그나 스크롤바가 끝까지 닿습니다.
+            self.web_canvas.config(scrollregion=self.web_canvas.bbox("all"))
+            
+            # 6. 이미지 참조 유지 (GC 방지)
+            self.web_canvas.image = photo 
+
+            # 시간 업데이트 (Canvas 위에 텍스트로 표시하려면 별도 create_text 필요)
+            # 여기서는 간단히 윈도우 타이틀이나 상태바 등으로 대체 가능하나,
+            # 깔끔하게 우측 하단에 시간을 띄워드리겠습니다.
+            self.web_canvas.delete("timestamp_tag")
+            current_time = time.strftime("%H:%M:%S")
+            w = pil_image.width
+            h = pil_image.height
+            # 우측 하단에 반투명 박스 느낌으로 시간 표시
+            self.web_canvas.create_text(w - 60, h - 20, text=f"Updated: {current_time}", 
+                                        fill="red", font=("Helvetica", 10, "bold"), tag="timestamp_tag")
+
+        except Exception as e:
+            print(f"Image Update Error: {e}") 
+
     def _create_ups_monitoring_tab(self, parent):
         container = ttk.Frame(parent, padding=15)
         container.pack(fill=tk.BOTH, expand=True)
@@ -1294,8 +1615,8 @@ class UIManager:
         state = 1 if load_percent > 0 else 0
         self.controller.update_ups_outlet_status([state, state, 0, 0])
 
+    ###################################################################
     def _create_status_dashboard(self, parent):
-        """상단 대시보드: 장치 상태 LED들을 다시 중앙에 배치합니다."""
         dashboard = ttk.LabelFrame(parent, text=" System Connection Overview ", padding=10)
         dashboard.pack(fill=tk.X, pady=(0, 10), padx=5)
 
@@ -1303,7 +1624,14 @@ class UIManager:
         inner_container.pack(expand=True)
 
         self.status_widgets = {}
-        devices = [("DAQ System", "DAQ"), ("HV System", "HV"), ("Env Sensor", "Env"), ("Laser Controller", "Laser"), ("OMRON UPS", "UPS")]
+        devices = [
+            ("DAQ System", "DAQ"), 
+            ("HV System", "HV"), 
+            ("Env Sensor", "Env"), 
+            ("Laser Controller", "Laser"), 
+            ("B-field Monitor", "B-field"), 
+            ("OMRON UPS", "UPS")
+        ]
 
         for i, (label, key) in enumerate(devices):
             frame = ttk.Frame(inner_container)
@@ -1320,23 +1648,28 @@ class UIManager:
 
         self.master.after(100, self._update_dashboard_loop)
 
+
     def _update_dashboard_loop(self):
         statuses = self.controller.get_system_status()
-        tab_map = {"DAQ": 0, "Laser": 1, "UPS": 2}
+
+        statuses["B-field"] = getattr(self, "web_connection_status", False)
+
+        # 탭 순서 매핑
+        tab_map = {"DAQ": 0, "Laser": 1, "B-field": 2, "UPS": 3}
 
         for key, connected in statuses.items():
             color = "#28a745" if connected else "#dc3545"
-            # [수정] ui_manager 내부이므로 self.ui가 아닌 self를 사용합니다.
-            img = self.tab_led_green if connected else self.tab_led_red 
-            
-            # 1. 중앙 대시보드 LED 업데이트
+            img = self.tab_led_green if connected else self.tab_led_red
+
             if key in self.status_widgets:
                 self.status_widgets[key]["canvas"].itemconfig(self.status_widgets[key]["led"], fill=color)
-            
-            # 2. 메인 탭 이름 옆에 LED 아이콘 표시
+
             if key in tab_map:
                 idx = tab_map[key]
-                self.main_notebook.tab(idx, image=img, compound=tk.RIGHT)
+                try:
+                    self.main_notebook.tab(idx, image=img, compound=tk.RIGHT)
+                except Exception:
+                    pass
 
         self.master.after(2000, self._update_dashboard_loop)
 
