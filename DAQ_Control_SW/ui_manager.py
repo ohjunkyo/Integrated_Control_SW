@@ -5,6 +5,7 @@ import os
 import json
 import math 
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from image_viewer import ImageViewer
 from config_window import ConfigWindow 

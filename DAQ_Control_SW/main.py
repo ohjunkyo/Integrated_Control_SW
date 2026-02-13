@@ -17,6 +17,7 @@ import collections
 import serial
 import serial.tools.list_ports
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates 
 import logging 
 from logging.handlers import TimedRotatingFileHandler 
 import random 
@@ -397,7 +398,6 @@ class App:
 
 
     def run_daq(self):
-        """DAQ 실행 전 중복 프로세스를 체크하여 버퍼 손상을 방지합니다."""
         try:
             check_running = subprocess.run(['pgrep', '-f', 'execute_DAQ'], capture_output=True)
             if check_running.returncode == 0:
@@ -509,9 +509,9 @@ class App:
     def run_waveform(self):
         """
         Waveform inspection:
-        - 0 files selected: Use Run Number text box.
-        - 1 file selected: Use that file's run number.
-        - 2+ files selected: Show warning and stop.
+        - 0개 선택: 텍스트 박스의 Run Number 사용
+        - 1개 선택: 선택한 파일의 경로와 Run Number 사용 (Produce 방식)
+        - 2개 이상: 경고 메시지 출력
         """
         selected_files = self.ui.get_selected_file_paths()
         daq_path = self._get_daq_path()
@@ -521,16 +521,16 @@ class App:
         script = os.path.join(daq_path, 'Draw_waveform.C')
         config_path = self.config_manager.filepath
         
-        run_num = None # The single run number to execute
+        run_num = None
+        f_path = "" # 선택된 파일 경로 초기화
 
         if len(selected_files) > 1:
-            # Case 1: More than one file selected
             messagebox.showwarning("Multiple Files Selected", 
                                    "Please select only one file for Waveform Inspection.")
-            return # Stop
+            return
         
         elif len(selected_files) == 1:
-            # Case 2: Exactly one file selected
+            # Case: 파일이 하나 선택된 경우
             f_path = selected_files[0]
             f_name = os.path.basename(f_path)
             pattern = re.compile(r'\.([0-9]{4})\.root$')
@@ -541,23 +541,21 @@ class App:
             else:
                 self._log(f"WARNING: Could not extract run number from {f_name}.")
                 messagebox.showwarning("Error", f"Could not extract run number from selected file:\n{f_name}")
-                return # Stop
+                return
         
         else:
-            # Case 3: Zero files selected (the "old way")
+            # Case: 선택된 파일이 없는 경우 (기존 방식)
             run_num = self.ui.get_run_num()
-            if not run_num:
-                return # get_run_num() shows its own warning
+            if not run_num: return
 
-        # If we have a valid run number, execute it once
         if run_num:
-            command_parts = [helper, script, config_path, run_num, 'interactive']
+            # Produce/Analysis와 동일하게 파일 경로를 따옴표로 감싸 인자로 추가
+            f_path_arg = f"\\\"{f_path}\\\"" if f_path else "\"\""
+            
+            # 인자 순서: run_num, 'interactive', f_path_arg
+            command_parts = [helper, script, config_path, run_num, 'interactive', f_path_arg]
             final_command_string = " ".join(command_parts)
             self._execute_in_new_terminal([final_command_string])
-        else:
-            # This case should not be reachable, but as a safeguard:
-            self._log("ERROR: run_waveform logic failed, no run number was determined.")
-    # --- [*** 수정 끝 (1) ***] ---
 
     def run_contour(self):
         """
@@ -1137,7 +1135,8 @@ class App:
                 # 그래프 데이터 업데이트
                 self.plot_history["temp"].append(temp)
                 self.plot_history["pulse"].append(pulse)
-                self.plot_history["time"].append(datetime.now().strftime("%H:%M:%S"))
+                #self.plot_history["time"].append(datetime.now().strftime("%H:%M:%S"))
+                self.plot_history["time"].append(datetime.now())
                 self.refresh_laser_realtime_plot()
         else:
             # 6. 연결이 안 된 경우 초기화 및 상태 표시
@@ -1208,20 +1207,29 @@ class App:
         self.ui.ax_temp.clear()
         self.ui.ax_temp.plot(d_times, d_temps, 'r-', linewidth=1, label="Temp (°C)") 
         self.ui.ax_temp.set_ylabel("Temp (°C)", color='r')
-        
-        import matplotlib.ticker as ticker
-        self.ui.ax_temp.xaxis.set_major_locator(ticker.MaxNLocator(8))
+
+        self.ui.ax_temp.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+        self.ui.ax_temp.xaxis.set_major_locator(mdates.AutoDateLocator())
         self.ui.ax_temp.grid(True, alpha=0.3)
+        
+        #import matplotlib.ticker as ticker
+        #self.ui.ax_temp.xaxis.set_major_locator(ticker.MaxNLocator(8))
+        #self.ui.ax_temp.grid(True, alpha=0.3)
+
 
         # 2. 하단: 전류 그래프
         self.ui.ax_curr.clear()
         self.ui.ax_curr.plot(d_times, d_pulses, 'g-', linewidth=1, label="Pulse (mA)")
         self.ui.ax_curr.set_ylabel("Current (mA)", color='g')
         self.ui.ax_curr.set_xlabel("Time (HH:MM:SS)")
-        
-        self.ui.ax_curr.xaxis.set_major_locator(ticker.MaxNLocator(8))
+
+        self.ui.ax_curr.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+        self.ui.ax_curr.xaxis.set_major_locator(mdates.AutoDateLocator())
         self.ui.ax_curr.grid(True, alpha=0.3)
-        self.ui.fig_live.autofmt_xdate() 
+        
+        #self.ui.ax_curr.xaxis.set_major_locator(ticker.MaxNLocator(8))
+        #self.ui.ax_curr.grid(True, alpha=0.3)
+        #self.ui.fig_live.autofmt_xdate() 
 
         self.ui.canvas_live.draw()
 
@@ -1321,7 +1329,8 @@ class App:
                             
                             # 현재 시간 기준 24시간 이내 데이터만 메모리에 로드
                             if now - ts <= timedelta(hours=24):
-                                self.plot_history["time"].append(ts.strftime("%H:%M:%S"))
+                                #self.plot_history["time"].append(ts.strftime("%H:%M:%S"))
+                                self.plot_history["time"].append(ts)
                                 self.plot_history["temp"].append(float(row['temp_c']))
                                 self.plot_history["pulse"].append(float(row['pulse_ma']))
                                 total_points += 1
@@ -1366,7 +1375,8 @@ class App:
 
                             # 현재 시간 기준 24시간 이내 데이터만 로드
                             if now - ts <= timedelta(hours=24):
-                                self.ups_plot_history["time"].append(ts.strftime("%H:%M:%S"))
+                                #self.ups_plot_history["time"].append(ts.strftime("%H:%M:%S"))
+                                self.ups_plot_history["time"].append(ts)
                                 self.ups_plot_history["watt"].append(float(row['Watt']))
                                 self.ups_plot_history["temp"].append(float(row['Temp']))
                                 self.ups_plot_history["vin"].append(float(row['Vin']))
@@ -1538,8 +1548,11 @@ class App:
                                 self._log(f"UPS Check Interval: {interval/1000}s")
 
 
-                            now_str = datetime.now().strftime("%H:%M:%S")
-                            self.ups_plot_history["time"].append(now_str)
+                            #now_str = datetime.now().strftime("%H:%M:%S")
+                            #self.ups_plot_history["time"].append(now_str)
+
+                            now_dt = datetime.now()
+                            self.ups_plot_history["time"].append(now_dt)
                             self.ups_plot_history["watt"].append(current_watt)
                             self.ups_plot_history["temp"].append(temp_c)
                             self.ups_plot_history["vin"].append(input_v)
@@ -1619,7 +1632,10 @@ class App:
             ax.plot(d_times, data, color=color, linewidth=1.2)
             ax.set_title(title, fontsize=10, fontweight='bold')
             
-            ax.xaxis.set_major_locator(ticker.MaxNLocator(5)) 
+    #   ax.xaxis.set_major_locator(ticker.MaxNLocator(5)) 
+
+            ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+            ax.xaxis.set_major_locator(mdates.AutoDateLocator())
             ax.grid(True, alpha=0.2)
             ax.tick_params(labelsize=8)
 
