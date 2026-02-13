@@ -12,4 +12,4 @@ __pycache__/
 .vscode/
 .idea/
 .DS_Store
-
+./DAQ_Control_SW/LOG/UPS/
