@@ -32,7 +32,7 @@ const std::string Laser = "133";
 // Ch0 - monitor, Ch1 - PMT 1, Ch2 - PMT 2 same as High voltage setting
 const std::string SN1 = "EM2740";
 const std::string direction1 = "A";
-const std::string SN2 = "EL5150";
+const std::string SN2 = "EL1635";
 const std::string direction2 = "B";
 const std::string SN3 = "EL9590";
 const std::string direction3 = "B";
@@ -42,10 +42,10 @@ const std::string RotateAngle1 = "0";
 const std::string TiltAngle1 = "0";
 
 const std::string RotateAngle2 = "45";
-const std::string TiltAngle2 = "-35";
+const std::string TiltAngle2 = "0";
 
 const std::string RotateAngle3 = "45";
-const std::string TiltAngle3 = "-35";
+const std::string TiltAngle3 = "0";
 
 // --- High Voltage --- //
 const std::string HV1 = "1670";
