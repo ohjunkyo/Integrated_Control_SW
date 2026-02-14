@@ -342,7 +342,7 @@ class UIManager:
         self.pmt_status_frame.pack(fill=tk.BOTH, expand=True, pady=5, padx=5)
 
     def _update_pmt_status_and_helper(self):
-        """2x2 그리드 내부에 PMT 상세 정보와 설치 가이드를 배치합니다."""
+        """2x2 그리드 내부에 PMT 상세 정보와 용량 모니터를 배치합니다."""
         if not self.controller.config_manager: return
 
         for widget in self.pmt_status_frame.winfo_children():
@@ -350,17 +350,11 @@ class UIManager:
         
         self.pmt_status_frame.columnconfigure(0, weight=1)
         self.pmt_status_frame.columnconfigure(1, weight=1)
-        self.pmt_status_frame.rowconfigure(0, weight=1)
+        self.pmt_status_frame.rowconfigure(0, weight=1) # 행 높이 확장
         self.pmt_status_frame.rowconfigure(1, weight=1)
 
         cfg = self.controller.config_manager.get_all_variables()
-        
-        # [각도 정의] A~H 핀의 표준 위치 (A가 9시일 때 기준)
-        # A=180, B=225, C=270, D=315, E=0, F=45, G=90, H=135
-        POS_MAP_ANGLES = { 
-            'E': 0, 'F': 45, 'G': 90, 'H': 135, 
-            'A': 180, 'B': 225, 'C': 270, 'D': 315 
-        }
+        POS_MAP_ORIGINAL = { 'E': 0, 'F': 45, 'G': 90, 'H': 135, 'A': 180, 'B': 225, 'C': 270, 'D': 315 }
 
         for i in range(1, 4):
             row, col = divmod(i-1, 2)
@@ -368,30 +362,23 @@ class UIManager:
             cell.grid(row=row, column=col, sticky="nsew", padx=3, pady=3)
 
             sn = cfg.get(f'SN{i}', "N/A")
-            
-            # [타입] 케이블이 연결된 핀 (A~H)
-            cable_type = cfg.get(f'direction{i}', "A").strip().upper() 
-            
+            direction = cfg.get(f'direction{i}', "N/A")
             hv = cfg.get(f'HV{i}', "0")
-            try:
-                rot_val = int(cfg.get(f'RotateAngle{i}', "0"))
-            except:
-                rot_val = 0
+            rot = cfg.get(f'RotateAngle{i}', "0")
             tilt = cfg.get(f'TiltAngle{i}', "0")
             is_active = sn != "N/A" and sn.strip() != ""
 
             self._create_status_indicator(cell, f"SN{i}", is_active, side=tk.TOP)
             
-            # [수정] 회전값과 케이블 타입(A~H)을 모두 전달
-            self._create_helper_diagram(cell, rot_val, cable_type, POS_MAP_ANGLES)
+            self._create_helper_diagram(cell, direction, POS_MAP_ORIGINAL)
             
-            info_text = (f"{sn} - {cable_type}\n"
+            info_text = (f"{sn} - {direction}\n"
                          f"HV: {hv} V\n"
-                         f"Rotation: {rot_val}° / Tilt: {tilt}°")
+                         f"Rotation: {rot}° / Tilt: {tilt}°")
             
             txt_color = "white" if self.is_dark_mode else "black"
             lbl = ttk.Label(cell, text=info_text, font=("Helvetica", 12, "bold"), 
-                            foreground=txt_color, justify=tk.CENTER)
+                            foreground=txt_color, justify=tk.CENTER) # 중앙 정렬
             lbl.pack(pady=5)
 
         storage_cell = ttk.LabelFrame(self.pmt_status_frame, text=" Storage Capacity ", padding=10)
@@ -437,99 +424,85 @@ class UIManager:
                                            foreground=accent, font=val_font)
         self.data_size_label2.pack(pady=5)
 
-    def _create_helper_diagram(self, parent, rotation_angle, cable_type, pos_map_angles):
-        """
-        rotation_angle: 물리적 회전 각도 (0도 = 케이블 9시)
-        cable_type: 케이블이 연결된 핀 ID ('A'~'H')
-        """
+
+    def _create_helper_diagram(self, parent, direction, pos_map_original):
         bg_color = "#2d2d2d" if self.is_dark_mode else "white"
-        txt_fill = 'white' if self.is_dark_mode else 'black'
         
         canvas = tk.Canvas(parent, width=280, height=200, bg=bg_color, highlightthickness=0) 
         canvas.pack(side=tk.LEFT, padx=10, expand=True)
 
+        # 중심점 및 반지름 확대
         C_X, C_Y, R = 140, 100, 65 
-        
-        # 1. Scan Axis (고정된 기계 좌표계 - 파란색)
+        LABEL_R = R + 22  # +X, +Y 라벨이 위치할 거리
+
+        # Scan Axis 배경색
         scan_axis_bg = "#3d3d3d" if self.is_dark_mode else "#e7f5ff"
         canvas.create_rectangle(C_X - 8, C_Y - R - 20, C_X + 8, C_Y + R + 20, 
                                 fill=scan_axis_bg, outline="")
-        
+
+        # --- 1. 회전 각도 계산 ---
+        TARGET_CABLE_ANGLE = 180 
+        rotation_offset = 0
+        current_dir_char = 'A'
+
+        if direction and direction.upper() in pos_map_original:
+            current_dir_char = direction.upper()
+            rotation_offset = TARGET_CABLE_ANGLE - pos_map_original[current_dir_char]
+
+        # Scan Axis 화살표
         canvas.create_line(C_X, C_Y - R + 5, C_X, C_Y - R - 15, arrow=tk.LAST, fill="#1971c2", width=3)
         canvas.create_line(C_X, C_Y + R - 5, C_X, C_Y + R + 15, arrow=tk.LAST, fill="#1971c2", width=3)
         canvas.create_text(C_X, C_Y - R - 25, text="Scan Axis", font=("Helvetica", 10, "bold"), fill="#1971c2")
 
+        # Cable 화살표
+        canvas.create_line(C_X - R + 5, C_Y, C_X - R - 15, C_Y, arrow=tk.LAST, fill='red', width=3)
+        canvas.create_text(C_X - R - 20, C_Y, text="Cable", font=("Helvetica", 10, "bold"), fill="red", anchor="e")
+
+        # PMT 원
         canvas.create_oval(C_X - R, C_Y - R, C_X + R, C_Y + R, outline='gray', width=2)
 
-        def get_pos(angle_deg, radius):
-            rad = math.radians(angle_deg)
-            return C_X + radius * math.cos(rad), C_Y - radius * math.sin(rad)
+        # --- 회전하는 DY1 / DY2 ---
+        DY_R = 8 
+        DY_FONT = ("Helvetica", 10, "bold")
+        
+        # DY1 (기본 180도)
+        new_dy1_angle_rad = math.radians((180 + rotation_offset) % 360)
+        dy1_x = C_X + DY_R * math.cos(new_dy1_angle_rad)
+        dy1_y = C_Y - DY_R * math.sin(new_dy1_angle_rad) # Y축 반전
+        
+        # DY2 (기본 0도)
+        new_dy2_angle_rad = math.radians((0 + rotation_offset) % 360)
+        dy2_x = C_X + DY_R * math.cos(new_dy2_angle_rad)
+        dy2_y = C_Y - DY_R * math.sin(new_dy2_angle_rad)
 
-        # -------------------------------------------------------------
-        # 1. 케이블 화살표 (물리적 위치)
-        # -------------------------------------------------------------
-        # 기준: 0도일 때 무조건 9시(180도)
-        physical_cable_angle = 180 + rotation_angle
-        
-        cx1, cy1 = get_pos(physical_cable_angle, R - 5)
-        cx2, cy2 = get_pos(physical_cable_angle, R + 30)
-        
-        canvas.create_line(cx1, cy1, cx2, cy2, arrow=tk.LAST, fill='red', width=3)
-        
-        # 텍스트 위치 및 앵커
-        ctx, cty = get_pos(physical_cable_angle, R + 42)
-        norm_angle = physical_cable_angle % 360
-        anchor = "center"
-        if 45 < norm_angle < 135: anchor = "s"    
-        elif 135 <= norm_angle < 225: anchor = "e" 
-        elif 225 <= norm_angle < 315: anchor = "n" 
-        else: anchor = "w"                         
-        
-        canvas.create_text(ctx, cty, text="Cable", font=("Helvetica", 10, "bold"), fill="red", anchor=anchor)
+        txt_fill = 'white' if self.is_dark_mode else 'black'
+        canvas.create_text(dy1_x, dy1_y, text="DY1", font=DY_FONT, fill=txt_fill)
+        canvas.create_text(dy2_x, dy2_y, text="DY2", font=DY_FONT, fill=txt_fill)
 
-        # -------------------------------------------------------------
-        # 2. 내부 핀맵 (A~H, DY1/2) 회전 계산
-        # -------------------------------------------------------------
-        # 논리:
-        # - 물리적 케이블 위치(physical_cable_angle)에 'cable_type'에 해당하는 핀이 와야 함.
-        # - 예: C타입이면, C핀이 케이블 위치에 오도록 전체 핀맵을 돌려야 함.
-        
-        # 해당 타입 핀의 표준 각도 (A기준)
-        std_type_angle = pos_map_angles.get(cable_type, 180)
-        
-        # 보정값 = 물리적 케이블 각도 - 표준 핀 각도
-        # 예: Rot=0(케이블 180도)에 C타입(표준 270도)을 맞추려면? -> -90도 회전 필요
-        pin_offset = physical_cable_angle - std_type_angle
-
-        label_font = ("Helvetica", 12, "bold")
+        # --- [에러 해결 부분] 회전하는 A-H 라벨 및 +X/+Y ---
+        label_font = ("Helvetica", 12, "bold")      # 폰트 키움
         axis_label_font = ("Helvetica", 11, "bold")
 
-        for char, std_angle in pos_map_angles.items():
-            # 각 핀의 최종 각도 = 표준각도 + 보정값
-            final_pin_angle = std_angle + pin_offset
+        for char, original_angle_deg in pos_map_original.items():
+            new_angle_deg = (original_angle_deg + rotation_offset) % 360
+            new_angle_rad = math.radians(new_angle_deg)
             
-            lx, ly = get_pos(final_pin_angle, R - 15)
-            
-            color = 'red' if char == cable_type else txt_fill
-            canvas.create_text(lx, ly, text=char, font=label_font, fill=color)
+            # A-H 라벨 위치 (원 안쪽)
+            x = C_X + (R - 15) * math.cos(new_angle_rad)
+            y = C_Y - (R - 15) * math.sin(new_angle_rad)
 
-            # PMT 자체 좌표계 (+X, +Y) 표시 (Hamamatsu: A=+Y, G=+X)
-            if char == 'A': 
-                ax, ay = get_pos(final_pin_angle, R + 12)
-                canvas.create_text(ax, ay, text="+Y", font=axis_label_font, fill="#c92a2a")
-            elif char == 'G': 
-                gx, gy = get_pos(final_pin_angle, R + 12)
-                canvas.create_text(gx, gy, text="+X", font=axis_label_font, fill="#1971c2")
+            # [누락되었던 부분 복구] +X/+Y 라벨 위치 (원 바깥쪽)
+            x_ax = C_X + LABEL_R * math.cos(new_angle_rad)
+            y_ax = C_Y - LABEL_R * math.sin(new_angle_rad)
 
-        # DY1 / DY2 (표준 위치: G-C 라인 = 90도/270도)
-        dy_r = 15
-        dy1_x, dy1_y = get_pos(90 + pin_offset, dy_r)  # G쪽
-        dy2_x, dy2_y = get_pos(270 + pin_offset, dy_r) # C쪽
-        
-        canvas.create_oval(C_X-2, C_Y-2, C_X+2, C_Y+2, fill="gray", outline="")
-        canvas.create_text(dy1_x, dy1_y, text="DY1", font=("Helvetica", 9, "bold"), fill=txt_fill)
-        canvas.create_text(dy2_x, dy2_y, text="DY2", font=("Helvetica", 9, "bold"), fill=txt_fill)
+            color = 'red' if char == current_dir_char else txt_fill
+            canvas.create_text(x, y, text=char, font=label_font, fill=color)
 
+            # PMT의 고유 X축(G), Y축(A) 라벨 추가
+            if char == 'A':
+                canvas.create_text(x_ax, y_ax, text="+Y", font=axis_label_font, fill="#c92a2a")
+            elif char == 'G':
+                canvas.create_text(x_ax, y_ax, text="+X", font=axis_label_font, fill="#1971c2")
 
     def _create_helper_text(self, parent, pmt_index, sn, direction, x_map, y_map):
         """회전/틸트 각도를 알려주는 텍스트를 생성합니다."""
@@ -1044,225 +1017,150 @@ class UIManager:
         main_container = ttk.Frame(parent, padding=10)
         main_container.pack(fill=tk.BOTH, expand=True)
 
-        # [삭제됨] 상단 공통 연결 프레임 (Laser System Connection) 제거
-        # 이제 바로 탭 노트북이 나옵니다.
-        
-        self.laser_sub_notebook = ttk.Notebook(main_container)
-        self.laser_sub_notebook.pack(fill=tk.BOTH, expand=True)
+        conn_frame = ttk.LabelFrame(main_container, text="Laser Connection", padding=10)
+        conn_frame.pack(fill=tk.X, pady=(0, 10))
 
-        self.laser_tabs_data = {} 
-        wavelengths = ["375nm", "405nm", "450nm", "473nm"]
+        self.laser_conn_label = ttk.Label(conn_frame, text="Status: Disconnected", 
+                                          foreground="red", font=("Helvetica", 11, "bold"))
+        self.laser_conn_label.pack(side=tk.LEFT, padx=(5, 5))
 
-        for wl in wavelengths:
-            tab_frame = ttk.Frame(self.laser_sub_notebook)
-            self.laser_sub_notebook.add(tab_frame, text=f" {wl} ")
-            
-            default_pulse = 132.99 if wl == "405nm" else 0.0
-            
-            vars_dict = {
-                # [NEW] 개별 연결 상태 표시용 문자열 변수
-                "conn_status_txt": tk.StringVar(value="Disconnected"), 
-                
-                "ld_status": tk.StringVar(value="OFF"),
-                "tec_status": tk.StringVar(value="OFF"),
-                "temp": tk.StringVar(value="--.- °C"),
-                "bias_live": tk.StringVar(value="---.- mA"),
-                "pulse_live": tk.StringVar(value="---.- mA"),
-                "bias_set": tk.DoubleVar(value=0.0),
-                "pulse_set": tk.DoubleVar(value=default_pulse),
-                "trigger_mode": tk.StringVar(value="External"),
-                "freq_hz": tk.StringVar(value="10000000"),
-                "check_interval": tk.StringVar(value="1s")
-            }
-            self.laser_tabs_data[wl] = vars_dict
-            self._build_individual_laser_ui(tab_frame, wl, vars_dict)
+        self.laser_conn_btn = ttk.Button(conn_frame, text="Connect Laser", 
+                                         command=self.controller.toggle_laser_connection)
+        self.laser_conn_btn.pack(side=tk.LEFT, padx=5)
 
-    def _build_individual_laser_ui(self, tab_parent, wl, vars_dict):
-        # [NEW] 1. 탭 최상단: 개별 장비 연결 제어바 생성
-        # PanedWindow보다 먼저 pack() 하여 맨 위에 고정시킵니다.
-        conn_frame = ttk.Frame(tab_parent, padding=5, relief="groove", borderwidth=1)
-        conn_frame.pack(fill=tk.X, padx=5, pady=5)
+        self.laser_refresh_btn = ttk.Button(conn_frame, text="Refresh Status 🔄", 
+                                         command=self.controller.manual_refresh_laser)
+        self.laser_refresh_btn.pack(side=tk.LEFT, padx=5)
 
-        # 상태 라벨 (크고 잘 보이게)
-        status_lbl = ttk.Label(conn_frame, textvariable=vars_dict["conn_status_txt"], 
-                               font=("Helvetica", 12, "bold"), foreground="red")
-        status_lbl.pack(side=tk.LEFT, padx=(10, 20))
-        vars_dict["conn_label_obj"] = status_lbl # 색상 변경을 위해 객체 저장
+        self.load_history_btn = ttk.Button(conn_frame, text="Load Historical Data 📂", 
+                                          command=self.controller.load_historical_laser_data)
+        self.load_history_btn.pack(side=tk.RIGHT, padx=10)
 
-        # 제어 버튼들 (main.py의 새 함수들과 연결)
-        ttk.Button(conn_frame, text="🔌 Connect", width=12,
-                   command=lambda: self.controller.connect_single_laser(wl)).pack(side=tk.LEFT, padx=2)
-        
-        ttk.Button(conn_frame, text="❌ Disconnect", width=12,
-                   command=lambda: self.controller.disconnect_single_laser(wl)).pack(side=tk.LEFT, padx=2)
-        
-        # 구분선
-        ttk.Separator(conn_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=10, pady=2)
-
-        # 새로고침 및 히스토리 버튼
-        ttk.Button(conn_frame, text="Refresh 🔄", width=10,
-                   command=lambda: self.controller.manual_refresh_laser(wl)).pack(side=tk.LEFT, padx=2)
-
-        ttk.Button(conn_frame, text="Load History 📂", 
-                   command=lambda: self.controller.load_historical_laser_data(wl)).pack(side=tk.RIGHT, padx=5)
-
-
-        # [EXISTING] 2. 그 아래에 기존의 좌우 패널(PanedWindow) 레이아웃 배치
-        # (여기서부터는 기존 코드와 동일합니다)
-        laser_pane = ttk.PanedWindow(tab_parent, orient=tk.HORIZONTAL)
+        laser_pane = ttk.PanedWindow(main_container, orient=tk.HORIZONTAL)
         laser_pane.pack(fill=tk.BOTH, expand=True)
 
-        # --- 좌측 패널 (Settings) ---
         left_pane = ttk.Frame(laser_pane)
         laser_pane.add(left_pane, weight=1)
 
-        self._create_laser_settings_frames_multi(left_pane, wl, vars_dict)
+        self._create_laser_settings_frames(left_pane) 
 
-        # --- 우측 패널 (Live Monitor) ---
+        self.laser_left_notebook = ttk.Notebook(left_pane)
+        self.laser_left_notebook.pack(fill=tk.BOTH, expand=True, pady=10)
+
+        hist_frame = ttk.Frame(self.laser_left_notebook)
+        self.laser_left_notebook.add(hist_frame, text=" Historical Plot ")
+
+        self.fig_hist, self.ax_hist = plt.subplots(figsize=(4, 2.5), dpi=80)
+
+        self.canvas_hist = FigureCanvasTkAgg(self.fig_hist, master=hist_frame)
+        self.hist_toolbar = NavigationToolbar2Tk(self.canvas_hist, hist_frame)
+        self.hist_toolbar.update()
+        self.hist_toolbar.pack(side=tk.TOP, fill=tk.X) 
+        self.canvas_hist.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+        log_view_frame = ttk.Frame(self.laser_left_notebook)
+        self.laser_left_notebook.add(log_view_frame, text=" Laser Session Log ")
+
+        from tkinter import scrolledtext
+        self.laser_log_text = scrolledtext.ScrolledText(log_view_frame, wrap=tk.WORD,
+                                                       state="disabled", height=10,
+                                                       bg="#f8f9fa", font=("Monaco", 9))
+        self.laser_log_text.pack(fill=tk.BOTH, expand=True)
+        
         right_pane = ttk.Frame(laser_pane)
         laser_pane.add(right_pane, weight=2)
 
-        self._create_laser_live_labels_multi(right_pane, vars_dict)
+        self._create_laser_live_labels(right_pane)
 
-        # Trigger Control 섹션
-        trig_frame = ttk.LabelFrame(left_pane, text=f"Trigger Control ({wl})", padding=10)
-        trig_frame.pack(fill=tk.X, pady=5)
-        vars_dict["trig_frame_obj"] = trig_frame 
-
-        ttk.Label(trig_frame, text="Mode:").pack(side=tk.LEFT, padx=5)
-
-        mode_combo = ttk.Combobox(trig_frame, textvariable=vars_dict["trigger_mode"], 
-                                  values=["Internal (PG1)", "Internal (PG2)", "External"], 
-                                  state="readonly", width=15)
-        mode_combo.pack(side=tk.LEFT, padx=5)
-        mode_combo.bind("<<ComboboxSelected>>", lambda e, w=wl: self.controller.on_laser_trigger_change_multi(w))
-
-        freq_entry = ttk.Entry(trig_frame, textvariable=vars_dict["freq_hz"], width=12)
-        freq_entry.pack(side=tk.LEFT, padx=5)
-        vars_dict["freq_entry_obj"] = freq_entry
-
-        apply_btn = ttk.Button(trig_frame, text="Apply", 
-                               command=lambda w=wl: self.controller.apply_laser_frequency_multi(w))
-        apply_btn.pack(side=tk.LEFT, padx=5)
-        vars_dict["freq_apply_btn_obj"] = apply_btn
-
-        # 좌측 하단 Notebook (History Plot & Log)
-        left_notebook = ttk.Notebook(left_pane)
-        left_notebook.pack(fill=tk.BOTH, expand=True, pady=10)
-
-        hist_tab = ttk.Frame(left_notebook)
-        left_notebook.add(hist_tab, text=" Historical Plot ")
-        
-        fig_h, ax_h = plt.subplots(figsize=(4, 2.5), dpi=80)
-        canvas_h = FigureCanvasTkAgg(fig_h, master=hist_tab)
-        canvas_h.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        
-        vars_dict["fig_hist"] = fig_h
-        vars_dict["ax_hist"] = ax_h
-        vars_dict["canvas_hist"] = canvas_h
-
-        log_tab = ttk.Frame(left_notebook)
-        left_notebook.add(log_tab, text=" Laser Session Log ")
-
-        # 우측 실시간 모니터링 그래프
-        realtime_container = ttk.LabelFrame(right_pane, text=f"Real-time Monitoring ({wl})", padding=5)
+        realtime_container = ttk.LabelFrame(right_pane, text="Real-time Monitoring (Temp & Current)", padding=5)
         realtime_container.pack(fill=tk.BOTH, expand=True, pady=5)
-
-        fig_live, (ax_temp, ax_curr) = plt.subplots(2, 1, sharex=True, figsize=(6, 6), dpi=100)
-        fig_live.tight_layout(pad=3.0)
-
-        canvas_live = FigureCanvasTkAgg(fig_live, master=realtime_container)
-        live_toolbar = NavigationToolbar2Tk(canvas_live, realtime_container)
-        live_toolbar.update()
-        live_toolbar.pack(side=tk.TOP, fill=tk.X)
-        canvas_live.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         
-        vars_dict["fig"] = fig_live
-        vars_dict["ax_temp"] = ax_temp
-        vars_dict["ax_curr"] = ax_curr
-        vars_dict["canvas"] = canvas_live
+        self.fig_live, (self.ax_temp, self.ax_curr) = plt.subplots(2, 1, sharex=True, figsize=(6, 6), dpi=100)
+        self.fig_live.tight_layout(pad=3.0) 
+        
+        self.canvas_live = FigureCanvasTkAgg(self.fig_live, master=realtime_container)
+        self.live_toolbar = NavigationToolbar2Tk(self.canvas_live, realtime_container)
+        self.live_toolbar.update()
+        self.live_toolbar.pack(side=tk.TOP, fill=tk.X)
+        self.canvas_live.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-    def _build_historical_plot_ui(self, parent):
-        """삭제되었던 히스토리 그래프 영역 복구"""
-        self.fig_hist, self.ax_hist = plt.subplots(figsize=(10, 5), dpi=100)
-        self.canvas_hist = FigureCanvasTkAgg(self.fig_hist, master=parent)
-        self.hist_toolbar = NavigationToolbar2Tk(self.canvas_hist, parent)
-        self.hist_toolbar.update()
-        self.hist_toolbar.pack(side=tk.TOP, fill=tk.X)
-        self.canvas_hist.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-    def update_laser_status_colors(self, wl, ld_on, tec_on):
-        vars_dict = self.laser_tabs_data.get(wl)
-        if not vars_dict: return
-    
-        ld_color = "#28a745" if ld_on else "#dc3545" 
-        tec_color = "#28a745" if tec_on else "#dc3545" 
+    def update_laser_status_colors(self, ld_on, tec_on):
+        # LD 상태 표시
+        ld_color = "#28a745" if ld_on else "#dc3545" # Green if ON, Red if OFF
+        if hasattr(self, 'ld_status_label'):
+            self.ld_status_label.config(foreground=ld_color)
 
-        if "ld_label_obj" in vars_dict:
-            vars_dict["ld_label_obj"].config(foreground=ld_color)
-        if "tec_label_obj" in vars_dict:
-            vars_dict["tec_label_obj"].config(foreground=tec_color)
+        # TEC 상태 표시
+        tec_color = "#28a745" if tec_on else "#dc3545"
+        self.tec_label.config(foreground=tec_color)
 
-    def _create_laser_settings_frames_multi(self, parent, wl, vars_dict):
-        """특정 파장 탭 전용 제어 프레임 생성"""
-        # [1] Power Control 영역
-        pwr_frame = ttk.LabelFrame(parent, text=f"Power Control ({wl})", padding=10)
+
+    def _create_laser_settings_frames(self, parent):
+        """Power, Current, Trigger 설정을 위한 프레임들 생성"""
+        # Power Control
+        pwr_frame = ttk.LabelFrame(parent, text="Power Control", padding=10)
         pwr_frame.pack(fill=tk.X, pady=5)
-        
-        # 버튼 클릭 시 해당 파장명(wl)을 컨트롤러로 전달
-        ttk.Button(pwr_frame, text="LD ON", 
-                   command=lambda: self.controller.set_laser_ld_safe(wl, True)).pack(side=tk.LEFT, padx=5)
-        ttk.Button(pwr_frame, text="LD OFF", 
-                   command=lambda: self.controller.set_laser_ld_safe(wl, False)).pack(side=tk.LEFT, padx=5)
-        
+        ttk.Button(pwr_frame, text="LD ON (Laser Diode)", command=lambda: self.controller.set_laser_ld(True)).pack(side=tk.LEFT, padx=5)
+        ttk.Button(pwr_frame, text="LD OFF", command=lambda: self.controller.set_laser_ld(False)).pack(side=tk.LEFT, padx=5)
         ttk.Separator(pwr_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, padx=10, fill=tk.Y)
-        
-        ttk.Button(pwr_frame, text="TEC ON", 
-                   command=lambda: self.controller.set_laser_tec_multi(wl, True)).pack(side=tk.LEFT, padx=5)
-        ttk.Button(pwr_frame, text="TEC OFF", 
-                   command=lambda: self.controller.set_laser_tec_multi(wl, False)).pack(side=tk.LEFT, padx=5)
+        ttk.Button(pwr_frame, text="TEC ON (Cooler)", command=lambda: self.controller.set_laser_tec(True)).pack(side=tk.LEFT, padx=5)
+        ttk.Button(pwr_frame, text="TEC OFF", command=lambda: self.controller.set_laser_tec(False)).pack(side=tk.LEFT, padx=5)
 
-        # [2] Current Settings 영역
+        # Current Settings
         curr_frame = ttk.LabelFrame(parent, text="Current Settings (mA)", padding=10)
         curr_frame.pack(fill=tk.X, pady=5)
-        
-        # 각 탭의 독립된 DoubleVar 사용
-        self._create_laser_slider(curr_frame, "Bias:", vars_dict["bias_set"])
-        self._create_laser_slider(curr_frame, "Pulse:", vars_dict["pulse_set"])
-        
-        ttk.Button(curr_frame, text="Apply Currents", 
-                   command=lambda: self.controller.apply_laser_currents_multi(wl)).pack(fill=tk.X, pady=10)
+        self._create_laser_slider(curr_frame, "Bias:", self.laser_vars["bias_set"])
+        self._create_laser_slider(curr_frame, "Pulse:", self.laser_vars["pulse_set"])
+        ttk.Button(curr_frame, text="Apply Currents", command=self.controller.apply_laser_currents).pack(fill=tk.X, pady=10)
 
-    def _create_laser_live_labels_multi(self, parent, vars_dict):
-        """특정 파장 탭의 실시간 상태 표시 라벨 생성"""
+        # Trigger & Frequency
+        self.trig_frame = ttk.LabelFrame(parent, text="Trigger Control (Hz)", padding=10)
+        self.trig_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Label(self.trig_frame, text="Mode:").pack(side=tk.LEFT)
+        self.laser_trig_combo = ttk.Combobox(self.trig_frame, textvariable=self.laser_vars["trigger_mode"],
+                                             values=["External", "Internal (PG1)", "Internal (PG2)"], state="readonly")
+        self.laser_trig_combo.pack(side=tk.LEFT, padx=5)
+        self.laser_trig_combo.bind("<<ComboboxSelected>>", self.controller.on_laser_trigger_change)
+
+        self.laser_freq_entry = ttk.Entry(self.trig_frame, textvariable=self.laser_vars["freq_hz"], width=12)
+        self.laser_freq_entry.pack(side=tk.LEFT, padx=5)
+        
+        self.laser_freq_apply_btn = ttk.Button(self.trig_frame, text="Apply", command=self.controller.apply_laser_frequency)
+        self.laser_freq_apply_btn.pack(side=tk.LEFT)
+
+    def _create_laser_live_labels(self, parent):
         status_grid = ttk.LabelFrame(parent, text="Live Status", padding=10)
         status_grid.pack(fill=tk.X, pady=5)
+        
+        # 1. LD Status
+        ld_row = ttk.Frame(status_grid)
+        ld_row.pack(fill=tk.X, pady=2)
+        ttk.Label(ld_row, text="LD Status:", width=15, font=("Helvetica", 10, "bold")).pack(side=tk.LEFT)
+        self.ld_status_label = ttk.Label(ld_row, textvariable=self.laser_vars["ld_status"], 
+                                         width=15, relief="groove", font=("Helvetica", 10, "bold"))
+        self.ld_status_label.pack(side=tk.LEFT)
 
-        items = [
-            ("LD Status", "ld_status"),
-            ("TEC Status", "tec_status"),
-            ("Temperature", "temp"),
-            ("Live Pulse", "pulse_live"),
-            ("Check Int.", "check_interval")
-        ]
+        tec_row = ttk.Frame(status_grid)
+        tec_row.pack(fill=tk.X, pady=2)
+        ttk.Label(tec_row, text="TEC Status:", width=15, font=("Helvetica", 10, "bold")).pack(side=tk.LEFT)
+        self.tec_label = ttk.Label(tec_row, textvariable=self.laser_vars["tec_status"], 
+                                   width=15, relief="groove", font=("Helvetica", 10, "bold"))
+        self.tec_label.pack(side=tk.LEFT)
 
-        for label_text, var_key in items:
+        other_items = [("Temperature", "temp"), ("Live Bias", "bias_live"), ("Live Pulse", "pulse_live")]
+        for label, var_key in other_items:
             row = ttk.Frame(status_grid)
             row.pack(fill=tk.X, pady=2)
-            
-            # 항목 이름 라벨
-            ttk.Label(row, text=f"{label_text}:", width=15, font=("Helvetica", 10, "bold")).pack(side=tk.LEFT)
-            
-            # 실제 값이 표시될 라벨 객체 생성
-            # .pack()을 뒤로 빼고 변수 lbl에 먼저 할당합니다.
-            lbl = ttk.Label(row, textvariable=vars_dict[var_key], width=15, relief="groove")
-            lbl.pack(side=tk.LEFT)
+            ttk.Label(row, text=f"{label}:", width=15, font=("Helvetica", 10, "bold")).pack(side=tk.LEFT)
+            ttk.Label(row, textvariable=self.laser_vars[var_key], width=15, relief="groove").pack(side=tk.LEFT)
 
-            # 나중에 색상을 바꾸기 위해 특정 항목(LD, TEC)의 라벨 객체만 vars_dict에 저장합니다.
-            if var_key == "ld_status":
-                vars_dict["ld_label_obj"] = lbl
-            if var_key == "tec_status":
-                vars_dict["tec_label_obj"] = lbl
+        interval_row = ttk.Frame(status_grid)
+        interval_row.pack(fill=tk.X, pady=2)
+        ttk.Label(interval_row, text="Check Interval:", width=15, font=("Helvetica", 10, "bold")).pack(side=tk.LEFT)
+        ttk.Label(interval_row, textvariable=self.laser_vars["check_interval"], 
+                  width=15, relief="groove", foreground="blue").pack(side=tk.LEFT)
 
     def _create_laser_slider(self, parent, label, var):
         frame = ttk.Frame(parent)

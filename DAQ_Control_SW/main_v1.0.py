@@ -1963,10 +1963,11 @@ class App:
                     status["UPS"] = True
 
         try:
+            # pgrep 등을 이용해 monitoring_app.py가 실행 중인지 간접 확인
             check_hv = subprocess.run(['pgrep', '-f', 'monitoring_app.py'], capture_output=True)
             if check_hv.returncode == 0:
                 status["HV"] = True
-                status["Env"] = True 
+                status["Env"] = True # 같은 앱에서 관리하므로 같이 True
         except Exception:
             pass
 

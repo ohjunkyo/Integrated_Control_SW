@@ -2,7 +2,6 @@ import sqlite3
 import json
 from datetime import datetime
 
-# DB 파일도 엔진 쪽에 안전하게 보관
 DB_PATH = "/home/precalkor/ADC/PreCalibration/experiment_log.db"
 
 class DAQDBManager:
