@@ -13,3 +13,8 @@ __pycache__/
 .idea/
 .DS_Store
 ./DAQ_Control_SW/LOG/UPS/
+DAQ_Control_SW/LOG/
+*.csv
+main_v*.py
+ui_manager_original.py
+__pycache__/
