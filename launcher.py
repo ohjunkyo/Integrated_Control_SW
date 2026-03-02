@@ -34,7 +34,7 @@ class AppLauncher(tk.Tk):
         hv_button.pack(pady=10, fill=tk.X)
 
         vm_button = tk.Button(
-                button_frame, text="Start Laser Control (Python)", font=button_font,
+                button_frame, text="No use => Laser Control (Python)", font=button_font,
                 bg="#f0ad4e", fg="white", padx=20, pady=15,
                 command=self.launch_laser_control
                 )

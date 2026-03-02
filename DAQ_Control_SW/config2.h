@@ -42,25 +42,25 @@ const std::string RotateAngle1 = "0";
 const std::string TiltAngle1 = "0";
 
 const std::string RotateAngle2 = "45";
-const std::string TiltAngle2 = "0";
+const std::string TiltAngle2 = "5";
 
 const std::string RotateAngle3 = "45";
-const std::string TiltAngle3 = "0";
+const std::string TiltAngle3 = "5";
 
 // --- High Voltage --- //
 const std::string HV1 = "1670";
-const std::string HV2 = "1810";
+const std::string HV2 = "1840";
 const std::string HV3 = "1770";
 
 // --- NOTE ---
-const std::string NOTE = "20260208";
+const std::string NOTE = "20260302";
 
 // --- Trigger Channel ---
 const int TriggerCh = 3;
 
 // --- Shift Information ---
 const std::string Shift_worker = "";
-const std::string Expert = "jsjang";
+const std::string Expert = "Junkyo";
 
 
 #endif // CONFIG2_H

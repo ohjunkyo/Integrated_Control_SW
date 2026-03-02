@@ -1124,8 +1124,7 @@ class App:
         self._log(f"🔌 {wl} Disconnected (User Request).")
 
     def manual_refresh_laser(self, wl=None):
-        """[수정] 특정 파장의 상태를 즉시 새로고침합니다."""
-        self.laser_session_start = time.time() # 빠른 루프 전환
+        self.laser_session_start = time.time() 
         if wl:
             self._log(f"Refreshing {wl}...")
         else:
@@ -1303,14 +1302,6 @@ class App:
 
         if hasattr(self, 'master') and self.master.winfo_exists():
             self.laser_after_id = self.master.after(interval, self.update_laser_status_loop)
-
-    def manual_refresh_laser(self):
-        """레이저 상태를 즉시 새로고침하고 10초간 빠른 모드로 전환합니다."""
-        if self.laser and self.laser.is_connected():
-            self.laser_session_start = time.time() # 타이머 리셋
-            self._log("Laser manual refresh triggered (1s mode for 10s)")
-            self.update_laser_status_loop()
-
 
     def on_laser_trigger_change_multi(self, wl):
         """특정 파장 탭의 트리거 모드에 따라 입력창 활성/비활성 제어"""
