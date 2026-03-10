@@ -1609,6 +1609,11 @@ class UIManager:
                                           state="disabled")
         self.ups_refresh_btn.pack(side=tk.LEFT, padx=5)
 
+        # [ui_manager.py] _create_ups_monitoring_tab 내부에 추가
+        self.ups_diag_btn = ttk.Button(conn_frame, text="Diagnosis 🛠️",
+                                       command=self.controller.diagnose_ups)
+        self.ups_diag_btn.pack(side=tk.LEFT, padx=5)
+
         ttk.Label(conn_frame, textvariable=self.ups_vars["conn_status"], 
                   font=("Helvetica", 10, "bold")).pack(side=tk.RIGHT)
 

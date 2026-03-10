@@ -41,11 +41,11 @@ const std::string direction3 = "B";
 const std::string RotateAngle1 = "0";
 const std::string TiltAngle1 = "0";
 
-const std::string RotateAngle2 = "45";
-const std::string TiltAngle2 = "25";
+const std::string RotateAngle2 = "135";
+const std::string TiltAngle2 = "35";
 
-const std::string RotateAngle3 = "45";
-const std::string TiltAngle3 = "25";
+const std::string RotateAngle3 = "135";
+const std::string TiltAngle3 = "35";
 
 // --- High Voltage --- //
 const std::string HV1 = "1670";
@@ -53,7 +53,7 @@ const std::string HV2 = "1840";
 const std::string HV3 = "1770";
 
 // --- NOTE ---
-const std::string NOTE = "20260302";
+const std::string NOTE = "20260305";
 
 // --- Trigger Channel ---
 const int TriggerCh = 3;

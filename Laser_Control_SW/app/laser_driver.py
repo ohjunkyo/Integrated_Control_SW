@@ -86,11 +86,45 @@ class TamadenshiLaser:
         self.status = {}  # Dictionary to store the status read from the device
         print(f"Controller initialized (VID: {self.VENDOR_ID:04x}, PID: {self.PRODUCT_ID:04x})")
 
-    def connect(self) -> (bool, str):
+    def connect(self, dev_path: bytes = None) -> (bool, str):
         """
         Attempts to connect to the hardware.
+        If dev_path is provided, it connects to the specific physical USB port.
         Returns a (success_boolean, message_string) tuple.
         """
+        if self.device:
+            self.disconnect()
+            
+        try:
+            # Create an hid.device object
+            self.device = hid.device()
+            
+            if dev_path:
+                # [수정] 동일한 VID/PID를 가진 장치들을 구분하기 위해 물리적 경로(Path)로 직접 연결합니다.
+                self.device.open_path(dev_path)
+            else:
+                # 경로가 지정되지 않은 경우, 기존처럼 VID와 PID로 첫 번째 장치를 찾습니다.
+                self.device.open(self.VENDOR_ID, self.PRODUCT_ID)
+
+            # If successful, get the product string
+            prod_str = self.device.get_product_string()
+            msg = f"Device connected successfully: {prod_str}"
+            print(f"✅ {msg}")
+            return True, msg
+        except IOError as e:
+            # 이 에러는 주로 권한 문제나 케이블 연결 불량 시 발생합니다.
+            msg = f"Device connection failed: {e}\n  1. Is the device connected via USB?\n  2. (Linux) Are you running with 'sudo' or are udev rules set up?"
+            print(f"❌ {msg}")
+            self.device = None
+            return False, msg
+        except Exception as e:
+            msg = f"An unknown error occurred: {e}"
+            print(f"❌ {msg}")
+            self.device = None
+            return False, msg
+
+    """# {{{
+    def connect(self) -> (bool, str):
         if self.device:
             self.disconnect()
             
@@ -116,7 +150,7 @@ class TamadenshiLaser:
             print(f"❌ {msg}")
             self.device = None
             return False, msg
-
+    """# }}}
     def disconnect(self):
         """Explicitly disconnects from the device."""
         if self.device:

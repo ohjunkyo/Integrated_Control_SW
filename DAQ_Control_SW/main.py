@@ -71,6 +71,13 @@ class App:
         self.load_app_config()
 
         self.wavelengths = ["375nm", "405nm", "450nm", "473nm"]
+
+        self.laser_port_mapping = {
+        "375nm": b'1-3.3:1.0',
+        "405nm": b'1-3.1:1.0',
+        "450nm": b'1-3.2:1.0',
+        "473nm": b'1-3.4:1.0'
+        }
         self.laser_instances = {}
 
         if LASER_AVAILABLE:
@@ -239,7 +246,7 @@ class App:
                     config = json.load(f)
                     config_path = config.get("config2h_path")
                     self.terminal_preference = config.get("terminal_preference", 'gnome-terminal')
-
+                    self.last_connected_wls = config.get("last_connected_wls", [])
         except Exception as e:
             print(f"Error loading app config: {e}")
 
@@ -249,17 +256,19 @@ class App:
             self.select_and_set_config_path(initial_setup=True)
 
     def save_app_config(self):
-        if not self.config_manager or not self.config_manager.filepath:
-            return
+        if not self.config_manager: return
         try:
+            connected_list = [wl for wl, inst in self.laser_instances.items() if inst.is_connected()]
+            
             with open(APP_CONFIG_FILE, 'w') as f:
                 config = {
-                        "config2h_path": self.config_manager.filepath,
-                        "terminal_preference": self.terminal_preference
-                        }
+                    "config2h_path": self.config_manager.filepath,
+                    "terminal_preference": self.terminal_preference,
+                    "last_connected_wls": connected_list 
+                }
                 json.dump(config, f, indent=4)
         except Exception as e:
-            messagebox.showerror("Error", f"Could not save app config: {e}")
+            self._log(f"Error saving config: {e}")
 
     def select_and_set_config_path(self, initial_setup=False):
         filepath = filedialog.askopenfilename(
@@ -1058,43 +1067,68 @@ class App:
   ##          """"""""""" LASER """""""""""""""""
 
     def auto_connect_laser(self):
-        if "405nm" in self.laser_instances:
-            self._log("Auto-connecting to 405nm Laser...")
-            self.connect_single_laser("405nm")
+        last_wls = getattr(self, "last_connected_wls", [])
+        if not last_wls: return
+
+        msg = f"The following lasers were connected last time:\n[{', '.join(last_wls)}]\n\nDo you want to restore these connections?"
+        if not messagebox.askyesno("Laser Auto-Connect", msg):
+            self._log("Auto-connect cancelled by user.")
+            return
+
+        for wl in last_wls:
+            if wl in self.laser_instances:
+                # [연결 1] 통신을 먼저 맺습니다.
+                self.connect_single_laser(wl)
+                
+                inst = self.laser_instances.get(wl)
+                # [연결 2] 하드웨어의 현재 실제 상태를 읽어옵니다.
+                if inst and inst.is_connected() and inst.update_status():
+                    # [핵심] 만약 하드웨어상에서 LD가 이미 켜져(ON) 있다면?
+                    if inst.status.get('ld_on', False):
+                        # 사용자에게 끌지 말지 선택권을 줍니다.
+                        off_msg = f"⚠️ [ {wl} ] Laser LD is currently ON.\n\nDo you want to turn it OFF now?"
+                        if messagebox.askyesno("LD Status Alert", off_msg):
+                            inst.set_ld_on(False)
+                            self._log(f"🛡️ Safety: {wl} LD turned OFF by user request.")
+                        else:
+                            self._log(f"⚠️ Warning: {wl} LD remains ON as per user request.")
+
     def connect_single_laser(self, wl):
-        """[수정] 개별 탭의 Connect 버튼 동작"""
         inst = self.laser_instances.get(wl)
         vars_dict = self.ui.laser_tabs_data.get(wl)
         
+        target_path = self.laser_port_mapping.get(wl)
+        
         if not inst or not vars_dict: return
 
-        if inst.is_connected():
-            self._log(f"{wl} is already connected.")
-            return
-
-        self._log(f"Connecting to {wl}...")
-        # UI에 '연결 중...' 표시
-        vars_dict["conn_status_txt"].set("Connecting...")
-        vars_dict["conn_label_obj"].config(foreground="orange")
+        self._log(f"Connecting to {wl} via Path {target_path}...")
         
-        success, msg = inst.connect() #
+        success, msg = inst.connect(dev_path=target_path)
         
         if success:
-            # 성공 시 UI 업데이트
             vars_dict["conn_status_txt"].set("Connected")
-            vars_dict["conn_label_obj"].config(foreground="#28a745") # 초록색
-            vars_dict["ld_status"].set("Connected")
-            self._log(f"✅ {wl} Connected.")
+            vars_dict["conn_label_obj"].config(foreground="#28a745")
             
-            # 모니터링 루프 가속
+            if inst.update_status():
+                is_ld = inst.status.get('ld_on', False)
+                vars_dict["ld_status"].set("ON" if is_ld else "OFF")
+            
+            # 빠른 업데이트 모드로 전환 (10초간 1초 주기로 체크)
             self.laser_session_start = time.time()
-            self.update_laser_status_loop()
+            self.update_laser_status_loop() 
+            
+            self._log(f"✅ {wl} Connected on Path {target_path}")
+            self.save_app_config() # 연결 리스트 저장
+
         else:
-            # 실패 시 UI 원상복구
             vars_dict["conn_status_txt"].set("Disconnected")
             vars_dict["conn_label_obj"].config(foreground="red")
-            self._log(f"❌ {wl} Connection Failed: {msg}")
-            messagebox.showerror("Connection Error", f"Failed to connect {wl}\n{msg}")
+            self._log(f"❌ {wl} Failed: {msg}")
+
+            messagebox.showerror("Connection Error",
+                                 f"Failed to connect to {wl} laser.\n\n"
+                                 f"Path: {target_path}\n"
+                                 f"Reason: {msg}")
 
     def disconnect_single_laser(self, wl):
         """[수정] 개별 탭의 Disconnect 버튼 동작 (강제 초기화 포함)"""
@@ -1103,13 +1137,11 @@ class App:
         
         if not vars_dict: return
 
-        # [중요] 실제 연결 여부와 관계없이, 사용자가 '해제'를 눌렀으므로 무조건 시도합니다.
         try:
             if inst: inst.disconnect()
         except Exception as e:
             self._log(f"Warning during disconnect {wl}: {e}")
 
-        # [중요] UI 강제 초기화 (안 끊기는 느낌 제거)
         vars_dict["conn_status_txt"].set("Disconnected")
         vars_dict["conn_label_obj"].config(foreground="red")
         
@@ -1117,10 +1149,10 @@ class App:
         vars_dict["tec_status"].set("OFF")
         vars_dict["temp"].set("--.- °C")
         
-        # 탭 아이콘 빨간색으로 변경
         idx = self.wavelengths.index(wl)
         self.ui.laser_sub_notebook.tab(idx, image=self.ui.tab_led_red, compound=tk.RIGHT)
         
+        self.save_app_config()
         self._log(f"🔌 {wl} Disconnected (User Request).")
 
     def manual_refresh_laser(self, wl=None):
@@ -1206,8 +1238,6 @@ class App:
             inst.set_tec_on(state)
             self._log(f"Command Sent: Laser {wl} TEC -> {'ON' if state else 'OFF'}")
 
-            # [핵심 수정] UI 직접 수정 코드 삭제함.
-            # 대신 0.5초 뒤에 루프를 돌려 확인 (TEC는 반응이 약간 느릴 수 있으므로 0.5초)
             self.laser_session_start = time.time()
             
             if self.laser_after_id:
@@ -1537,6 +1567,37 @@ class App:
             self.ui.ups_port_combo['values'] = []
             self._log("No serial ports found. Check connection or drivers.")
             messagebox.showwarning("Search Result", "No serial ports detected.\nPlease check the USB-RS232 connection.")
+
+    def diagnose_ups(self):
+        """[신규] UPS 연결 상태 종합 진단 로직"""
+        self._log("🔍 Starting UPS Connection Diagnosis...")
+        
+        # 1. USB 하드웨어 존재 확인 (Prolific 2303)
+        import serial.tools.list_ports
+        ports = serial.tools.list_ports.comports()
+        target_port = next((p.device for p in ports if p.vid == 0x067B and p.pid == 0x23A3), None)
+        
+        if not target_port:
+            self._log("❌ Step 1 Fail: Prolific USB-Serial Hardware not found.")
+            messagebox.showerror("Diagnosis", "UPS USB 장치를 찾을 수 없습니다. (lsusb 확인 요망)")
+            return
+
+        # 2. 통신 테스트
+        if self.ups_serial and self.ups_serial.is_open:
+            try:
+                self.ups_serial.write(b'Q1\r')
+                time.sleep(0.5)
+                if self.ups_serial.in_waiting > 0:
+                    self._log(f"✅ Step 2 Pass: UPS Response received on {target_port}")
+                    messagebox.showinfo("Diagnosis", f"정상 연결 중입니다.\n포트: {target_port}")
+                else:
+                    self._log("❌ Step 2 Fail: No response from UPS (Power?)")
+                    messagebox.showwarning("Diagnosis", "포트는 인식되나 UPS 응답이 없습니다.")
+            except Exception as e:
+                self._log(f"❌ Error: {e}")
+        else:
+            self._log("ℹ️ Attempting Auto-connect...")
+            self.auto_connect_ups()
 
     def auto_connect_ups(self):
         """lsusb에서 확인된 Prolific 장치를 찾아 2400bps로 연결합니다."""
