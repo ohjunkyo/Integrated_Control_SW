@@ -7,6 +7,7 @@ from tkinter import messagebox
 import matplotlib.dates as mdates
 import pandas as pd
 import logging
+from tkinter import messagebox, filedialog  
 from logging.handlers import TimedRotatingFileHandler
 import tkinter as tk
 
@@ -315,7 +316,7 @@ class LaserManager:
                 if w in self.app.ui.laser_tabs_data:
                     self.app.ui.laser_tabs_data[w]["check_interval"].set(f"{interval/1000:.0f}s")
 
-        if hasattr(self, 'master') and self.app.master.winfo_exists():
+        if hasattr(self.app, 'master') and self.app.master.winfo_exists():
             self.laser_after_id = self.app.master.after(interval, self.update_laser_status_loop)
 
     def on_laser_trigger_change_multi(self, wl):
@@ -500,32 +501,33 @@ class LaserManager:
             self.app.ui.laser_log_text.yview(tk.END)
 
     def save_laser_realtime_data(self, wl, temp, pulse):
-        """[수정] 각 파장의 데이터를 날짜별 CSV에 기록 (실험 메타데이터 포함)"""
-        log_dir = self.laser_log_dir
-        os.makedirs(log_dir, exist_ok=True)
-
-        today_str = datetime.now().strftime('%Y%m%d')
-        file_path = os.path.join(log_dir, f"laser_data_{wl}_{today_str}.csv")
-        file_exists = os.path.isfile(file_path)
-
-        # [추가] UI에서 현재 설정된 실험 메타데이터(모드, 주파수, 바이어스)를 가져옵니다.
-        vars_dict = self.app.ui.laser_tabs_data.get(wl)
-        if vars_dict:
-            mode = vars_dict["trigger_mode"].get()
-            freq = vars_dict["freq_hz"].get()
-            bias = vars_dict["bias_set"].get()
-        else:
-            mode, freq, bias = "Unknown", "0", 0.0
-
+        """[보완] 경로 강제 확인 및 예외 처리 강화"""
         try:
-            with open(file_path, "a") as f:
-                if not file_exists:
-                    # 헤더에 실험 조건 컬럼을 추가합니다.
-                    f.write("timestamp,temp_c,pulse_ma,bias_ma,trigger_mode,freq_hz\n")
-                
-                now_iso = datetime.now().isoformat()
-                # 데이터와 함께 메타데이터를 한 줄로 예쁘게 저장합니다.
-                f.write(f"{now_iso},{temp:.2f},{pulse:.2f},{float(bias):.2f},{mode},{freq}\n")
-        except Exception as e:
-            self.app._log(f"Error saving laser log for {wl}: {e}")
+            # 1. 경로 재확인 및 생성
+            log_dir = getattr(self.app, 'laser_log_dir', self.laser_log_dir)
+            if not os.path.exists(log_dir):
+                os.makedirs(log_dir, exist_ok=True)
 
+            today_str = datetime.now().strftime('%Y%m%d')
+            file_path = os.path.join(log_dir, f"laser_data_{wl}_{today_str}.csv")
+            file_exists = os.path.isfile(file_path)
+
+            # 2. 메타데이터 수집 (UI에서 안전하게 가져오기)
+            mode, freq, bias = "Unknown", "0", 0.0
+            if hasattr(self.app, 'ui') and hasattr(self.app.ui, 'laser_tabs_data'):
+                vars_dict = self.app.ui.laser_tabs_data.get(wl)
+                if vars_dict:
+                    mode = vars_dict["trigger_mode"].get()
+                    freq = vars_dict["freq_hz"].get()
+                    bias = vars_dict["bias_set"].get()
+
+            # 3. 파일 쓰기 (버퍼링 없이 즉시 쓰기)
+            with open(file_path, "a", buffering=1) as f:
+                if not file_exists:
+                    f.write("timestamp,temp_c,pulse_ma,bias_ma,trigger_mode,freq_hz\n")
+                now_iso = datetime.now().isoformat()
+                f.write(f"{now_iso},{temp:.2f},{pulse:.2f},{float(bias):.2f},{mode},{freq}\n")
+            
+        except Exception as e:
+            # 에러 발생 시 메인 로그에 출력하여 추적 가능하게 함
+            self.app._log(f"⚠️ Laser Logging Error ({wl}): {e}")

@@ -23,14 +23,20 @@ from logging.handlers import TimedRotatingFileHandler
 import random 
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from datetime import datetime
-from ui_manager import UIManager
+
+from ui_manager_test import UIManager
 from config_manager import ConfigManager
 from pmt_config_window import PMTConfigWindow
-
 from managers.ups_manager import UPSManager
 from managers.laser_manager import LaserManager
+from managers.control_access import ControlAccessManager
+from managers.rotation_manager import AutomationManager 
+from managers.rotation_control import RotationManager 
+from managers.ui_automation import AutomationUI
 
-APP_CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".daq_control_config.json")
+#APP_CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".daq_control_config.json")
+APP_CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".daq_control_config_TEST.json")
+
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
@@ -56,74 +62,127 @@ class App:
     def __init__(self, master, base_dir):
         self.master = master
         self.base_dir = base_dir
-        master.title("DAQ/LASER/UPS Control Panel")
+
+        # [필수] 매니저들이 참조하는 기본 변수를 "가장 먼저" 선언합니다.
+        self.laser_log_dir = "/home/precalkor/ADC/ADC_test/LOG/LASER"
+        self.laser_port_mapping = {
+            "375nm": "1-3.3:1.0", "405nm": "1-3.1:1.0",
+            "450nm": "1-3.2:1.0", "473nm": "1-3.4:1.0"
+        }
+        self.terminal_preference = 'gnome-terminal'
+        self.start_time = datetime.now()
+        self.config_manager = None
+        self.contacts_file = os.path.join(self.base_dir, "contacts.json")
+        
+        # 1. 설정 로드 (ConfigManager 생성)
+        self.load_app_config()
+
+        # 2. 로직 매니저 생성 (이제 config_manager가 있으니 SN 정보를 읽을 수 있습니다)
+        self.access_mgr = ControlAccessManager(self, password="root")
+        self.rot_mgr = RotationManager(self)
+        self.auto_mgr = AutomationManager(self)
+
+        # 3. UI 생성 (이제 모든 매니저가 준비되었으므로 안전합니다)
+        self.ui = UIManager(master, self)
+        self.auto_ui = self.ui.auto_ui
+
+        # 4. 하드웨어 매니저 (Laser, UPS)
+        self.laser_mgr = LaserManager(self) # 이제 에러가 나지 않습니다.
+        self.ups_mgr = UPSManager(self)
+
+        master.title("[TEST MODE] DAQ/LASER/UPS Control Panel")
         master.geometry("1600x950")
         self.master.minsize(1400, 900)
 
         icon_path = os.path.join(self.base_dir, 'icons', 'DAQcontroller.png')
-        img = Image.open(icon_path)
-        self.p_img = ImageTk.PhotoImage(img, master=master)
-        master.iconphoto(True, self.p_img)
+        if os.path.exists(icon_path):
+            img = Image.open(icon_path)
+            self.p_img = ImageTk.PhotoImage(img, master=master)
+            master.iconphoto(True, self.p_img)
 
-        self.contacts_file = os.path.join(self.base_dir, "contacts.json")
         self.load_contacts()
-
-        self.start_time = datetime.now()
-        self.config_manager = None
-        self.terminal_preference = 'gnome-terminal'
-        self.load_app_config()
-
         self.laser_mgr = LaserManager(self)
-        
+        self.ups_mgr = UPSManager(self)
+
+        # 레이저 인스턴스 생성 로직
         if LASER_AVAILABLE:
             for wl in self.laser_mgr.wavelengths:
                 try:
                     from laser_driver import TamadenshiLaser
                     self.laser_mgr.laser_instances[wl] = TamadenshiLaser()
-                    print(f"✅ Laser driver instance created for {wl}")
-                    
                     if wl == "405nm":
-                        self.laser = self.laser_mgr.laser_instances[wl] 
+                        self.laser = self.laser_mgr.laser_instances[wl]
                 except Exception as e:
-                    print(f"❌ Failed to initialize laser {wl}: {e}")
+                    self._log(f"Laser {wl} init failed: {e}")
 
+        self._setup_status_bar() # 상태바 관련 코드는 함수로 빼서 관리하면 좋습니다.
 
-        self.ups_mgr = UPSManager(self)
-
-        self.status_bar = ttk.Frame(master, relief=tk.SUNKEN, padding="2 5")
-        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
-        self.elapsed_time_var = tk.StringVar()
-        self.clock_var = tk.StringVar()
-        ttk.Label(self.status_bar, textvariable=self.elapsed_time_var).pack(side=tk.RIGHT, padx=10)
-        ttk.Label(self.status_bar, textvariable=self.clock_var).pack(side=tk.LEFT, padx=10)
-        self._update_status_bar()
-
-        self.ui = UIManager(master, self)
+        # 9. 초기 데이터 리프레시 및 스케줄러 등록
         self.ui.setup_shortcuts()
-
         if self.config_manager:
             self.validate_config_paths()
             self.master.after(500, self.refresh_all_data)
             self.master.after(1000, self.check_daq_connection)
-        else:
-            messagebox.showwarning("Warning", "Configuration not loaded.")
-
-        if self.laser_mgr.laser_instances:
-            self.master.after(5000, self.auto_connect_laser) 
-            self.update_laser_status_loop() 
-
-        self.ui.is_dark_mode = True 
-        self.ui.toggle_theme()
-
-        self.on_laser_trigger_change()
-        self.setup_laser_logger()
-        self.load_today_laser_log()
-        self.preload_laser_history()
-        self.preload_ups_history()
-
+        
+        # 10. 테마 및 초기 자동 연결
+        self.ui.is_dark_mode = True
+        self.ui.toggle_theme() # 다크모드 적용
 
         self.master.after(1500, self.auto_connect_ups)
+        self.master.after(5000, self.auto_connect_laser)
+        self.update_laser_status_loop()
+
+        # 종료 프로토콜
         self.master.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+    def _setup_status_bar(self):
+        """하단 상태 표시줄 위젯을 생성하고 실시간 업데이트를 시작합니다."""
+        # 1. 상태바 프레임 생성
+        self.status_bar = ttk.Frame(self.master, relief=tk.SUNKEN, padding="2 5")
+        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+
+        # 2. 표시 변수 선언
+        self.elapsed_time_var = tk.StringVar()
+        self.clock_var = tk.StringVar()
+
+        # 3. 라벨 배치 (왼쪽: 시계, 오른쪽: 실행 시간)
+        ttk.Label(self.status_bar, textvariable=self.clock_var).pack(side=tk.LEFT, padx=10)
+        ttk.Label(self.status_bar, textvariable=self.elapsed_time_var).pack(side=tk.RIGHT, padx=10)
+
+        # 4. 업데이트 루프 시작
+        self._update_status_bar()
+
+    # App 클래스 내 적당한 위치에 추가
+    def is_production_running(self):
+        """현재 시스템에서 main.py(Production)가 실행 중인지 확인"""
+        try:
+            # 리눅스 pgrep 명령어로 main.py 프로세스 검색
+            result = subprocess.run(['pgrep', '-f', 'main.py'], capture_output=True, text=True)
+            # 자기 자신(main_test.py) 외에 다른 main.py가 있는지 확인
+            # pgrep 결과가 있고, 그 중 하나라도 현재 프로세스 ID(os.getpid)와 다르면 True
+            pids = result.stdout.strip().split()
+            return len(pids) > 1
+        except Exception:
+            return False
+
+    def request_control_unlock(self):
+        """비밀번호 확인 후 제어권 활성화 및 자동화 UI 연동"""
+        if self.access_mgr.request_unlock():
+            self.ui.refresh_ui_state()
+            # 자동화 탭의 버튼 텍스트도 실시간 갱신
+            if hasattr(self, 'auto_ui'):
+                self.auto_ui.update_unlock_ui(self.access_mgr.unlocked)
+            
+            if self.access_mgr.unlocked:
+                self.auto_connect_laser()
+                self.auto_connect_ups()
+
+    def refresh_ui_state(self):
+        """제어권 상태에 따라 UI 버튼들의 활성/비활성 상태를 업데이트"""
+        state = tk.NORMAL if self.control_unlocked else tk.DISABLED
+        # UIManager를 통해 각 버튼의 state를 일괄 변경하는 로직 필요
+        # 예: self.ui.btn_laser_connect.config(state=state)
+        pass
 
     def load_contacts(self):
         """contacts.json 파일에서 연락망을 불러옵니다."""
@@ -216,36 +275,27 @@ class App:
 
     def load_app_config(self):
         config_path = None
-        # 1. 무조건 기본값 먼저 세팅 (에러 방지)
-        self.laser_port_mapping = {
-            "375nm": "1-3.3:1.0", "405nm": "1-3.1:1.0",
-            "450nm": "1-3.2:1.0", "473nm": "1-3.4:1.0"
-        }
-        self.laser_log_dir = "/home/precalkor/ADC/ADC_test/LOG/LASER"
-        self.terminal_preference = 'gnome-terminal'
-        self.last_connected_wls = [] # [추가] 빈 리스트 기본값 세팅 
-        # 2. 파일이 있으면 읽어오기
+        # 1. 파일에서 기존 경로 먼저 시도
         try:
             if os.path.exists(APP_CONFIG_FILE):
                 with open(APP_CONFIG_FILE, 'r') as f:
-                    config = json.load(f)
-                    config_path = config.get("config2h_path")
-                    self.terminal_preference = config.get("terminal_preference", self.terminal_preference)
-                    self.laser_port_mapping = config.get("laser_port_mapping", self.laser_port_mapping)
-                    self.laser_log_dir = config.get("laser_log_dir", self.laser_log_dir)
-                    self.last_connected_wls = config.get("last_connected_wls", [])
-        except Exception as e:
-            print(f"Error loading app config: {e}")
+                    data = json.load(f)
+                    config_path = data.get("config2h_path")
+        except: pass
 
-        # 3. [자동화 핵심] 저장된 경로가 없어도 실험실 기본 경로에 파일이 있으면 묻지 않고 바로 잡습니다!
-        default_path = "/home/precalkor/ADC/ADC_test/config2.h"
-        if not config_path and os.path.exists(default_path):
-            config_path = default_path
+        # 2. 경로가 없으면 하드코드된 우선순위대로 체크
+        if not config_path or not os.path.exists(config_path):
+            test_h = "/home/precalkor/ADC/ADC_test/config_test.h"
+            std_h = "/home/precalkor/ADC/ADC_test/config2.h"
+            config_path = test_h if os.path.exists(test_h) else std_h if os.path.exists(std_h) else None
 
-        # 4. 최종 적용
+        # 3. 최종 매니저 생성 (딱 한 번만 실행)
         if config_path and os.path.exists(config_path):
             self.config_manager = ConfigManager(config_path)
-            self.save_app_config() # 자동으로 찾았으니 파일에 덮어쓰기
+            # 나머지 기본값 세팅 및 저장
+            self.terminal_preference = 'gnome-terminal'
+            self.save_app_config()
+            self._log(f"Config loaded: {os.path.basename(config_path)}")
         else:
             self.select_and_set_config_path(initial_setup=True)
 
@@ -373,6 +423,48 @@ class App:
             return
         method_to_call = getattr(self, command_id, self.command_not_found)
         method_to_call()
+
+    def handle_mode_change(self):
+        """모드 선택에 따른 버튼 잠금 해제 및 탭 비활성화 로직"""
+        category = self.ui.run_mode.get()        # 'auto' or 'manual'
+        manual_sub = self.ui.manual_type_var.get() # 'laser' or 'dark'
+        
+        # 1. 공통: 런 번호 갱신
+        self.update_latest_run_number()
+
+        # 2. General Scan (자동) 모드일 때
+        if category == "auto":
+            # (1) 메인 Run DAQ 버튼 강제 잠금
+            if 'run_daq' in self.ui.buttons:
+                self.ui.buttons['run_daq'].config(state=tk.DISABLED)
+            
+            # (2) 수동 선택 옵션 비활성화
+            self.ui.rb_laser.config(state=tk.DISABLED)
+            self.ui.rb_dark.config(state=tk.DISABLED)
+
+            # (3) General Scan 탭 활성화 및 이동
+            self.ui.notebook.tab(self.auto_ui.tab, state="normal")
+            self.ui.notebook.select(self.auto_ui.tab)
+            self._log("Mode: General Scan Active. Main DAQ Locked.")
+
+        # 3. Manual Mode (수동) 모드일 때
+        else:
+            # (1) 제어권이 확보(Unlock)된 상태라면 메인 버튼 즉시 해제 (버그 수정)
+            if self.access_mgr.unlocked:
+                if 'run_daq' in self.ui.buttons:
+                    self.ui.buttons['run_daq'].config(state=tk.NORMAL)
+            
+            # (2) 수동 선택 옵션 활성화
+            self.ui.rb_laser.config(state=tk.NORMAL)
+            self.ui.rb_dark.config(state=tk.NORMAL)
+
+            # (3) General Scan 탭 비활성화 (수동 모드에선 못 들어감)
+            # 탭의 인덱스나 객체를 사용하여 클릭 차단
+            self.ui.notebook.tab(self.auto_ui.tab, state="disabled")
+            
+            # Helper 탭으로 자동 이동 (강제)
+            self.ui.notebook.select(0) 
+            self._log(f"Mode: Manual ({manual_sub}) Active. General Scan Tab Locked.")
 
     def command_not_found(self):
         messagebox.showerror("Error", "Unknown command received from UI.")
@@ -1064,7 +1156,13 @@ class App:
             messagebox.showwarning("Path Not Found", f"'{path_key}' is not defined in your config file.")
 
     #################### Laser Monitoring ##############################
-    def auto_connect_laser(self): self.laser_mgr.auto_connect_laser()
+    #def auto_connect_laser(self): self.laser_mgr.auto_connect_laser()
+
+    def auto_connect_laser(self):
+        if not self.access_mgr.unlocked:
+            self._log("Laser auto-connect skipped: Control is LOCKED.")
+            return
+        self.laser_mgr.auto_connect_laser()
     def connect_single_laser(self, wl): self.laser_mgr.connect_single_laser(wl)
     def disconnect_single_laser(self, wl): self.laser_mgr.disconnect_single_laser(wl)
     def manual_refresh_laser(self, wl=None): self.laser_mgr.manual_refresh_laser(wl)
@@ -1087,7 +1185,14 @@ class App:
     #################### UPS Monitoring ##############################
     def search_ups_ports(self): self.ups_mgr.search_ups_ports()
     def diagnose_ups(self): self.ups_mgr.diagnose_ups()
-    def auto_connect_ups(self): self.ups_mgr.auto_connect_ups()
+    #def auto_connect_ups(self): self.ups_mgr.auto_connect_ups()
+
+    def auto_connect_ups(self):
+        if not self.access_mgr.unlocked:
+            self._log("UPS auto-connect skipped: Control is LOCKED.")
+            return
+        self.ups_mgr.auto_connect_ups()
+
     def _try_ups_handshake(self, port): self.ups_mgr._try_ups_handshake(port)
     def update_ups_status_loop(self): self.ups_mgr.update_ups_status_loop()
     def manual_refresh_ups(self): self.ups_mgr.manual_refresh_ups()

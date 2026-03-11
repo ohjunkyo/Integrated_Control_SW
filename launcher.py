@@ -13,7 +13,7 @@ class AppLauncher(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Integrated Control Software Launcher")
-        self.geometry("550x550")
+        self.geometry("550x800")
 
         self.configure(bg='#333333')
         button_font = ("Helvetica", 14, "bold")
@@ -30,11 +30,14 @@ class AppLauncher(tk.Tk):
         daq_button = tk.Button(button_frame, text="Start DAQ Control", font=button_font, bg="#007ACC", fg="white", padx=20, pady=15, command=self.launch_daq_control)
         daq_button.pack(pady=10, fill=tk.X)
 
+        test_button = tk.Button(button_frame, text="Start DAQ (TEST MODE)", font=button_font, bg="#f0ad4e", fg="black", padx=20, pady=15, command=self.launch_test_control)
+        test_button.pack(pady=10, fill=tk.X)
+
         hv_button = tk.Button(button_frame, text="Start HV Monitor", font=button_font, bg="#5CB85C", fg="white", padx=20, pady=15, command=self.launch_hv_monitor)
         hv_button.pack(pady=10, fill=tk.X)
 
         vm_button = tk.Button(
-                button_frame, text="No use => Laser Control (Python)", font=button_font,
+                button_frame, text="[Old version] Laser Control (Python)", font=button_font,
                 bg="#f0ad4e", fg="white", padx=20, pady=15,
                 command=self.launch_laser_control
                 )
@@ -136,7 +139,11 @@ class AppLauncher(tk.Tk):
 
     def launch_daq_control(self):
         script_path = os.path.abspath(os.path.join("DAQ_Control_SW", "main.py"))
-        
+        test_script_path = os.path.abspath(os.path.join("DAQ_Control_SW", "main_test.py"))
+        if self.is_process_running(test_script_path):
+            messagebox.showerror("Hardware Collision Alert", "⚠️ Test Mode is currently running!\n\nPlease close Test Mode before starting Production.")
+            return
+
         if self.is_process_running(script_path):
             messagebox.showwarning("Already Running", "DAQ Control Panel is already running.")
             return
@@ -153,6 +160,34 @@ class AppLauncher(tk.Tk):
             self.processes.append(proc)
         except Exception as e:
             messagebox.showerror("Error", f"Failed to launch DAQ Control:\n{e}")
+
+    def launch_test_control(self):
+        prod_script_path = os.path.abspath(os.path.join("DAQ_Control_SW", "main.py"))
+        test_script_path = os.path.abspath(os.path.join("DAQ_Control_SW", "main_test.py"))
+
+        if self.is_process_running(prod_script_path):
+            messagebox.showerror("Hardware Collision Alert", "⚠️ Production (main.py) is currently running!\n\nPlease close the real DAQ Control Panel before starting Test Mode.")
+            return
+
+        if self.is_process_running(test_script_path):
+            messagebox.showwarning("Already Running", "Test Mode is already running.")
+            return
+
+        print(f"Launching Test Mode: {test_script_path}")
+        python_exe = self.get_python_executable()
+        script_dir = os.path.dirname(test_script_path)
+
+        if not os.path.exists(test_script_path):
+            messagebox.showerror("File Not Found", f"Test script not found:\n{test_script_path}\n\nPlease create main_test.py first.")
+            return
+
+        command = [python_exe, test_script_path]
+
+        try:
+            proc = subprocess.Popen(command, cwd=script_dir, preexec_fn=os.setsid)
+            self.processes.append(proc)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to launch Test Mode:\n{e}")
 
 
     def launch_hv_monitor(self):

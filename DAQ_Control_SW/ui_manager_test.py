@@ -25,6 +25,12 @@ class UIManager:
         self.master = master
         self.controller = controller
 
+        if hasattr(self.controller, 'access_mgr'):
+            self.unlock_btn = tk.Button(master, text="🔒 Unlock Controls",
+                                        command=self.controller.request_control_unlock,
+                                        bg="#f0ad4e", fg="black", font=("Helvetica", 10, "bold"))
+        else:
+            self.unlock_btn = None
 
         self.default_font = font.nametofont("TkDefaultFont")
         self.default_font.configure(size=11) 
@@ -201,6 +207,10 @@ class UIManager:
         self.notebook = ttk.Notebook(right_pane)
         self.notebook.pack(fill=tk.BOTH, expand=True)
 
+        ####### Update 3. 11
+        from managers.ui_automation import AutomationUI
+        self.auto_ui = AutomationUI(self.notebook, self.controller)
+        ####### Update 3. 11
 
         # Tab 1: PMT Rotation Helper (이제 스크롤 없이 바로 보임)
         config_tab = ttk.Frame(self.notebook, padding=(10, 10, 10, 10))
@@ -618,21 +628,52 @@ class UIManager:
 
         # text_frame의 크기가 변경될 때마다(예: 창 크기 조절) configure_wraplength 함수를 호출합니다.
         text_frame.bind("<Configure>", configure_wraplength)
-        # --- [*** 수정 끝 ***] ---
 
+    # ui_manager_test.py 내부 _create_run_control_frame 수정 (4칸 띄어쓰기)
     def _create_run_control_frame(self, parent):
-        frame = ttk.LabelFrame(parent, text="Run Control & Parameters", padding="10")
+        frame = ttk.LabelFrame(parent, text=" 📊 Run Mode & Parameters ", padding="10")
         frame.pack(fill=tk.X, pady=5, padx=5)
-        ttk.Label(frame, text="Mode:").pack(anchor=tk.W)
-        laser_radio = ttk.Radiobutton(frame, text="Laser & External trigger (0)", variable=self.run_mode, value="laser", command=self.controller.update_latest_run_number)
-        dark_radio = ttk.Radiobutton(frame, text="Dark & Self trigger (1)", variable=self.run_mode, value="dark", command=self.controller.update_latest_run_number)
-        laser_radio.pack(anchor=tk.W)
-        dark_radio.pack(anchor=tk.W)
-        ttk.Label(frame, text="Run number (waveform inspection, produce & analyis):").pack(anchor=tk.W, pady=(10, 0))
+
+        # [NEW] 메인 모드 선택 (1번: General / 2번: Manual)
+        ttk.Label(frame, text="1. Operation Category:", font=("Helvetica", 10, "bold")).pack(anchor=tk.W)
+        
+        # main_mode_var는 App에서 관리하도록 controller를 참조합니다.
+        # (App.__init__에 self.ui.main_mode_var = tk.StringVar(value="manual") 추가 필요)
+        rb_auto = ttk.Radiobutton(frame, text=" General Scan (Auto Control)", 
+                                  variable=self.run_mode, value="auto",
+                                  command=self.controller.handle_mode_change)
+        rb_auto.pack(anchor=tk.W, padx=10, pady=2)
+
+        rb_manual = ttk.Radiobutton(frame, text=" Manual Mode (Laser/Dark Selection)", 
+                                    variable=self.run_mode, value="manual",
+                                    command=self.controller.handle_mode_change)
+        rb_manual.pack(anchor=tk.W, padx=10, pady=2)
+
+        ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=10)
+
+        # [NEW] 2번 수동 모드 내 세부 선택 (Manual일 때만 활성화)
+        ttk.Label(frame, text="2. Manual Sub-selection:", font=("Helvetica", 10)).pack(anchor=tk.W)
+        
+        # 수동 모드 변수 (기존 self.manual_mode_var 활용)
+        self.manual_type_var = tk.StringVar(value="laser")
+        
+        self.rb_laser = ttk.Radiobutton(frame, text=" Laser & External trigger (0)", 
+                                        variable=self.manual_type_var, value="laser",
+                                        command=self.controller.handle_mode_change)
+        self.rb_laser.pack(anchor=tk.W, padx=25)
+
+        self.rb_dark = ttk.Radiobutton(frame, text=" Dark & Self trigger (1)", 
+                                       variable=self.manual_type_var, value="dark",
+                                       command=self.controller.handle_mode_change)
+        self.rb_dark.pack(anchor=tk.W, padx=25)
+
+        # Run Number 입력창 (기존 유지)
+        ttk.Label(frame, text="Run number (Produce & Analysis):").pack(anchor=tk.W, pady=(15, 0))
         run_entry = ttk.Entry(frame, textvariable=self.run_number_var)
         run_entry.pack(fill=tk.X)
         self.run_num_status_label = ttk.Label(frame, text="", foreground="gray", font=("Helvetica", 8))
         self.run_num_status_label.pack(anchor=tk.W, pady=(2, 0))
+
 
     def set_run_number_status(self, message):
         self.run_num_status_label.config(text=message)
@@ -1722,6 +1763,10 @@ class UIManager:
         dashboard = ttk.LabelFrame(parent, text=" System Connection Overview ", padding=10)
         dashboard.pack(fill=tk.X, pady=(0, 10), padx=5)
 
+        if self.unlock_btn:
+            self.unlock_btn.master = dashboard 
+            self.unlock_btn.pack(side=tk.RIGHT, padx=10)        
+
         inner_container = ttk.Frame(dashboard)
         inner_container.pack(expand=True)
 
@@ -1806,20 +1851,37 @@ class UIManager:
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
     def refresh_ui_state(self):
-        """모든 제어 버튼을 항상 활성화 상태로 유지합니다."""
-        state = tk.NORMAL  # 인터록 없이 항상 사용 가능하도록 고정
+        """제어권 상태에 따라 UI를 업데이트하되, 운영 모드(main.py)에서는 항상 활성화합니다."""
         
-        # 메인 DAQ 버튼 활성화
-        if 'run_daq' in self.buttons:
-            self.buttons['run_daq'].config(state=state)
+        # [수정] 모드 판별: access_mgr이 있으면 그 상태를 따르고, 없으면(main.py) 항상 True
+        if hasattr(self.controller, 'access_mgr'):
+            is_unlocked = self.controller.access_mgr.unlocked
+        else:
+            is_unlocked = True 
+            
+        state = tk.NORMAL if is_unlocked else tk.DISABLED
+        
+        # 제어권 버튼 업데이트 (테스트 모드일 때만)
+        if self.unlock_btn:
+            if is_unlocked:
+                self.unlock_btn.config(text="🔓 Controls Active", bg="#28a745", fg="white")
+            else:
+                self.unlock_btn.config(text="🔒 Unlock Controls", bg="#f0ad4e", fg="black")
 
-        # 모든 레이저 제어 버튼 활성화
+        # UPS 관련 버튼들 잠금/해제
+        if hasattr(self, 'ups_conn_btn'): self.ups_conn_btn.config(state=state)
+        if hasattr(self, 'ups_refresh_btn'): self.ups_refresh_btn.config(state=state)
+        if hasattr(self, 'ups_diag_btn'): self.ups_diag_btn.config(state=state)
+        if hasattr(self, 'btn_ups_shutdown'): self.btn_ups_shutdown.config(state=state)
+
+        # Laser 관련 버튼들 잠금/해제
         if hasattr(self, 'laser_tabs_data'):
             for wl, vars_dict in self.laser_tabs_data.items():
-                # 버튼 키들이 존재하는지 확인 후 상태 변경
-                for btn_key in ["ld_on_btn", "ld_off_btn", "tec_on_btn", "tec_off_btn", "curr_apply_btn_obj"]:
-                    if btn_key in vars_dict:
-                        vars_dict[btn_key].config(state=state)
+                if "ld_on_btn" in vars_dict: vars_dict["ld_on_btn"].config(state=state)
+                if "ld_off_btn" in vars_dict: vars_dict["ld_off_btn"].config(state=state)
+                if "tec_on_btn" in vars_dict: vars_dict["tec_on_btn"].config(state=state)
+                if "tec_off_btn" in vars_dict: vars_dict["tec_off_btn"].config(state=state)
+                if "curr_apply_btn_obj" in vars_dict: vars_dict["curr_apply_btn_obj"].config(state=state)
 
     def setup_shortcuts(self):
         """DAQ 탭 전용 단축키 설정"""

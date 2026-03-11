@@ -23,10 +23,10 @@ from logging.handlers import TimedRotatingFileHandler
 import random 
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from datetime import datetime
+
 from ui_manager import UIManager
 from config_manager import ConfigManager
 from pmt_config_window import PMTConfigWindow
-
 from managers.ups_manager import UPSManager
 from managers.laser_manager import LaserManager
 
@@ -72,6 +72,12 @@ class App:
         self.config_manager = None
         self.terminal_preference = 'gnome-terminal'
         self.load_app_config()
+
+        try:
+            os.makedirs(self.laser_log_dir, exist_ok=True)
+            self._log(f"✅ Laser Log Directory initialized: {self.laser_log_dir}")
+        except Exception as e:
+            self._log(f"❌ Failed to create log directory: {e}")
 
         self.laser_mgr = LaserManager(self)
         
@@ -124,6 +130,7 @@ class App:
 
         self.master.after(1500, self.auto_connect_ups)
         self.master.protocol("WM_DELETE_WINDOW", self.on_closing)
+        self.ui.refresh_ui_state()
 
     def load_contacts(self):
         """contacts.json 파일에서 연락망을 불러옵니다."""
