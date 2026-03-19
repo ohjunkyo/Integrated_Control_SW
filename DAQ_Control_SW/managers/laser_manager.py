@@ -10,11 +10,11 @@ import logging
 from tkinter import messagebox, filedialog  
 from logging.handlers import TimedRotatingFileHandler
 import tkinter as tk
+import tkinter.simpledialog as sd # 파일 최상단에 없으면 추가하세요.
 
 class LaserManager:
     def __init__(self, app):
-        self.app = app  # main.py의 App 인스턴스를 참조합니다.
-
+        self.app = app
         self.wavelengths = ["375nm", "405nm", "450nm", "473nm"]
         self.laser_port_mapping = {
             wl: path.encode('utf-8') for wl, path in self.app.laser_port_mapping.items()
@@ -22,13 +22,17 @@ class LaserManager:
         self.laser_log_dir = self.app.laser_log_dir
         self.laser_instances = {}
 
+        # [CRITICAL FIX] Added missing connection tracking flags
+        self.comm_error_flags = {wl: False for wl in self.wavelengths}
+        self.expected_connections = set() 
+
         self.plot_history = {}
         for wl in self.wavelengths:
             self.plot_history[wl] = {
-                    "time": collections.deque(maxlen=90000), 
-                    "temp": collections.deque(maxlen=90000), 
-                    "pulse": collections.deque(maxlen=90000)
-                    }
+                "time": collections.deque(maxlen=90000), 
+                "temp": collections.deque(maxlen=90000), 
+                "pulse": collections.deque(maxlen=90000)
+            }
 
         self.laser_session_start = None
         self.laser_after_id = None
@@ -44,26 +48,20 @@ class LaserManager:
 
         for wl in last_wls:
             if wl in self.laser_instances:
-                # [연결 1] 통신을 먼저 맺습니다.
                 self.connect_single_laser(wl)
 
                 inst = self.laser_instances.get(wl)
-                # [연결 2] 하드웨어의 현재 실제 상태를 읽어옵니다.
                 if inst and inst.is_connected() and inst.update_status():
-                    # [핵심] 만약 하드웨어상에서 LD가 이미 켜져(ON) 있다면?
                     if inst.status.get('ld_on', False):
-                            # 사용자에게 끌지 말지 선택권을 줍니다.
                             off_msg = f"⚠️ [ {wl} ] Laser LD is currently ON.\n\nDo you want to turn it OFF now?"
                             if messagebox.askyesno("LD Status Alert", off_msg):
-                                # 1. 시리얼 충돌을 막기 위해 백그라운드 루프를 잠시 멈춥니다.
                                 if self.laser_after_id:
                                     self.app.master.after_cancel(self.laser_after_id)
                                     self.laser_after_id = None
                                 
-                                # 2. 확실하게 끄기 명령을 보내고, 장비가 처리할 시간(0.5초)을 줍니다.
                                 inst.set_ld_on(False)
-                                time.sleep(0.5) 
-                                inst.update_status() # 꺼진 상태 확실히 읽어오기
+                                #time.sleep(0.5) 
+                                inst.update_status() 
                                 
                                 # 3. 화면(UI) 강제 즉시 업데이트
                                 vars_dict = self.app.ui.laser_tabs_data.get(wl)
@@ -81,65 +79,105 @@ class LaserManager:
     def connect_single_laser(self, wl):
         inst = self.laser_instances.get(wl)
         vars_dict = self.app.ui.laser_tabs_data.get(wl)
-
         target_path = self.laser_port_mapping.get(wl)
-
         if not inst or not vars_dict: return
 
-        self.app._log(f"Connecting to {wl} via Path {target_path}...")
-
+        self.app._log(f"Connecting to {wl} via {target_path}...")
         success, msg = inst.connect(dev_path=target_path)
 
         if success:
+            self.expected_connections.add(wl) # Register for auto-recovery
             vars_dict["conn_status_txt"].set("Connected")
             vars_dict["conn_label_obj"].config(foreground="#28a745")
-
+            self.comm_error_flags[wl] = False
             if inst.update_status():
-                is_ld = inst.status.get('ld_on', False)
-                vars_dict["ld_status"].set("ON" if is_ld else "OFF")
-
-            # 빠른 업데이트 모드로 전환 (10초간 1초 주기로 체크)
+                vars_dict["ld_status"].set("ON" if inst.status.get('ld_on', False) else "OFF")
             self.laser_session_start = time.time()
             self.update_laser_status_loop()
-
-            self.app._log(f"✅ {wl} Connected on Path {target_path}")
-            self.app.save_app_config() # 연결 리스트 저장
-
+            self.app._log(f"✅ {wl} Connected successfully.")
+            self.app.save_app_config()
         else:
-            vars_dict["conn_status_txt"].set("Disconnected")
-            vars_dict["conn_label_obj"].config(foreground="red")
-            self.app._log(f"❌ {wl} Failed: {msg}")
-
-            messagebox.showerror("Connection Error",
-                                 f"Failed to connect to {wl} laser.\n\n"
-                                 f"Path: {target_path}\n"
-                                 f"Reason: {msg}")
-
+            self.app._log(f"❌ {wl} Connection Failed: {msg}")
+            messagebox.showerror("Connection Error", f"Failed to connect {wl}: {msg}")
 
     def disconnect_single_laser(self, wl):
-        """[수정] 개별 탭의 Disconnect 버튼 동작 (강제 초기화 포함)"""
+        if wl in self.expected_connections:
+            self.expected_connections.remove(wl) # Unregister from auto-recovery
         inst = self.laser_instances.get(wl)
         vars_dict = self.app.ui.laser_tabs_data.get(wl)
-
         if not vars_dict: return
-
         try:
             if inst: inst.disconnect()
-        except Exception as e:
-            self.app._log(f"Warning during disconnect {wl}: {e}")
-
+        except: pass
         vars_dict["conn_status_txt"].set("Disconnected")
         vars_dict["conn_label_obj"].config(foreground="red")
-
         vars_dict["ld_status"].set("Disconnected")
-        vars_dict["tec_status"].set("OFF")
-        vars_dict["temp"].set("--.- °C")
-
         idx = self.wavelengths.index(wl)
         self.app.ui.laser_sub_notebook.tab(idx, image=self.app.ui.tab_led_red, compound=tk.RIGHT)
+        self.app._log(f"🔌 {wl} Disconnected by user.")
 
-        self.app.save_app_config()
-        self.app._log(f"🔌 {wl} Disconnected (User Request).")
+
+    def show_interlock_recovery_dialog(self, wl, inst):
+        """인터락 복구 시 팝업창을 띄우는 커스텀 다이얼로그"""
+        dialog = tk.Toplevel(self.app.master)
+        dialog.title(f"Interlock Recovery - {wl}")
+        dialog.geometry("380x150")
+        dialog.attributes("-topmost", True)
+        dialog.grab_set() # 팝업이 떠 있는 동안 메인 창 클릭 방지
+
+        tk.Label(dialog, text=f"[{wl}] 인터락 해제가 감지되었습니다.\n다시 연결하시겠습니까?", font=("Arial", 10, "bold"), pady=15).pack()
+
+        def on_normal_connect():
+            dialog.destroy()
+            self._process_post_reconnect(wl, inst, is_admin=False)
+
+        def on_admin_connect():
+            pwd = sd.askstring("Admin", "Admin 비밀번호를 입력하세요:", show='*', parent=dialog)
+            if pwd == "1234": # 💡 원하는 Admin 비밀번호로 변경하세요
+                self.app._log(f"🔑 [ {wl} ] Admin 권한 승인됨.")
+                dialog.destroy()
+                self._process_post_reconnect(wl, inst, is_admin=True)
+            elif pwd is not None:
+                messagebox.showerror("Error", "비밀번호가 틀렸습니다.", parent=dialog)
+
+        def on_cancel():
+            self.app._log(f"🚫 [ {wl} ] 사용자가 연결을 취소했습니다.")
+            inst.disconnect()
+            self._handle_comm_failure(wl, self.wavelengths.index(wl))
+            dialog.destroy()
+
+        btn_frame = tk.Frame(dialog)
+        btn_frame.pack(pady=10)
+
+        tk.Button(btn_frame, text="일반 연결", width=10, command=on_normal_connect).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="강제 연결 (Admin)", width=15, command=on_admin_connect, fg="red").pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="취소", width=10, command=on_cancel).pack(side=tk.LEFT, padx=5)
+
+    def _process_post_reconnect(self, wl, inst, is_admin=False):
+        """팝업창 선택 이후의 레이저 상태 처리 로직"""
+        inst.update_status()
+        is_ld_on = inst.status.get('ld_on', False)
+
+        if is_ld_on:
+            if is_admin:
+                # 관리자: Restore 기능과 동일하게 끄거나 켤지 물어봄
+                off_msg = f"⚠️ [ {wl} ] 하드웨어 LD가 현재 켜져있습니다(ON)!\n\n안전을 위해 레이저를 끄시겠습니까?\n(아니오 클릭 시 켜진 상태 유지)"
+                if messagebox.askyesno("LD Status Alert (Admin)", off_msg):
+                    inst.set_ld_on(False)
+                    inst.set_tec_on(False)
+                    self.app._log(f"🛡️ Safety: [ {wl} ] 관리자 권한으로 레이저 OFF 조치됨.")
+                else:
+                    self.app._log(f"⚠️ Warning: [ {wl} ] 관리자가 레이저 ON 유지를 선택했습니다.")
+            else:
+                # 일반 사용자: 묻지 않고 무조건 안전하게 강제 OFF
+                inst.set_ld_on(False)
+                inst.set_tec_on(False)
+                self.app._log(f"🛡️ Safety: [ {wl} ] 일반 연결이므로 안전을 위해 강제 OFF 되었습니다.")
+                messagebox.showinfo("Safety Action", "일반 권한으로 연결되어 안전을 위해 레이저가 강제 종료되었습니다.")
+        
+        time.sleep(0.1)
+        inst.update_status()
+        self.comm_error_flags[wl] = False # 정상 루프로 복귀
 
     def manual_refresh_laser(self, wl=None):
         self.laser_session_start = time.time()
@@ -207,10 +245,17 @@ class LaserManager:
                 mode = vars_dict["trigger_mode"].get()
 
                 pg1, pg2, ext = (mode=="Internal (PG1)"), (mode=="Internal (PG2)"), (mode=="External")
-                inst.set_trigger_mode(pg1, pg2, ext) #
+                inst.set_trigger_mode(pg1, pg2, ext) 
+                
+                time.sleep(0.1) 
 
                 if pg1: inst.set_pg1_frequency(hz)
                 elif pg2: inst.set_pg2_frequency(hz)
+                
+                time.sleep(0.1) 
+
+                if "current_mode_disp" in vars_dict:
+                    vars_dict["current_mode_disp"].set(f"Current: {mode}")
 
                 self.app._log(f"✅ Laser {wl} Config: {mode}, {hz} Hz applied.")
             except ValueError:
@@ -242,7 +287,9 @@ class LaserManager:
                 pulse = vars_dict["pulse_set"].get()
 
                 inst.set_bias_current(bias)
+                time.sleep(0.2) 
                 inst.set_pulse_current(pulse)
+                time.sleep(0.2) 
                 self.app._log(f"✅ Applied to {wl}: Bias={bias:.2f}mA, Pulse={pulse:.2f}mA")
 
                 if self.laser_after_id:
@@ -252,75 +299,113 @@ class LaserManager:
                 self.app._log(f"❌ Error applying currents to {wl}: {e}")
 
     def update_laser_status_loop(self):
-        """탭 헤더에 [연결, LD, TEC] 상태를 통합 표시하고 데이터를 중복 없이 저장합니다."""
+        """Core loop for status, interlock sync, auto-recovery, and Tab indicators"""
         if self.laser_after_id:
             self.app.master.after_cancel(self.laser_after_id)
             self.laser_after_id = None
 
-        interval = 60000 # 평상시 60초
-
+        interval = 60000 
         for idx, wl in enumerate(self.wavelengths):
             inst = self.laser_instances.get(wl)
             ui_vars = self.app.ui.laser_tabs_data.get(wl)
             if not inst or not ui_vars: continue
 
             if inst.is_connected():
-                # [정보 1] 연결됨 -> 탭 아이콘 녹색
-                self.app.ui.laser_sub_notebook.tab(idx, image=self.app.ui.tab_led_green, compound=tk.RIGHT)
+                try:
+                    status_ok = inst.update_status()
 
-                if inst.update_status(): #
-                    status = inst.status
-                    is_ld_on = status.get('ld_on', False)
-                    is_tec_on = status.get('tec_on', False)
+                    if status_ok:
+                        
+                        # ==========================================
+                        if self.comm_error_flags[wl]:
+                            self.comm_error_flags[wl] = False 
+                            
+                            self.app.master.after(10, lambda w=wl, i=inst: self.show_interlock_recovery_dialog(w, i))
+                            continue
+                        # ==========================================
 
-                    # 수치 변수 할당 (중복 방지)
-                    temp_val = status.get('ld_temp', 0)
-                    pulse_val = status.get('pulse', 0)
-                    now_ts = datetime.now()
+                        status = inst.status
+                        ld_on, tec_on = status.get('ld_on', False), status.get('tec_on', False)
 
-                    # [정보 2&3] LD, TEC 상태 기호 표시
-                    ld_mark = "●" if is_ld_on else "○"
-                    tec_mark = "●" if is_tec_on else "○"
-                    new_title = f" {wl} [L:{ld_mark} T:{tec_mark}] "
-                    self.app.ui.laser_sub_notebook.tab(idx, text=new_title)
+                        temp, pulse = status.get('ld_temp', 0), status.get('pulse', 0)
+                        
+                        ld_mark = "●" if ld_on else "○"
+                        tec_mark = "●" if tec_on else "○"
+                        tab_text = f" {wl} [L:{ld_mark} T:{tec_mark}] "
+                        self.app.ui.laser_sub_notebook.tab(idx, text=tab_text, image=self.app.ui.tab_led_green, compound=tk.RIGHT)
 
-                    # UI 텍스트 및 색상 업데이트
-                    ui_vars["ld_status"].set("ON" if is_ld_on else "OFF")
-                    ui_vars["tec_status"].set("ON" if is_tec_on else "OFF")
-                    ui_vars["temp"].set(f"{temp_val:.2f} °C")
-                    ui_vars["pulse_live"].set(f"{pulse_val:.2f} mA")
-                    self.app.ui.update_laser_status_colors(wl, is_ld_on, is_tec_on)
+                        interlock_alarm = status.get('alarm', False) or status.get('interlock', False)
+                        
+                        if interlock_alarm:
+                            ui_vars["ld_status"].set("🔒 INTERLOCK")
+                            if "ld_label_obj" in ui_vars: 
+                                ui_vars["ld_label_obj"].config(foreground="#fd7e14") # 주황색 경고
+                        else:
+                            ui_vars["ld_status"].set("ON" if ld_on else "OFF")
+                            self.app.ui.update_laser_status_colors(wl, ld_on, tec_on)
 
-                    # 1. 파장별 독립 메모리에 데이터 축적 (한 번만 수행)
-                    self.plot_history[wl]["temp"].append(temp_val)
-                    self.plot_history[wl]["pulse"].append(pulse_val)
-                    self.plot_history[wl]["time"].append(now_ts)
+                        #ui_vars["ld_status"].set("ON" if ld_on else "OFF")
+                        ui_vars["tec_status"].set("ON" if tec_on else "OFF")
+                        ui_vars["temp"].set(f"{temp:.2f} °C")
+                        ui_vars["pulse_live"].set(f"{pulse:.2f} mA")
+                        #self.app.ui.update_laser_status_colors(wl, ld_on, tec_on)
 
-                    # 2. 실시간 그래프 갱신 및 파일 저장
-                    self.refresh_laser_realtime_plot(wl)
-                    self.save_laser_realtime_data(wl, temp_val, pulse_val)
+                        # Data recording
+                        self.plot_history[wl]["temp"].append(temp)
+                        self.plot_history[wl]["pulse"].append(pulse)
+                        self.plot_history[wl]["time"].append(datetime.now())
+                        self.refresh_laser_realtime_plot(wl)
+                        self.save_laser_realtime_data(wl, temp, pulse)
+                    else:
+                        self._handle_comm_failure(wl, idx)
+                except (OSError, serial.SerialException) as e:
+                    self.app._log(f"🚨 {wl} Comm Error: {e}")
+                    inst.disconnect()
+                    self._handle_comm_failure(wl, idx)
             else:
-                # 연결 안 됨 처리
-                self.app.ui.laser_sub_notebook.tab(idx, image=self.app.ui.tab_led_red, compound=tk.RIGHT)
-                self.app.ui.laser_sub_notebook.tab(idx, text=f" {wl} ")
-                if wl != "405nm":
-                    ui_vars["ld_status"].set("Disconnected")
-
-        # 가변 주기 제어 로직 (기존 유지)
-        if self.laser_instances:
-            if self.laser_session_start is None: self.laser_session_start = time.time()
-            elapsed = time.time() - self.laser_session_start
-            interval = 1000 if elapsed < 10 else 60000
-
-            for w in self.wavelengths:
-                if w in self.app.ui.laser_tabs_data:
-                    self.app.ui.laser_tabs_data[w]["check_interval"].set(f"{interval/1000:.0f}s")
+                if wl in self.expected_connections:
+                    self.app._log(f"🔄 {wl} Attempting auto-reconnect...")
+                    inst.connect(dev_path=self.laser_port_mapping.get(wl))
 
         if hasattr(self.app, 'master') and self.app.master.winfo_exists():
+            if self.laser_session_start and (time.time() - self.laser_session_start < 10):
+                interval = 1000
             self.laser_after_id = self.app.master.after(interval, self.update_laser_status_loop)
 
+    def _handle_comm_failure(self, wl, idx):
+        """Handle UI when communication is lost"""
+        inst = self.laser_instances.get(wl)
+        if inst:
+            inst.set_ld_on(False)
+            inst.set_tec_on(False)
+        ui_vars = self.app.ui.laser_tabs_data.get(wl)
+        if not self.comm_error_flags[wl]:
+            self.app._log(f"🚨 [ {wl} ] Connection lost. Check hardware/interlock.")
+            self.comm_error_flags[wl] = True
+        
+        # 에러 발생 시 탭 제목에서 동그라미 제거 (깔끔하게 파장만 표시)
+        self.app.ui.laser_sub_notebook.tab(idx, text=f" {wl} ", image=self.app.ui.tab_led_red, compound=tk.RIGHT)
+        
+        ui_vars["ld_status"].set("INTERLOCK / ERR")
+        self.app.ui.update_laser_status_colors(wl, False, False)
+
+    def on_laser_trigger_change(self, event=None):
+        """Initializes all trigger states at startup, or handles active tab on event."""
+        try:
+            if event is None:
+                # [FIX] Startup: Initialize UI states for ALL wavelengths
+                for wl in self.wavelengths:
+                    self.on_laser_trigger_change_multi(wl)
+            else:
+                # UI Event: Handle only the currently selected tab
+                idx = self.app.ui.laser_sub_notebook.index(self.app.ui.laser_sub_notebook.select())
+                wl = self.wavelengths[idx]
+                self.on_laser_trigger_change_multi(wl)
+        except Exception as e:
+            self.app._log(f"⚠️ Trigger initialization error: {e}")
+
     def on_laser_trigger_change_multi(self, wl):
-        """특정 파장 탭의 트리거 모드에 따라 입력창 활성/비활성 제어"""
+        """Fix: Toggles input state correctly between External and Internal modes"""
         vars_dict = self.app.ui.laser_tabs_data.get(wl)
         if not vars_dict: return
 
@@ -333,19 +418,14 @@ class LaserManager:
             if entry: entry.config(state="disabled")
             if btn: btn.config(state="disabled")
             if frame: frame.config(text=f"Trigger Control - DISABLED (External) [{wl}]")
-            else:
-                if entry: entry.config(state="normal")
+        else: # [Indentation Fix] Internal modes now correctly enable the entry
+            if entry: entry.config(state="normal")
             if btn: btn.config(state="normal")
             if frame: frame.config(text=f"Trigger Control - ENABLED (Internal) [{wl}]")
 
-        # 실제 하드웨어에 설정 적용
         inst = self.laser_instances.get(wl)
         if inst and inst.is_connected():
             self.apply_laser_frequency_multi(wl)
-
-    def on_laser_trigger_change(self, event=None):
-        for wl in self.wavelengths:
-            self.on_laser_trigger_change_multi(wl)
 
     def load_historical_laser_data(self, wl=None):
         log_dir = self.laser_log_dir
@@ -442,37 +522,28 @@ class LaserManager:
 
 
     def preload_laser_history(self):
-        """[수정] 날짜 변화와 상관없이 전날 00:00:00부터의 데이터를 복구합니다."""
+        """Restore history from self.laser_log_dir for the last 24h"""
         import pandas as pd
         from datetime import timedelta
-
         now = datetime.now()
-        # [핵심] 기준 시점: 어제 날짜의 00시 00분 00초
         start_point = (now - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-
-        # 어제와 오늘 날짜 리스트 생성
-        dates_to_check = [
-                (now - timedelta(days=1)).strftime('%Y%m%d'),
-                now.strftime('%Y%m%d')
-                ]
+        dates_to_check = [(now - timedelta(days=1)).strftime('%Y%m%d'), now.strftime('%Y%m%d')]
 
         for wl in self.wavelengths:
-            # 기존 데이터 비우기
             self.plot_history[wl]["time"].clear()
             self.plot_history[wl]["temp"].clear()
             self.plot_history[wl]["pulse"].clear()
-
             total_points = 0
-            for date_str in dates_to_check:
-                log_file = f"/home/precalkor/ADC/ADC_test/LOG/LASER/laser_data_{wl}_{date_str}.csv"
 
+            for date_str in dates_to_check:
+                # [FIX] Use dynamic log directory instead of hardcoded path
+                log_file = os.path.join(self.laser_log_dir, f"laser_data_{wl}_{date_str}.csv")
                 if os.path.exists(log_file):
                     try:
                         df = pd.read_csv(log_file)
                         for _, row in df.iterrows():
                             try:
                                 ts = datetime.fromisoformat(row['timestamp'])
-                                # [핵심 조건] 전날 0시 이후 데이터만 메모리에 로드
                                 if ts >= start_point:
                                     self.plot_history[wl]["time"].append(ts)
                                     self.plot_history[wl]["temp"].append(float(row['temp_c']))
@@ -484,7 +555,6 @@ class LaserManager:
 
             if total_points > 0:
                 self.refresh_laser_realtime_plot(wl)
-
 
     def _log_laser(self, msg):
         """레이저 전용 로그 위젯과 파일에 동시에 기록"""

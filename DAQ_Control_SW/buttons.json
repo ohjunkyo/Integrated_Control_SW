@@ -1,7 +1,7 @@
 [
     {
         "frame": "scripts",
-        "label": "1. Configuration (Ctrl + O)",
+        "label": "1. Global Settings (Ctrl + O)",
         "command": "open_config",
         "style": "Normal.TButton"
     },

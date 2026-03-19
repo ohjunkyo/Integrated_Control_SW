@@ -19,6 +19,8 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 from PIL import Image, ImageTk
+from managers.ui_automation import AutomationUI
+
 
 class UIManager:
     def __init__(self, master, controller):
@@ -95,7 +97,7 @@ class UIManager:
         self.ups_value_labels = []
 
 
-        self.run_mode = tk.StringVar(value="laser")
+        self.run_mode = tk.StringVar(value="auto")
         self.run_number_var = tk.StringVar(value="1")
         self.status_indicators = {}
         self.buttons = {}
@@ -206,15 +208,11 @@ class UIManager:
         # 우측 내부 Notebook (Helper, Data Files, Log)
         self.notebook = ttk.Notebook(right_pane)
         self.notebook.pack(fill=tk.BOTH, expand=True)
-
-        ####### Update 3. 11
-        from managers.ui_automation import AutomationUI
         self.auto_ui = AutomationUI(self.notebook, self.controller)
-        ####### Update 3. 11
 
         # Tab 1: PMT Rotation Helper (이제 스크롤 없이 바로 보임)
         config_tab = ttk.Frame(self.notebook, padding=(10, 10, 10, 10))
-        self.notebook.add(config_tab, text="PMT Rotation Helper")
+        self.notebook.add(config_tab, text="PMT Setup & Helper")
         self._create_status_frame(config_tab)
 
         # Tab 2: Data Files (Treeview 자체 스크롤바 사용)
@@ -247,10 +245,11 @@ class UIManager:
         self._update_pmt_status_and_helper() 
         self.update_config_display()
         self.update_path_display()
+        if hasattr(self, 'auto_ui') and hasattr(self.auto_ui, 'update_run_info'):
+            self.auto_ui.update_run_info()
+
         if hasattr(self, 'data_tree'):
             self.update_data_viewer(force_refresh=True)
-
-    # ui_manager.py
 
     def toggle_theme(self):
         self.is_dark_mode = not self.is_dark_mode
@@ -637,8 +636,6 @@ class UIManager:
         # [NEW] 메인 모드 선택 (1번: General / 2번: Manual)
         ttk.Label(frame, text="1. Operation Category:", font=("Helvetica", 10, "bold")).pack(anchor=tk.W)
         
-        # main_mode_var는 App에서 관리하도록 controller를 참조합니다.
-        # (App.__init__에 self.ui.main_mode_var = tk.StringVar(value="manual") 추가 필요)
         rb_auto = ttk.Radiobutton(frame, text=" General Scan (Auto Control)", 
                                   variable=self.run_mode, value="auto",
                                   command=self.controller.handle_mode_change)
@@ -1189,6 +1186,10 @@ class UIManager:
         apply_btn.pack(side=tk.LEFT, padx=5)
         vars_dict["freq_apply_btn_obj"] = apply_btn
 
+        vars_dict["current_mode_disp"] = tk.StringVar(value="Current: External")
+        ttk.Label(trig_frame, textvariable=vars_dict["current_mode_disp"],
+                  font=("Helvetica", 10, "bold"), foreground="#c92a2a").pack(side=tk.LEFT, padx=10)
+
         # 좌측 하단 Notebook (History Plot & Log)
         left_notebook = ttk.Notebook(left_pane)
         left_notebook.pack(fill=tk.BOTH, expand=True, pady=10)
@@ -1699,7 +1700,7 @@ class UIManager:
             self.ups_value_labels.append(val_lbl) 
 
         # 2-3: Outlet Status (2x2 Grid)
-        outlet_pane = ttk.LabelFrame(mid_frame, text=" Outlet Status (2x2), You can change this outlet and YOU Must FIX THE CODE (main.py)", padding=10)
+        outlet_pane = ttk.LabelFrame(mid_frame, text=" 🔌 Outlet Status (2x2) ", padding=10)
         outlet_pane.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 0))
 
         self.outlet_canvas = tk.Canvas(outlet_pane, width=180, height=140, highlightthickness=0)
@@ -1901,4 +1902,4 @@ class UIManager:
         self.master.bind("<Control-i>", lambda e: self.controller.handle_button_click("open_image_viewer"))
         
         # 6. Refresh: F5
-        self.master.bind("<F5>", lambda e: self.controller.refresh_data())
+        self.master.bind("<F5>", lambda e: self.controller.refresh_all_data())

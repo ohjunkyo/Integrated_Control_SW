@@ -296,7 +296,8 @@ class MonitoringApp(QMainWindow):
     def _load_initial_graph_data(self):
         try:
             print("Loading initial graph data...")
-            start_dt = (datetime.now() - timedelta(hours=24)).isoformat()
+            #start_dt = (datetime.now() - timedelta(hours=24)).isoformat()
+            start_dt = (datetime.now() - timedelta(days=3)).isoformat()
             end_dt = datetime.now().isoformat()
             
             timestamps, data = self.db_manager.fetch_data_range(start_dt, end_dt)
@@ -376,7 +377,7 @@ class MonitoringApp(QMainWindow):
     def update_graphs(self):
         ts = time.time()
         self.graph_data['time'].append(ts)
-        max_points = 1440 
+        max_points = 4320 
         
         if len(self.graph_data['time']) > max_points: self.graph_data['time'].pop(0)
         

@@ -1,6 +1,6 @@
 {
   "arduino_settings": {
-    "port": "/dev/ttyACM0",
+    "port": "/dev/ttyACM1",
     "baud_rate": 9600,
     "sensors": [
       { "pin": 2, "name": "Dark Box #1" },
@@ -11,7 +11,8 @@
   "caen_hv_settings": {
     "system_type": "N1470",
     "link_type": "TCPIP",
-    "connection_argument": "192.168.0.200",
+    "connection_argument": "192.168.10.201",
+    "__connection____argument__": "192.168.0.200",
     "channels_to_monitor": [0, 1, 2, 3],
     "parameters": {
       "v_mon": "VMon",

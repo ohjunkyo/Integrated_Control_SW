@@ -13,7 +13,7 @@ def load_config(filename):
 
 if __name__ == "__main__":
 	print("--- CAEN HV 고급 파라미터 진단 시작 ---")
-	config_file = sys.argv[1] if len(sys.argv) > 1 else 'config.json'
+	config_file = sys.argv[1] if len(sys.argv) > 1 else '../config_precal.json'
 	slot_to_check = 0
 	channel_to_check = 0
 

@@ -63,31 +63,37 @@ class App:
         self.master = master
         self.base_dir = base_dir
 
-        # [필수] 매니저들이 참조하는 기본 변수를 "가장 먼저" 선언합니다.
-        self.laser_log_dir = "/home/precalkor/ADC/ADC_test/LOG/LASER"
-        self.laser_port_mapping = {
-            "375nm": "1-3.3:1.0", "405nm": "1-3.1:1.0",
-            "450nm": "1-3.2:1.0", "473nm": "1-3.4:1.0"
-        }
         self.terminal_preference = 'gnome-terminal'
         self.start_time = datetime.now()
         self.config_manager = None
         self.contacts_file = os.path.join(self.base_dir, "contacts.json")
         
-        # 1. 설정 로드 (ConfigManager 생성)
+        # 1. 설정 로드
         self.load_app_config()
 
-        # 2. 로직 매니저 생성 (이제 config_manager가 있으니 SN 정보를 읽을 수 있습니다)
+        if self.config_manager and self.config_manager.get_config_value("LogDir"):
+            base_log_dir = self.config_manager.get_config_value("LogDir")
+            self.laser_log_dir = os.path.join(base_log_dir, "LASER")
+        else:
+            self.laser_log_dir = os.path.join(self.base_dir, "LOG", "LASER")
+
+        # [복구된 코드] LaserManager가 필요로 하는 포트 매핑 변수
+        self.laser_port_mapping = {
+            "375nm": "1-3.3:1.0", "405nm": "1-3.1:1.0",
+            "450nm": "1-3.2:1.0", "473nm": "1-3.4:1.0"
+        }
+
+        # 2. 로직 매니저 생성
         self.access_mgr = ControlAccessManager(self, password="root")
         self.rot_mgr = RotationManager(self)
         self.auto_mgr = AutomationManager(self)
 
-        # 3. UI 생성 (이제 모든 매니저가 준비되었으므로 안전합니다)
+        # 3. UI 생성
         self.ui = UIManager(master, self)
         self.auto_ui = self.ui.auto_ui
 
-        # 4. 하드웨어 매니저 (Laser, UPS)
-        self.laser_mgr = LaserManager(self) # 이제 에러가 나지 않습니다.
+        # 4. 하드웨어 매니저 생성 (중복 제거 완료)
+        self.laser_mgr = LaserManager(self)
         self.ups_mgr = UPSManager(self)
 
         master.title("[TEST MODE] DAQ/LASER/UPS Control Panel")
@@ -100,11 +106,10 @@ class App:
             self.p_img = ImageTk.PhotoImage(img, master=master)
             master.iconphoto(True, self.p_img)
 
+        # 5. 연락망 로드
         self.load_contacts()
-        self.laser_mgr = LaserManager(self)
-        self.ups_mgr = UPSManager(self)
 
-        # 레이저 인스턴스 생성 로직
+        # 6. 레이저 인스턴스 생성 로직
         if LASER_AVAILABLE:
             for wl in self.laser_mgr.wavelengths:
                 try:
@@ -115,25 +120,26 @@ class App:
                 except Exception as e:
                     self._log(f"Laser {wl} init failed: {e}")
 
-        self._setup_status_bar() # 상태바 관련 코드는 함수로 빼서 관리하면 좋습니다.
+        # 7. 상태바 세팅
+        self._setup_status_bar() 
 
-        # 9. 초기 데이터 리프레시 및 스케줄러 등록
+        # 8. 초기 데이터 리프레시 및 스케줄러 등록
         self.ui.setup_shortcuts()
         if self.config_manager:
             self.validate_config_paths()
             self.master.after(500, self.refresh_all_data)
             self.master.after(1000, self.check_daq_connection)
         
-        # 10. 테마 및 초기 자동 연결
         self.ui.is_dark_mode = True
-        self.ui.toggle_theme() # 다크모드 적용
+        self.ui.toggle_theme() 
 
         self.master.after(1500, self.auto_connect_ups)
         self.master.after(5000, self.auto_connect_laser)
+        self.master.after(500, self.handle_mode_change) 
         self.update_laser_status_loop()
 
-        # 종료 프로토콜
         self.master.protocol("WM_DELETE_WINDOW", self.on_closing)
+
 
     def _setup_status_bar(self):
         """하단 상태 표시줄 위젯을 생성하고 실시간 업데이트를 시작합니다."""
@@ -425,46 +431,40 @@ class App:
         method_to_call()
 
     def handle_mode_change(self):
-        """모드 선택에 따른 버튼 잠금 해제 및 탭 비활성화 로직"""
+        """모드 선택에 따른 버튼 잠금 해제 및 탭 비활성화 로직 (가시성 강화)"""
         category = self.ui.run_mode.get()        # 'auto' or 'manual'
         manual_sub = self.ui.manual_type_var.get() # 'laser' or 'dark'
         
-        # 1. 공통: 런 번호 갱신
         self.update_latest_run_number()
 
-        # 2. General Scan (자동) 모드일 때
         if category == "auto":
-            # (1) 메인 Run DAQ 버튼 강제 잠금
+            # (1) 메인 Run DAQ 버튼 강제 잠금 및 텍스트 변경
             if 'run_daq' in self.ui.buttons:
-                self.ui.buttons['run_daq'].config(state=tk.DISABLED)
+                self.ui.buttons['run_daq'].config(state=tk.DISABLED, text="2. Run DAQ (🔒 Locked in Auto Mode)")
             
-            # (2) 수동 선택 옵션 비활성화
-            self.ui.rb_laser.config(state=tk.DISABLED)
-            self.ui.rb_dark.config(state=tk.DISABLED)
+            # (2) 수동 선택 옵션 비활성화 및 텍스트 변경
+            self.ui.rb_laser.config(state=tk.DISABLED, text="Laser & External trigger (🔒 Locked)")
+            self.ui.rb_dark.config(state=tk.DISABLED, text="Dark & Self trigger (🔒 Locked)")
 
             # (3) General Scan 탭 활성화 및 이동
             self.ui.notebook.tab(self.auto_ui.tab, state="normal")
             self.ui.notebook.select(self.auto_ui.tab)
-            self._log("Mode: General Scan Active. Main DAQ Locked.")
+            self._log("Mode: General Scan Active. Manual controls locked.")
 
-        # 3. Manual Mode (수동) 모드일 때
-        else:
-            # (1) 제어권이 확보(Unlock)된 상태라면 메인 버튼 즉시 해제 (버그 수정)
+        else: # manual
+            # (1) 제어권 확보 시 버튼 해제 및 원래 텍스트 복구
             if self.access_mgr.unlocked:
                 if 'run_daq' in self.ui.buttons:
-                    self.ui.buttons['run_daq'].config(state=tk.NORMAL)
+                    self.ui.buttons['run_daq'].config(state=tk.NORMAL, text="2. Run DAQ (Only Click)")
             
-            # (2) 수동 선택 옵션 활성화
-            self.ui.rb_laser.config(state=tk.NORMAL)
-            self.ui.rb_dark.config(state=tk.NORMAL)
+            # (2) 수동 선택 옵션 활성화 및 원래 텍스트 복구
+            self.ui.rb_laser.config(state=tk.NORMAL, text="Laser & External trigger (0)")
+            self.ui.rb_dark.config(state=tk.NORMAL, text="Dark & Self trigger (1)")
 
-            # (3) General Scan 탭 비활성화 (수동 모드에선 못 들어감)
-            # 탭의 인덱스나 객체를 사용하여 클릭 차단
+            # (3) General Scan 탭 비활성화 및 이름 변경으로 피드백 제공
             self.ui.notebook.tab(self.auto_ui.tab, state="disabled")
-            
-            # Helper 탭으로 자동 이동 (강제)
-            self.ui.notebook.select(0) 
-            self._log(f"Mode: Manual ({manual_sub}) Active. General Scan Tab Locked.")
+            self.ui.notebook.select(0) # Helper 탭으로 강제 이동
+            self._log(f"Mode: Manual ({manual_sub}) Active. Auto mode locked.")
 
     def command_not_found(self):
         messagebox.showerror("Error", "Unknown command received from UI.")
@@ -1159,10 +1159,12 @@ class App:
     #def auto_connect_laser(self): self.laser_mgr.auto_connect_laser()
 
     def auto_connect_laser(self):
-        if not self.access_mgr.unlocked:
-            self._log("Laser auto-connect skipped: Control is LOCKED.")
+        """더미 모드일 때는 레이저 연결을 건너뜁니다."""
+        if hasattr(self, 'ui') and self.ui.auto_ui.dummy_var.get():
+            self._log("🧪 Dummy Mode: Skipping real Laser connection.")
             return
         self.laser_mgr.auto_connect_laser()
+
     def connect_single_laser(self, wl): self.laser_mgr.connect_single_laser(wl)
     def disconnect_single_laser(self, wl): self.laser_mgr.disconnect_single_laser(wl)
     def manual_refresh_laser(self, wl=None): self.laser_mgr.manual_refresh_laser(wl)
@@ -1188,8 +1190,9 @@ class App:
     #def auto_connect_ups(self): self.ups_mgr.auto_connect_ups()
 
     def auto_connect_ups(self):
-        if not self.access_mgr.unlocked:
-            self._log("UPS auto-connect skipped: Control is LOCKED.")
+        """더미 모드일 때는 실제 UPS 연결을 건너뜁니다."""
+        if hasattr(self, 'ui') and self.ui.auto_ui.dummy_var.get():
+            self._log("🧪 Dummy Mode: Skipping real UPS connection.")
             return
         self.ups_mgr.auto_connect_ups()
 

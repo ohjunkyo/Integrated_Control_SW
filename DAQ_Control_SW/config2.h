@@ -22,8 +22,8 @@ const int PostTrigger = 60;
 const std::string ChannelMask = "00001111";
 
 // --- Sequence Settings --- //
-const int NumSequences = 1;
-const int IntervalTime = 0;
+const int NumSequences = 10;
+const int IntervalTime = 3600;
 
 // -- Laser (Current, mA) --- //
 const std::string Laser = "133";
@@ -53,7 +53,7 @@ const std::string HV2 = "1840";
 const std::string HV3 = "1770";
 
 // --- NOTE ---
-const std::string NOTE = "20260311_1";
+const std::string NOTE = "20260319_stability";
 
 // --- Trigger Channel ---
 const int TriggerCh = 3;

@@ -1062,7 +1062,6 @@ class UIManager:
             default_pulse = 132.99 if wl == "405nm" else 0.0
             
             vars_dict = {
-                # [NEW] 개별 연결 상태 표시용 문자열 변수
                 "conn_status_txt": tk.StringVar(value="Disconnected"), 
                 
                 "ld_status": tk.StringVar(value="OFF"),
@@ -1080,18 +1079,14 @@ class UIManager:
             self._build_individual_laser_ui(tab_frame, wl, vars_dict)
 
     def _build_individual_laser_ui(self, tab_parent, wl, vars_dict):
-        # [NEW] 1. 탭 최상단: 개별 장비 연결 제어바 생성
-        # PanedWindow보다 먼저 pack() 하여 맨 위에 고정시킵니다.
         conn_frame = ttk.Frame(tab_parent, padding=5, relief="groove", borderwidth=1)
         conn_frame.pack(fill=tk.X, padx=5, pady=5)
 
-        # 상태 라벨 (크고 잘 보이게)
         status_lbl = ttk.Label(conn_frame, textvariable=vars_dict["conn_status_txt"], 
                                font=("Helvetica", 12, "bold"), foreground="red")
         status_lbl.pack(side=tk.LEFT, padx=(10, 20))
         vars_dict["conn_label_obj"] = status_lbl # 색상 변경을 위해 객체 저장
 
-        # 제어 버튼들 (main.py의 새 함수들과 연결)
         ttk.Button(conn_frame, text="🔌 Connect", width=12,
                    command=lambda: self.controller.connect_single_laser(wl)).pack(side=tk.LEFT, padx=2)
         
@@ -1147,6 +1142,10 @@ class UIManager:
                                command=lambda w=wl: self.controller.apply_laser_frequency_multi(w))
         apply_btn.pack(side=tk.LEFT, padx=5)
         vars_dict["freq_apply_btn_obj"] = apply_btn
+
+        vars_dict["current_mode_disp"] = tk.StringVar(value="Current: External")
+        ttk.Label(trig_frame, textvariable=vars_dict["current_mode_disp"],
+                  font=("Helvetica", 10, "bold"), foreground="#c92a2a").pack(side=tk.LEFT, padx=10)
 
         # 좌측 하단 Notebook (History Plot & Log)
         left_notebook = ttk.Notebook(left_pane)
