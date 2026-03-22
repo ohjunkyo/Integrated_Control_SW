@@ -286,13 +286,13 @@ class App:
             if os.path.exists(APP_CONFIG_FILE):
                 with open(APP_CONFIG_FILE, 'r') as f:
                     data = json.load(f)
-                    config_path = data.get("config2h_path")
+                    config_path = data.get("config3h_path")
         except: pass
 
         # 2. 경로가 없으면 하드코드된 우선순위대로 체크
         if not config_path or not os.path.exists(config_path):
             test_h = "/home/precalkor/ADC/ADC_test/config_test.h"
-            std_h = "/home/precalkor/ADC/ADC_test/config2.h"
+            std_h = "/home/precalkor/ADC/ADC_test/config3.h"
             config_path = test_h if os.path.exists(test_h) else std_h if os.path.exists(std_h) else None
 
         # 3. 최종 매니저 생성 (딱 한 번만 실행)
@@ -314,7 +314,7 @@ class App:
             
             with open(APP_CONFIG_FILE, 'w') as f:
                 config = {
-                    "config2h_path": self.config_manager.filepath,
+                    "config3h_path": self.config_manager.filepath,
                     "terminal_preference": getattr(self, "terminal_preference", "gnome-terminal"),
                     "last_connected_wls": connected_list,
                     "laser_port_mapping": getattr(self, "laser_port_mapping", {}),
@@ -327,7 +327,7 @@ class App:
 
     def select_and_set_config_path(self, initial_setup=False):
         filepath = filedialog.askopenfilename(
-                title="Select config2.h file",
+                title="Select config3.h file",
                 filetypes=(("Header files", "*.h"), ("All files", "*.*"))
                 )
         if filepath:
@@ -336,11 +336,11 @@ class App:
             if not initial_setup:
                 self.refresh_all_data()
         elif initial_setup and not self.config_manager:
-            messagebox.showerror("Error", "config2.h path is required to run the application.")
+            messagebox.showerror("Error", "config3.h path is required to run the application.")
             self.master.quit()
 
     def validate_config_paths(self):
-        """config2.h에 명시된 주요 경로들이 유효한지 검사합니다."""
+        """config3.h에 명시된 주요 경로들이 유효한지 검사합니다."""
         if not self.config_manager: return
 
         paths_to_check = ['BasePath', 'RawDataPath', 'ProcessedDataPath', 'ImagePath']
@@ -355,7 +355,7 @@ class App:
             messagebox.showwarning("Configuration Warning",
                                    f"The following paths defined in your config file are missing or invalid:\n\n"
                                    f"{', '.join(missing_paths)}\n\n"
-                                   "Please check your config2.h file.")
+                                   "Please check your config3.h file.")
 
 
     def set_terminal_preference(self, terminal_name):
@@ -425,7 +425,7 @@ class App:
 
     def handle_button_click(self, command_id):
         if not self.config_manager:
-            messagebox.showerror("Error", "Configuration file (config2.h) is not loaded. Please set the path from the 'File' menu.")
+            messagebox.showerror("Error", "Configuration file (config3.h) is not loaded. Please set the path from the 'File' menu.")
             return
         method_to_call = getattr(self, command_id, self.command_not_found)
         method_to_call()
@@ -529,7 +529,7 @@ class App:
 
     def run_daq(self):
         try:
-            check_running = subprocess.run(['pgrep', '-f', 'execute_DAQ'], capture_output=True)
+            check_running = subprocess.run(['pgrep', '-f', 'execute_DAQ_v2'], capture_output=True)
             if check_running.returncode == 0:
                 messagebox.showwarning("DAQ Already Running", 
                                        "An instance of 'execute_DAQ' is already running.\n"
@@ -541,8 +541,14 @@ class App:
 
         daq_path = self._get_daq_path()
         if not daq_path: return
-        mode = self.ui.run_mode.get()
-        script_path = os.path.join(daq_path, 'script2.sh')
+        
+        category = self.ui.run_mode.get()
+        if category == "manual" and hasattr(self.ui, 'manual_type_var'):
+            mode = self.ui.manual_type_var.get() 
+        else:
+            mode = "laser" 
+
+        script_path = os.path.join(daq_path, 'script_v6.sh')
         config_path = self.config_manager.filepath
         command = [script_path, mode, config_path]
         self._execute_in_new_terminal(command)
@@ -553,10 +559,10 @@ class App:
         daq_path = self._get_daq_path()
         if not daq_path: return
 
-        helper = os.path.join(self.base_dir, 'run_cpp_script.sh')
-        script = os.path.join(daq_path, 'prod_ntp_v3.C') 
+        helper = os.path.join(self.base_dir, 'run_cpp_script_v2.sh')
+        script = os.path.join(daq_path, 'prod_ntp_v6.C') 
         config_path = self.config_manager.filepath
-        mode_int = "0" if self.ui.run_mode.get() == "laser" else "1"
+        #mode_int = "0" if self.ui.run_mode.get() == "laser" else "1"
 
         runs_to_process = [] 
 
@@ -585,7 +591,7 @@ class App:
         all_commands_list = []
         for run_num, f_path in runs_to_process:
             f_path_arg = f"\\\"{f_path}\\\"" if f_path else "\"\""
-            command_parts = [helper, script, config_path, run_num, mode_int, f_path_arg]
+            command_parts = [helper, script, config_path, run_num, f_path_arg]
             all_commands_list.append(" ".join(command_parts))
 
         final_command_string = " && ".join(all_commands_list)
@@ -596,8 +602,8 @@ class App:
         daq_path = self._get_daq_path()
         if not daq_path: return
 
-        helper = os.path.join(self.base_dir, 'run_cpp_script.sh')
-        script = os.path.join(daq_path, 'read_ntp_v3.C') 
+        helper = os.path.join(self.base_dir, 'run_cpp_script_v2.sh')
+        script = os.path.join(daq_path, 'read_ntp_v6.C') 
         config_path = self.config_manager.filepath
 
         runs_to_process = [] 
@@ -953,7 +959,12 @@ class App:
         if not self.config_manager: return (1, "Config not loaded.")
         try:
             cfg = self.config_manager.get_all_variables()
-            mode = self.ui.run_mode.get()
+
+            category = self.ui.run_mode.get()
+            if category == "manual" and hasattr(self.ui, 'manual_type_var'):
+                mode = self.ui.manual_type_var.get()
+            else:
+                mode = "laser"
 
             serials = [cfg.get("SN1", ""), cfg.get("SN2", ""), cfg.get("SN3", "")]
             directions = [cfg.get("direction1", ""), cfg.get("direction2", ""), cfg.get("direction3", "")]

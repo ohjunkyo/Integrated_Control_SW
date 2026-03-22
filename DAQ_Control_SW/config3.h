@@ -1,7 +1,7 @@
-// config2.h
+// config3.h
 
-#ifndef CONFIG2_H
-#define CONFIG2_H
+#ifndef CONFIG3_H
+#define CONFIG3_H
 
 #include <string>
 
@@ -16,7 +16,7 @@ const std::string ImagePath = "/home/precalkor/ADC/ADC_test/Data/image/";
 const std::string LogDir = "/home/precalkor/ADC/ADC_test/LOG/DAQ/";
 
 // --- DAQ Common Settings --- //
-const int Events = 200000;
+const int Events = 100000;
 const int TimeWindow = 1024;
 const int PostTrigger = 60;
 const std::string ChannelMask = "00001111";
@@ -54,7 +54,7 @@ const std::string HV2 = "1840";
 const std::string HV3 = "1770";
 
 // --- NOTE ---
-const std::string NOTE = "20260311_1";
+const std::string NOTE = "";
 
 // --- Trigger Channel ---
 const int TriggerCh = 3;
@@ -64,4 +64,4 @@ const std::string Shift_worker = "";
 const std::string Expert = "Junkyo";
 
 
-#endif // CONFIG2_H
+#endif // CONFIG3_H

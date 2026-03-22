@@ -1,6 +1,6 @@
 {
   "arduino_settings": {
-    "port": "/dev/ttyACM1",
+    "port": "/dev/arduino_env",
     "baud_rate": 9600,
     "sensors": [
       { "pin": 2, "name": "Dark Box #1" },

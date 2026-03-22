@@ -61,7 +61,7 @@ class ArduinoWorker(QObject):
                 line = self.ser.readline().decode('utf-8', errors='ignore').strip()
                 
                 # 1. 🚨 터미널 확인용: 아두이노가 실제로 뭐라고 보내는지 출력합니다.
-                print(f"👉 [Arduino Data] {line}") 
+                #print(f"👉 [Arduino Data] {line}") 
                 
                 # 2. 안전하게 쪼개기 (out of range 및 띄어쓰기 방어막)
                 parts = {}

@@ -22,8 +22,8 @@ const int PostTrigger = 60;
 const std::string ChannelMask = "00001111";
 
 // --- Sequence Settings --- //
-const int NumSequences = 10;
-const int IntervalTime = 3600;
+const int NumSequences = 1;
+const int IntervalTime = 0;
 
 // -- Laser (Current, mA) --- //
 const std::string Laser = "133";
@@ -42,10 +42,10 @@ const std::string RotateAngle1 = "0";
 const std::string TiltAngle1 = "0";
 
 const std::string RotateAngle2 = "45";
-const std::string TiltAngle2 = "0";
+const std::string TiltAngle2 = "55";
 
 const std::string RotateAngle3 = "45";
-const std::string TiltAngle3 = "0";
+const std::string TiltAngle3 = "55";
 
 // --- High Voltage --- //
 const std::string HV1 = "1670";
@@ -53,7 +53,7 @@ const std::string HV2 = "1840";
 const std::string HV3 = "1770";
 
 // --- NOTE ---
-const std::string NOTE = "20260319_stability";
+const std::string NOTE = "20260320_1";
 
 // --- Trigger Channel ---
 const int TriggerCh = 3;
