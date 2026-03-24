@@ -33,13 +33,6 @@ class AutomationUI:
         self.upper_notebook = ttk.Notebook(main_container)
         self.upper_notebook.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
 
-        # Dashboard 영역 내에 파라미터 상태를 보여주는 라벨 추가
-        self.params_label = ttk.Label(dashboard_frame, text="Scan Params: Tilt 5.0° | Rot 90.0° | Rest 3.0s", font=("Helvetica", 10, "bold"), foreground="#007ACC")
-        self.params_label.grid(row=4, column=0, sticky="w", pady=(5,0)) # row 번호는 기존 레이아웃에 맞게 조절하세요.
-
-        # Admin 전용 설정 창을 여는 버튼 추가
-        self.btn_scan_settings = tk.Button(dashboard_frame, text="⚙️ Params (Admin)", command=self.open_scan_params, bg="#f0ad4e", fg="black")
-        self.btn_scan_settings.grid(row=4, column=1, sticky="e", pady=(5,0))
 
         # --- 1. Quick Setup 탭 ---
         info_tab = ttk.Frame(self.upper_notebook, padding=15)
@@ -132,6 +125,13 @@ class AutomationUI:
         self.btn_emg_stop = tk.Button(left_ctrl, text="🚨 Emergency", bg="#dc3545", fg="white", 
                                       font=("Helvetica", 8), height=1, command=self.controller.auto_mgr.emergency_stop)
         self.btn_emg_stop.grid(row=4, column=0, columnspan=3, padx=10, pady=5, sticky="s")
+
+        self.params_label = ttk.Label(left_ctrl, text="Scan Params: Tilt 5.0° | Rot 90.0° | Rest 3.0s", font=("Helvetica", 10, "bold"), foreground="#007ACC")
+        self.params_label.grid(row=5, column=0, columnspan=2, sticky="w", pady=(10,0))
+
+        ############## REMOVE state=tk.DISABLED ################# 
+        self.btn_scan_settings = tk.Button(left_ctrl, text="⚙️ Params (Admin)", command=self.open_scan_params, bg="#f0ad4e", fg="black",state=tk.DISABLED)
+        self.btn_scan_settings.grid(row=5, column=2, sticky="e", pady=(10,0))
 
         right_status = ttk.LabelFrame(dash_tab, text=" 🛰️ Manual Control Panel ", padding=15)
         right_status.grid(row=0, column=1, sticky="nsew")

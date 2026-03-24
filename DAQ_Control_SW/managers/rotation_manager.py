@@ -23,19 +23,27 @@ class AutomationManager:
         self.rot_step = 90.0
         self.rest_time = 3.0
 
-    def _safe_sleep(self, seconds):
+    def _safe_sleep(self, seconds, bypass_check=False):
         """Sleeps but aborts immediately if Stop/Emergency is triggered."""
         start = time.time()
         while time.time() - start < seconds:
-            if not self.is_running: break
+            # bypass_check가 True(원상복구 모드)일 때는 is_running이 False여도 무시하고 대기
+            if not self.is_running and not bypass_check: break
             self.pause_event.wait()
-            if not self.is_running: break
+            if not self.is_running and not bypass_check: break
             time.sleep(0.5)
 
+    def _wait_for_motors(self, bypass_check=False):
+        """하드웨어 모터가 움직임을 멈출 때까지 대기합니다."""
+        while self.is_running or bypass_check:
+            is_moving_2 = self.controller.rot_mgr.is_moving.get(2, False)
+            is_moving_3 = self.controller.rot_mgr.is_moving.get(3, False)
+            if not is_moving_2 and not is_moving_3:
+                break
+            time.sleep(0.5)
 
     def _move_safely_stepped(self, target_2, target_3, axis_type, bypass_check=False):
-        """Moves both devices safely in steps (Tilt: 15 deg, Rot: 45 deg) with 3s rest."""
-        #step_size = 15.0 if axis_type == "tilt" else 45.0
+        """Moves both devices safely in steps with 3s rest."""
         step_size = self.tilt_step if axis_type == "tilt" else self.rot_step
 
         # 1. 현재 각도 읽기
@@ -72,23 +80,15 @@ class AutomationManager:
                 if move2 != 0: self.controller.rot_mgr.move_rot_only(2, next2)
                 if move3 != 0: self.controller.rot_mgr.move_rot_only(3, next3)
 
-            self._wait_for_motors()
+            # [핵심] 명령을 전송한 뒤, 모터가 도착할 때까지 확실하게 기다리도록 수정
+            self._wait_for_motors(bypass_check)
 
             if abs(target_2 - next2) > 0.5 or abs(target_3 - next3) > 0.5:
-                self.controller._log("[INFO] Step reached. Waiting 3 seconds for hardware safety...")
-                #self._safe_sleep(3.0)
-                self._safe_sleep(self.rest_time)
+                self.controller._log(f"[INFO] Step reached. Waiting {self.rest_time}s for hardware safety...")
+                # [핵심] 스텝 사이의 휴식 시간도 확실하게 보장하도록 수정
+                self._safe_sleep(self.rest_time, bypass_check)
 
             c2, c3 = next2, next3
-
-    def _wait_for_motors(self):
-        while self.is_running:
-            is_moving_2 = self.controller.rot_mgr.is_moving.get(2, False)
-            is_moving_3 = self.controller.rot_mgr.is_moving.get(3, False)
-            if not is_moving_2 and not is_moving_3:
-                break
-            time.sleep(0.5)
-
 
     def _get_rot_for_cable(self, axis, direction):
         cable_map = {'E':0, 'F':45, 'G':90, 'H':135, 'A':180, 'B':225, 'C':270, 'D':315}

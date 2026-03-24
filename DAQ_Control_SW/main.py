@@ -80,7 +80,6 @@ class App:
             os.makedirs(self.laser_log_dir, exist_ok=True) 
 
 
-        # [복구된 코드] LaserManager가 필요로 하는 포트 매핑 변수
         self.laser_port_mapping = {
             "375nm": "1-3.3:1.0", "405nm": "1-3.1:1.0",
             "450nm": "1-3.2:1.0", "473nm": "1-3.4:1.0"
@@ -152,6 +151,9 @@ class App:
         if hasattr(self, 'auto_ui') and hasattr(self.auto_ui, 'update_sn_display'):
             self.rot_mgr.start_monitoring(self.auto_ui.update_sn_display)
 
+        if hasattr(self, 'ui'):
+            self.ui.refresh_ui_state()
+
         self.master.protocol("WM_DELETE_WINDOW", self.on_closing)
 
 
@@ -193,10 +195,7 @@ class App:
             if hasattr(self, 'auto_ui'):
                 self.auto_ui.update_unlock_ui(self.access_mgr.unlocked)
             
-            if self.access_mgr.unlocked:
-                self.auto_connect_laser()
-                self.auto_connect_ups()
-
+           
     def refresh_ui_state(self):
         """제어권 상태에 따라 UI 버튼들의 활성/비활성 상태를 업데이트"""
         state = tk.NORMAL if self.control_unlocked else tk.DISABLED
