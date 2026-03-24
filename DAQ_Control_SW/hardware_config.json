@@ -1,6 +1,6 @@
 {
-    "win_user": "skkor",
-    "win_ip": "192.168.10.100",
-    "win_work_dir": "Desktop\\Eqip",
-    "win_python": ".\\venv\\Scripts\\python.exe"
+    "win_user": "precalibrationkr",
+    "win_ip": "192.168.10.101",
+    "win_work_dir": "C:/Users/skkor/OneDrive/デスクトップ/Eqip",
+    "win_python": "./venv/Scripts/python.exe"
 }

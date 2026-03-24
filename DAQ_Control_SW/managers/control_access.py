@@ -2,9 +2,8 @@
 import tkinter as tk
 from tkinter import messagebox, simpledialog
 import subprocess
+import os
 
-# 🔑 [통합 비밀번호 관리] 
-# 앞으로 비밀번호를 바꿀 때는 아래의 "root"만 수정하면 전체 창에 적용됩니다.
 ADMIN_PASSWORD = "root"
 
 class ControlAccessManager:
@@ -12,12 +11,18 @@ class ControlAccessManager:
         self.controller = controller
         self.unlocked = False
 
+
     def is_production_running(self):
-        """Check if main.py (Production) is already running to prevent hardware collisions."""
+        """Check if main.py is already running, ignoring the current process."""
         try:
-            result = subprocess.run(['pgrep', '-f', 'main.py'], capture_output=True, text=True)
+            result = subprocess.run(['pgrep', '-f', 'python.*main.py'], capture_output=True, text=True)
             pids = result.stdout.strip().split()
-            return len(pids) > 1
+            
+            current_pid = str(os.getpid())
+            
+            other_pids = [pid for pid in pids if pid != current_pid]
+            
+            return len(other_pids) > 0
         except Exception:
             return False
 

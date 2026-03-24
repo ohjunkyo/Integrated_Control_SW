@@ -29,8 +29,14 @@ from config_manager import ConfigManager
 from pmt_config_window import PMTConfigWindow
 from managers.ups_manager import UPSManager
 from managers.laser_manager import LaserManager
+from managers.control_access import ControlAccessManager
+from managers.rotation_manager import AutomationManager 
+from managers.rotation_control import RotationManager 
+from managers.ui_automation import AutomationUI
 
 APP_CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".daq_control_config.json")
+#APP_CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".daq_control_config_TEST.json")
+
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
@@ -56,81 +62,147 @@ class App:
     def __init__(self, master, base_dir):
         self.master = master
         self.base_dir = base_dir
+
+        self.terminal_preference = 'gnome-terminal'
+        self.start_time = datetime.now()
+        self.config_manager = None
+        self.contacts_file = os.path.join(self.base_dir, "contacts.json")
+        
+        # 1. 설정 로드
+        self.load_app_config()
+
+        if self.config_manager and self.config_manager.get_config_value("LogDir"):
+            base_log_dir = self.config_manager.get_config_value("LogDir")
+            self.laser_log_dir = "/home/precalkor/ADC/ADC_test/LOG/LASER"
+            os.makedirs(self.laser_log_dir, exist_ok=True)
+        else:
+            self.laser_log_dir = os.path.join(self.base_dir, "LOG", "LASER")
+            os.makedirs(self.laser_log_dir, exist_ok=True) 
+
+
+        # [복구된 코드] LaserManager가 필요로 하는 포트 매핑 변수
+        self.laser_port_mapping = {
+            "375nm": "1-3.3:1.0", "405nm": "1-3.1:1.0",
+            "450nm": "1-3.2:1.0", "473nm": "1-3.4:1.0"
+        }
+
+        # 2. 로직 매니저 생성
+        self.access_mgr = ControlAccessManager(self, password="root")
+        self.rot_mgr = RotationManager(self)
+        self.auto_mgr = AutomationManager(self)
+
+        # 3. UI 생성
+        self.ui = UIManager(master, self)
+        self.auto_ui = self.ui.auto_ui
+
+        # 4. 하드웨어 매니저 생성 (중복 제거 완료)
+        self.laser_mgr = LaserManager(self)
+        self.ups_mgr = UPSManager(self)
+
         master.title("DAQ/LASER/UPS Control Panel")
         master.geometry("1600x950")
         self.master.minsize(1400, 900)
 
         icon_path = os.path.join(self.base_dir, 'icons', 'DAQcontroller.png')
-        img = Image.open(icon_path)
-        self.p_img = ImageTk.PhotoImage(img, master=master)
-        master.iconphoto(True, self.p_img)
+        if os.path.exists(icon_path):
+            img = Image.open(icon_path)
+            self.p_img = ImageTk.PhotoImage(img, master=master)
+            master.iconphoto(True, self.p_img)
 
-        self.contacts_file = os.path.join(self.base_dir, "contacts.json")
+        # 5. 연락망 로드
         self.load_contacts()
 
-        self.start_time = datetime.now()
-        self.config_manager = None
-        self.terminal_preference = 'gnome-terminal'
-        self.load_app_config()
-
-        try:
-            os.makedirs(self.laser_log_dir, exist_ok=True)
-            self._log(f"✅ Laser Log Directory initialized: {self.laser_log_dir}")
-        except Exception as e:
-            self._log(f"❌ Failed to create log directory: {e}")
-
-        self.laser_mgr = LaserManager(self)
-        
+        # 6. 레이저 인스턴스 생성 로직
         if LASER_AVAILABLE:
             for wl in self.laser_mgr.wavelengths:
                 try:
                     from laser_driver import TamadenshiLaser
                     self.laser_mgr.laser_instances[wl] = TamadenshiLaser()
-                    print(f"✅ Laser driver instance created for {wl}")
-                    
                     if wl == "405nm":
-                        self.laser = self.laser_mgr.laser_instances[wl] 
+                        self.laser = self.laser_mgr.laser_instances[wl]
                 except Exception as e:
-                    print(f"❌ Failed to initialize laser {wl}: {e}")
+                    self._log(f"Laser {wl} init failed: {e}")
 
+        # 7. 상태바 세팅
+        self._setup_status_bar() 
 
-        self.ups_mgr = UPSManager(self)
-
-        self.status_bar = ttk.Frame(master, relief=tk.SUNKEN, padding="2 5")
-        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
-        self.elapsed_time_var = tk.StringVar()
-        self.clock_var = tk.StringVar()
-        ttk.Label(self.status_bar, textvariable=self.elapsed_time_var).pack(side=tk.RIGHT, padx=10)
-        ttk.Label(self.status_bar, textvariable=self.clock_var).pack(side=tk.LEFT, padx=10)
-        self._update_status_bar()
-
-        self.ui = UIManager(master, self)
+        # 8. 초기 데이터 리프레시 및 스케줄러 등록
         self.ui.setup_shortcuts()
-
         if self.config_manager:
             self.validate_config_paths()
             self.master.after(500, self.refresh_all_data)
             self.master.after(1000, self.check_daq_connection)
-        else:
-            messagebox.showwarning("Warning", "Configuration not loaded.")
-
-        if self.laser_mgr.laser_instances:
-            self.master.after(5000, self.auto_connect_laser) 
-            self.update_laser_status_loop() 
-
-        self.ui.is_dark_mode = True 
+        
+        self.ui.is_dark_mode = True
         self.ui.toggle_theme()
 
-        self.on_laser_trigger_change()
+        if hasattr(self, 'laser_mgr') and self.laser_mgr.laser_instances:
+            self.on_laser_trigger_change()
+
         self.setup_laser_logger()
         self.load_today_laser_log()
         self.preload_laser_history()
         self.preload_ups_history()
 
-
         self.master.after(1500, self.auto_connect_ups)
+        self.master.after(5000, self.auto_connect_laser)
+        self.master.after(500, self.handle_mode_change) 
+        self.update_laser_status_loop()
+
+        if hasattr(self, 'auto_ui') and hasattr(self.auto_ui, 'update_sn_display'):
+            self.rot_mgr.start_monitoring(self.auto_ui.update_sn_display)
+
         self.master.protocol("WM_DELETE_WINDOW", self.on_closing)
-        self.ui.refresh_ui_state()
+
+
+    def _setup_status_bar(self):
+        """하단 상태 표시줄 위젯을 생성하고 실시간 업데이트를 시작합니다."""
+        # 1. 상태바 프레임 생성
+        self.status_bar = ttk.Frame(self.master, relief=tk.SUNKEN, padding="2 5")
+        self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+
+        # 2. 표시 변수 선언
+        self.elapsed_time_var = tk.StringVar()
+        self.clock_var = tk.StringVar()
+
+        # 3. 라벨 배치 (왼쪽: 시계, 오른쪽: 실행 시간)
+        ttk.Label(self.status_bar, textvariable=self.clock_var).pack(side=tk.LEFT, padx=10)
+        ttk.Label(self.status_bar, textvariable=self.elapsed_time_var).pack(side=tk.RIGHT, padx=10)
+
+        # 4. 업데이트 루프 시작
+        self._update_status_bar()
+
+    # App 클래스 내 적당한 위치에 추가
+    def is_production_running(self):
+        """현재 시스템에서 main.py(Production)가 실행 중인지 확인"""
+        try:
+            # 리눅스 pgrep 명령어로 main.py 프로세스 검색
+            result = subprocess.run(['pgrep', '-f', 'main.py'], capture_output=True, text=True)
+            # 자기 자신(main_test.py) 외에 다른 main.py가 있는지 확인
+            # pgrep 결과가 있고, 그 중 하나라도 현재 프로세스 ID(os.getpid)와 다르면 True
+            pids = result.stdout.strip().split()
+            return len(pids) > 1
+        except Exception:
+            return False
+
+    def request_control_unlock(self):
+        """비밀번호 확인 후 제어권 활성화 및 자동화 UI 연동"""
+        if self.access_mgr.request_unlock():
+            self.ui.refresh_ui_state()
+            # 자동화 탭의 버튼 텍스트도 실시간 갱신
+            if hasattr(self, 'auto_ui'):
+                self.auto_ui.update_unlock_ui(self.access_mgr.unlocked)
+            
+            if self.access_mgr.unlocked:
+                self.auto_connect_laser()
+                self.auto_connect_ups()
+
+    def refresh_ui_state(self):
+        """제어권 상태에 따라 UI 버튼들의 활성/비활성 상태를 업데이트"""
+        state = tk.NORMAL if self.control_unlocked else tk.DISABLED
+        # UIManager를 통해 각 버튼의 state를 일괄 변경하는 로직 필요
+        # 예: self.ui.btn_laser_connect.config(state=state)
+        pass
 
     def load_contacts(self):
         """contacts.json 파일에서 연락망을 불러옵니다."""
@@ -223,36 +295,37 @@ class App:
 
     def load_app_config(self):
         config_path = None
-        # 1. 무조건 기본값 먼저 세팅 (에러 방지)
+        
+        self.last_connected_wls = []
         self.laser_port_mapping = {
             "375nm": "1-3.3:1.0", "405nm": "1-3.1:1.0",
             "450nm": "1-3.2:1.0", "473nm": "1-3.4:1.0"
         }
         self.laser_log_dir = "/home/precalkor/ADC/ADC_test/LOG/LASER"
         self.terminal_preference = 'gnome-terminal'
-        self.last_connected_wls = [] # [추가] 빈 리스트 기본값 세팅 
-        # 2. 파일이 있으면 읽어오기
+        
         try:
             if os.path.exists(APP_CONFIG_FILE):
                 with open(APP_CONFIG_FILE, 'r') as f:
-                    config = json.load(f)
-                    config_path = config.get("config2h_path")
-                    self.terminal_preference = config.get("terminal_preference", self.terminal_preference)
-                    self.laser_port_mapping = config.get("laser_port_mapping", self.laser_port_mapping)
-                    self.laser_log_dir = config.get("laser_log_dir", self.laser_log_dir)
-                    self.last_connected_wls = config.get("last_connected_wls", [])
-        except Exception as e:
-            print(f"Error loading app config: {e}")
+                    data = json.load(f)
+                    config_path = data.get("config3h_path") or data.get("config2h_path")
+                    
+                    self.terminal_preference = data.get("terminal_preference", self.terminal_preference)
+                    self.last_connected_wls = data.get("last_connected_wls", [])
+                    self.laser_port_mapping = data.get("laser_port_mapping", self.laser_port_mapping)
+                    self.laser_log_dir = data.get("laser_log_dir", self.laser_log_dir)
+        except: pass
 
-        # 3. [자동화 핵심] 저장된 경로가 없어도 실험실 기본 경로에 파일이 있으면 묻지 않고 바로 잡습니다!
-        default_path = "/home/precalkor/ADC/ADC_test/config2.h"
-        if not config_path and os.path.exists(default_path):
-            config_path = default_path
+        if not config_path or not os.path.exists(config_path):
+            test_h = "/home/precalkor/ADC/ADC_test/config_test.h"
+            std_h = "/home/precalkor/ADC/ADC_test/config3.h"
+            old_h = "/home/precalkor/ADC/ADC_test/config2.h" # [수정] config2.h도 폴백 경로로 추가
+            config_path = test_h if os.path.exists(test_h) else std_h if os.path.exists(std_h) else old_h if os.path.exists(old_h) else None
 
-        # 4. 최종 적용
         if config_path and os.path.exists(config_path):
             self.config_manager = ConfigManager(config_path)
-            self.save_app_config() # 자동으로 찾았으니 파일에 덮어쓰기
+            self.save_app_config()
+            self._log(f"[INFO] Config loaded: {os.path.basename(config_path)}")
         else:
             self.select_and_set_config_path(initial_setup=True)
 
@@ -265,7 +338,7 @@ class App:
             
             with open(APP_CONFIG_FILE, 'w') as f:
                 config = {
-                    "config2h_path": self.config_manager.filepath,
+                    "config3h_path": self.config_manager.filepath,
                     "terminal_preference": getattr(self, "terminal_preference", "gnome-terminal"),
                     "last_connected_wls": connected_list,
                     "laser_port_mapping": getattr(self, "laser_port_mapping", {}),
@@ -278,7 +351,7 @@ class App:
 
     def select_and_set_config_path(self, initial_setup=False):
         filepath = filedialog.askopenfilename(
-                title="Select config2.h file",
+                title="Select config3.h file",
                 filetypes=(("Header files", "*.h"), ("All files", "*.*"))
                 )
         if filepath:
@@ -287,11 +360,11 @@ class App:
             if not initial_setup:
                 self.refresh_all_data()
         elif initial_setup and not self.config_manager:
-            messagebox.showerror("Error", "config2.h path is required to run the application.")
+            messagebox.showerror("Error", "config3.h path is required to run the application.")
             self.master.quit()
 
     def validate_config_paths(self):
-        """config2.h에 명시된 주요 경로들이 유효한지 검사합니다."""
+        """config3.h에 명시된 주요 경로들이 유효한지 검사합니다."""
         if not self.config_manager: return
 
         paths_to_check = ['BasePath', 'RawDataPath', 'ProcessedDataPath', 'ImagePath']
@@ -306,7 +379,7 @@ class App:
             messagebox.showwarning("Configuration Warning",
                                    f"The following paths defined in your config file are missing or invalid:\n\n"
                                    f"{', '.join(missing_paths)}\n\n"
-                                   "Please check your config2.h file.")
+                                   "Please check your config3.h file.")
 
 
     def set_terminal_preference(self, terminal_name):
@@ -351,18 +424,26 @@ class App:
         except Exception as e:
             self.ui.update_log_view(f"Error reading log file: {e}")
 
-    def _execute_in_new_terminal(self, command):
+    def _execute_in_new_terminal(self, command, auto_close=False):
         """저장된 설정에 따라 올바른 터미널에서 명령을 실행합니다."""
         command_str_for_log = ' '.join(command)
-        self._log(f"Executing command via '{self.terminal_preference}': {command_str_for_log}")
+        self._log(f"[INFO] Executing command via '{self.terminal_preference}': {command_str_for_log}")
 
         try:
             if self.terminal_preference == 'xterm':
-                term_command_str = f"{' '.join(command)}; echo; read -p 'Execution finished. Press Enter to close this terminal...'"
-                term_command = ['xterm', '-hold', '-e', 'bash', '-c', term_command_str]
+                if auto_close:
+                    term_command_str = f"{' '.join(command)}"
+                    term_command = ['xterm', '-e', 'bash', '-c', term_command_str]
+                else:
+                    term_command_str = f"{' '.join(command)}; echo; read -p 'Execution finished. Press Enter to close this terminal...'"
+                    term_command = ['xterm', '-hold', '-e', 'bash', '-c', term_command_str]
                 subprocess.Popen(term_command)
             else: # 기본값은 gnome-terminal
-                term_command_str = f"{' '.join(command)}; echo; read -p 'Execution finished. Press Enter to close this terminal...'"
+                if auto_close:
+                    term_command_str = f"{' '.join(command)}"
+                else:
+                    term_command_str = f"{' '.join(command)}; echo; read -p 'Execution finished. Press Enter to close this terminal...'"
+                
                 term_command = ['gnome-terminal', '--', 'bash', '-c', term_command_str]
                 subprocess.Popen(term_command)
 
@@ -376,10 +457,41 @@ class App:
 
     def handle_button_click(self, command_id):
         if not self.config_manager:
-            messagebox.showerror("Error", "Configuration file (config2.h) is not loaded. Please set the path from the 'File' menu.")
+            messagebox.showerror("Error", "Configuration file (config3.h) is not loaded. Please set the path from the 'File' menu.")
             return
         method_to_call = getattr(self, command_id, self.command_not_found)
         method_to_call()
+
+    def handle_mode_change(self):
+        """모드 선택에 따른 버튼 활성화 및 탭 상태 유지 로직"""
+        category = self.ui.run_mode.get()        # 'auto' or 'manual'
+        
+        if hasattr(self.ui, 'manual_type_var'):
+            manual_sub = self.ui.manual_type_var.get() # 'laser' or 'dark'
+        else:
+            manual_sub = "laser"
+        
+        self.update_latest_run_number()
+
+        if category == "auto":
+            # 수동 선택 옵션 비활성화
+            self.ui.rb_laser.config(state=tk.DISABLED, text="Laser & External trigger (Locked)")
+            self.ui.rb_dark.config(state=tk.DISABLED, text="Dark & Self trigger (Locked)")
+            self._log("[INFO] Mode: General Scan Active. Manual controls locked.")
+        else: # manual
+            # 수동 선택 옵션 활성화
+            self.ui.rb_laser.config(state=tk.NORMAL, text="Laser & External trigger (0)")
+            self.ui.rb_dark.config(state=tk.NORMAL, text="Dark & Self trigger (1)")
+            self._log(f"[INFO] Mode: Manual ({manual_sub}) Active.")
+
+        if hasattr(self, 'auto_ui') and hasattr(self.auto_ui, 'tab'):
+            self.ui.notebook.tab(self.auto_ui.tab, state="normal")
+
+        if self.access_mgr.unlocked and 'run_daq' in self.ui.buttons:
+            if hasattr(self, 'auto_mgr') and self.auto_mgr.is_running:
+                self.ui.buttons['run_daq'].config(state=tk.DISABLED, text="2. Run DAQ (Scanning)")
+            else:
+                self.ui.buttons['run_daq'].config(state=tk.NORMAL, text="2. Run DAQ")
 
     def command_not_found(self):
         messagebox.showerror("Error", "Unknown command received from UI.")
@@ -442,25 +554,51 @@ class App:
                                  f"파일 권한(chmod +x)을 확인해 보세요.")
 
 
-    def run_daq(self):
-        try:
-            check_running = subprocess.run(['pgrep', '-f', 'execute_DAQ'], capture_output=True)
-            if check_running.returncode == 0:
-                messagebox.showwarning("DAQ Already Running", 
-                                       "An instance of 'execute_DAQ' is already running.\n"
-                                       "Starting multiple DAQ processes can be critical for the buffer.\n"
-                                       "Please stop the current run first.")
-                return
-        except Exception as e:
-            self._log(f"Check process error: {e}")
+    def run_daq(self, tilt=None, r2=None, r3=None):
+        category = self.ui.run_mode.get() # 현재 모드 확인
+        
+        # [핵심] 현재 자동 스캔 로직이 진행 중인지 확인
+        is_auto_running = hasattr(self, 'auto_mgr') and self.auto_mgr.is_running
+        
+        # [수정] 수동 클릭일 때는 모드 상관없이 중복 실행을 철저히 막습니다.
+        if not is_auto_running:
+            try:
+                # -f 옵션으로 execute_DAQ 관련 프로세스가 하나라도 켜져있는지 확인
+                check_running = subprocess.run(['pgrep', '-f', 'execute_DAQ'], capture_output=True)
+                if check_running.returncode == 0:
+                    messagebox.showwarning("DAQ Already Running", 
+                                           "An instance of 'execute_DAQ' is already running.\nPlease close the current terminal first.")
+                    return
+            except Exception as e:
+                self._log(f"Check process error: {e}")
 
         daq_path = self._get_daq_path()
         if not daq_path: return
-        mode = self.ui.run_mode.get()
-        script_path = os.path.join(daq_path, 'script2.sh')
+        
+        if category == "manual" and hasattr(self.ui, 'manual_type_var'):
+            mode = self.ui.manual_type_var.get() 
+        else:
+            mode = "laser" 
+
+        script_path = os.path.join(daq_path, 'script_v6.sh')
         config_path = self.config_manager.filepath
+        
+        # 1. 기본 Bash 스크립트 실행 명령어
         command = [script_path, mode, config_path]
-        self._execute_in_new_terminal(command)
+        
+        # 2. 각도 정보가 넘어왔으면 명령어 뒤에 추가로 붙여줌
+        if tilt is not None and r2 is not None and r3 is not None:
+            command.extend([str(r2), str(tilt), str(r3), str(tilt)])
+            self._log(f"[INFO] Injecting live angles to DAQ -> R2:{r2}, T2:{tilt}, R3:{r3}, T3:{tilt}")
+
+        # [핵심 수정] 자동 스캔 '진행 중'일 때만 tmux로 보냄. 수동 클릭 시에는 무조건 새 창 팝업!
+        if is_auto_running:
+            cmd_str = " ".join(command)
+            tmux_cmd = ['tmux', 'send-keys', '-t', 'GeneralScan', cmd_str, 'C-m']
+            subprocess.run(tmux_cmd)
+            self._log(f"[INFO] Command sent to unified terminal (tmux): T:{tilt}")
+        else:
+            self._execute_in_new_terminal(command, auto_close=False)
 
 
     def run_produce(self):
@@ -468,15 +606,15 @@ class App:
         daq_path = self._get_daq_path()
         if not daq_path: return
 
-        helper = os.path.join(self.base_dir, 'run_cpp_script.sh')
-        script = os.path.join(daq_path, 'prod_ntp_v3.C') 
+        helper = os.path.join(self.base_dir, 'run_cpp_script_v2.sh')
+        script = os.path.join(daq_path, 'prod_ntp_v6.C') 
         config_path = self.config_manager.filepath
-        mode_int = "0" if self.ui.run_mode.get() == "laser" else "1"
+        #mode_int = "0" if self.ui.run_mode.get() == "laser" else "1"
 
         runs_to_process = [] 
 
         if selected_files:
-            pattern = re.compile(r'\.([0-9]{4})\.root$')
+            pattern = re.compile(r'_([0-9]+)\.root$')
             for f_path in selected_files:
                 if "raw" in f_path.lower():
                     f_name = os.path.basename(f_path)
@@ -500,7 +638,7 @@ class App:
         all_commands_list = []
         for run_num, f_path in runs_to_process:
             f_path_arg = f"\\\"{f_path}\\\"" if f_path else "\"\""
-            command_parts = [helper, script, config_path, run_num, mode_int, f_path_arg]
+            command_parts = [helper, script, config_path, run_num, f_path_arg]
             all_commands_list.append(" ".join(command_parts))
 
         final_command_string = " && ".join(all_commands_list)
@@ -511,28 +649,30 @@ class App:
         daq_path = self._get_daq_path()
         if not daq_path: return
 
-        helper = os.path.join(self.base_dir, 'run_cpp_script.sh')
-        script = os.path.join(daq_path, 'read_ntp_v3.C') 
+        helper = os.path.join(self.base_dir, 'run_cpp_script_v2.sh')
+        script = os.path.join(daq_path, 'read_ntp_v6.C') 
         config_path = self.config_manager.filepath
 
         runs_to_process = [] 
 
         if selected_files:
-            pattern = re.compile(r'\.([0-9]{4})\.root$')
+            pattern = re.compile(r'_([0-9]+)\.root$')
             for f_path in selected_files:
                 f_name = os.path.basename(f_path)
                 match = pattern.search(f_name)
                 if match:
                     run_num_str = str(int(match.group(1))) 
 
-                    if "production" in f_path.lower() or "prd_" in f_name.lower():
+                    if "production" in f_path.lower() or "prd" in f_name.lower():
                         processed_path = f_path
                     else:
-                        processed_path = os.path.join(self.config_manager.get_config_value("ProcessedDataPath"), f"prd_{f_name}")
+                        # raw를 prd로 치환
+                        new_f_name = f_name.replace("raw", "prd") if "raw" in f_name else f"prd_{f_name}"
+                        processed_path = os.path.join(self.config_manager.get_config_value("ProcessedDataPath"), new_f_name)
 
                     runs_to_process.append((run_num_str, processed_path))
                 else:
-                    self._log(f"WARNING: Could not extract 4-digit run number from {f_name}. Skipping.")
+                    self._log(f"[WARNING] Could not extract run number from {f_name}. Skipping.")
         else:
             run_num = self.ui.get_run_num()
             if not run_num: return
@@ -562,8 +702,8 @@ class App:
         daq_path = self._get_daq_path()
         if not daq_path: return
 
-        helper = os.path.join(self.base_dir, 'run_cpp_script.sh')
-        script = os.path.join(daq_path, 'Draw_waveform.C')
+        helper = os.path.join(self.base_dir, 'run_cpp_script_v2.sh')
+        script = os.path.join(daq_path, 'Draw_waveform_v2.C')
         config_path = self.config_manager.filepath
         
         run_num = None
@@ -578,7 +718,7 @@ class App:
             # Case: 파일이 하나 선택된 경우
             f_path = selected_files[0]
             f_name = os.path.basename(f_path)
-            pattern = re.compile(r'\.([0-9]{4})\.root$')
+            pattern = re.compile(r'_([0-9]+)\.root$')
             match = pattern.search(f_name)
             
             if match:
@@ -613,15 +753,14 @@ class App:
         daq_path = self._get_daq_path()
         if not daq_path: return
         
-        helper = os.path.join(self.base_dir, 'run_cpp_script.sh')
-        script = os.path.join(daq_path, 'Draw_Contour_v2.C')
+        helper = os.path.join(self.base_dir, 'run_cpp_script_v2.sh')
+        script = os.path.join(daq_path, 'Draw_Contour_v3.C')
         config_path = self.config_manager.filepath
 
         runs_to_process = [] # (run_num_str, file_path) 튜플을 저장
 
         if selected_files:
-            # Case 1: 파일 리스트에서 선택한 경우
-            pattern = re.compile(r'\.([0-9]{4})\.root$')
+            pattern = re.compile(r'_([0-9]+)\.root$')
             for f_path in selected_files:
                 f_name = os.path.basename(f_path)
                 match = pattern.search(f_name)
@@ -654,18 +793,6 @@ class App:
 
         final_command_string = " && ".join(all_commands_list)
         self._execute_in_new_terminal([final_command_string])
-
-    def run_auto_analysis(self):
-        messagebox.showinfo("Not Implemented", "Auto Analysis button is not configured.")
-        pass
-
-    def run_uniformity_raw(self):
-        messagebox.showinfo("Not Implemented", "Uniformity (Raw) button is not configured.")
-        pass
-
-    def run_uniformity_norm(self):
-        messagebox.showinfo("Not Implemented", "Uniformity (Norm) button is not configured.")
-        pass
 
     def run_transfer(self):
         daq_path = self._get_daq_path()
@@ -868,7 +995,12 @@ class App:
         if not self.config_manager: return (1, "Config not loaded.")
         try:
             cfg = self.config_manager.get_all_variables()
-            mode = self.ui.run_mode.get()
+
+            category = self.ui.run_mode.get()
+            if category == "manual" and hasattr(self.ui, 'manual_type_var'):
+                mode = self.ui.manual_type_var.get()
+            else:
+                mode = "laser"
 
             serials = [cfg.get("SN1", ""), cfg.get("SN2", ""), cfg.get("SN3", "")]
             directions = [cfg.get("direction1", ""), cfg.get("direction2", ""), cfg.get("direction3", "")]
@@ -915,7 +1047,7 @@ class App:
             matching_files = glob.glob(search_pattern)
 
             run_numbers = []
-            pattern = re.compile(r'\.([0-9]{4})\.root$')
+            pattern = re.compile(r'_([0-9]+)\.root$')
             for f_path in matching_files:
                 f_name = os.path.basename(f_path)
                 match = pattern.search(f_name)
@@ -970,7 +1102,7 @@ class App:
         try:
             daq_path = self.config_manager.get_config_value('BasePath')
             if daq_path:
-                command = [os.path.join(daq_path, 'execute_DAQ'), '-j']
+                command = [os.path.join(daq_path, 'execute_DAQ_v2'), '-j']
                 result = subprocess.run(
                         command, capture_output=True, text=True,
                         timeout=5, preexec_fn=os.setsid
@@ -1071,7 +1203,18 @@ class App:
             messagebox.showwarning("Path Not Found", f"'{path_key}' is not defined in your config file.")
 
     #################### Laser Monitoring ##############################
-    def auto_connect_laser(self): self.laser_mgr.auto_connect_laser()
+    def auto_connect_laser(self):
+        """더미 모드일 때는 레이저 연결을 건너뜁니다."""
+        try:
+            # 안전하게 속성 존재 여부 확인 후 더미 변수 체크
+            if hasattr(self, 'ui') and hasattr(self.ui, 'auto_ui') and getattr(self.ui.auto_ui, 'dummy_var', None):
+                if self.ui.auto_ui.dummy_var.get():
+                    self._log("[INFO] Dummy Mode: Skipping real Laser connection.")
+                    return
+        except Exception:
+            pass
+        self.laser_mgr.auto_connect_laser()
+
     def connect_single_laser(self, wl): self.laser_mgr.connect_single_laser(wl)
     def disconnect_single_laser(self, wl): self.laser_mgr.disconnect_single_laser(wl)
     def manual_refresh_laser(self, wl=None): self.laser_mgr.manual_refresh_laser(wl)
@@ -1094,7 +1237,20 @@ class App:
     #################### UPS Monitoring ##############################
     def search_ups_ports(self): self.ups_mgr.search_ups_ports()
     def diagnose_ups(self): self.ups_mgr.diagnose_ups()
-    def auto_connect_ups(self): self.ups_mgr.auto_connect_ups()
+    #def auto_connect_ups(self): self.ups_mgr.auto_connect_ups()
+
+    def auto_connect_ups(self):
+        """더미 모드일 때는 실제 UPS 연결을 건너뜁니다."""
+        try:
+            if hasattr(self, 'ui') and hasattr(self.ui, 'auto_ui') and getattr(self.ui.auto_ui, 'dummy_var', None):
+                if self.ui.auto_ui.dummy_var.get():
+                    self._log("🧪 Dummy Mode: Skipping real UPS connection.")
+                    return
+        except Exception:
+            pass
+        self.ups_mgr.auto_connect_ups()
+
+
     def _try_ups_handshake(self, port): self.ups_mgr._try_ups_handshake(port)
     def update_ups_status_loop(self): self.ups_mgr.update_ups_status_loop()
     def manual_refresh_ups(self): self.ups_mgr.manual_refresh_ups()

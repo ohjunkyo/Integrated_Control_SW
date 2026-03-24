@@ -33,6 +33,7 @@ class LaserManager:
                 "temp": collections.deque(maxlen=90000), 
                 "pulse": collections.deque(maxlen=90000)
             }
+            self.load_todays_log(wl)
 
         self.laser_session_start = None
         self.laser_after_id = None
@@ -569,6 +570,36 @@ class LaserManager:
             self.app.ui.laser_log_text.insert(tk.END, f"[{timestamp}] {msg}\n")
             self.app.ui.laser_log_text.config(state="disabled")
             self.app.ui.laser_log_text.yview(tk.END)
+
+    def load_todays_log(self, wl):
+        """Loads today's CSV file to restore the plot history when the GUI starts."""
+        try:
+            log_dir = getattr(self.app, 'laser_log_dir', self.laser_log_dir)
+            today_str = datetime.now().strftime('%Y%m%d')
+            file_path = os.path.join(log_dir, f"laser_data_{wl}_{today_str}.csv")
+
+            if os.path.exists(file_path):
+                # pandas를 이용해 기존 파일 읽기
+                df = pd.read_csv(file_path)
+
+                # 메모리 과부하를 막기 위해 최근 90000개의 데이터만 가져옴
+                for _, row in df.tail(90000).iterrows():
+                    try:
+                        # CSV의 timestamp 형식을 datetime으로 변환 (예: 2026-03-24 15:30:00)
+                        dt = datetime.strptime(str(row['timestamp']), '%Y-%m-%d %H:%M:%S')
+                        t_num = mdates.date2num(dt)
+
+                        self.plot_history[wl]["time"].append(t_num)
+                        self.plot_history[wl]["temp"].append(float(row['temp']))
+                        self.plot_history[wl]["pulse"].append(float(row['pulse']))
+                    except ValueError:
+                        pass # 헤더나 형식이 맞지 않는 줄은 무시
+
+                if hasattr(self.app, '_log'):
+                    self.app._log(f"[INFO] Loaded previous log data for {wl}.")
+        except Exception as e:
+            if hasattr(self.app, '_log'):
+                self.app._log(f"[WARNING] Could not load past logs for {wl}: {e}")
 
     def save_laser_realtime_data(self, wl, temp, pulse):
         """[보완] 경로 강제 확인 및 예외 처리 강화"""

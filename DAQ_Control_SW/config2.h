@@ -16,10 +16,10 @@ const std::string ImagePath = "/home/precalkor/ADC/ADC_test/Data/image/";
 const std::string LogDir = "/home/precalkor/ADC/ADC_test/LOG/DAQ/";
 
 // --- DAQ Common Settings --- //
-const int Events = 200000;
+const int Events = 100000;
 const int TimeWindow = 1024;
 const int PostTrigger = 60;
-const std::string ChannelMask = "00001111";
+const std::string ChannelMask = "00001001";
 
 // --- Sequence Settings --- //
 const int NumSequences = 1;
@@ -42,10 +42,10 @@ const std::string RotateAngle1 = "0";
 const std::string TiltAngle1 = "0";
 
 const std::string RotateAngle2 = "45";
-const std::string TiltAngle2 = "55";
+const std::string TiltAngle2 = "0";
 
 const std::string RotateAngle3 = "45";
-const std::string TiltAngle3 = "55";
+const std::string TiltAngle3 = "0";
 
 // --- High Voltage --- //
 const std::string HV1 = "1670";
@@ -53,7 +53,7 @@ const std::string HV2 = "1840";
 const std::string HV3 = "1770";
 
 // --- NOTE ---
-const std::string NOTE = "20260320_1";
+const std::string NOTE = "20260324_test";
 
 // --- Trigger Channel ---
 const int TriggerCh = 3;

@@ -16,7 +16,7 @@ const std::string ImagePath = "/home/precalkor/ADC/ADC_test/Data/image/";
 const std::string LogDir = "/home/precalkor/ADC/ADC_test/LOG/DAQ/";
 
 // --- DAQ Common Settings --- //
-const int Events = 100000;
+const int Events = 200000;
 const int TimeWindow = 1024;
 const int PostTrigger = 60;
 const std::string ChannelMask = "00001111";
@@ -54,13 +54,13 @@ const std::string HV2 = "1840";
 const std::string HV3 = "1770";
 
 // --- NOTE ---
-const std::string NOTE = "";
+const std::string NOTE = "test";
 
 // --- Trigger Channel ---
 const int TriggerCh = 3;
 
 // --- Shift Information ---
-const std::string Shift_worker = "";
+const std::string Shift_worker = "Junkyo";
 const std::string Expert = "Junkyo";
 
 

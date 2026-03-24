@@ -7,10 +7,12 @@ class AutomationUI:
     def __init__(self, notebook, controller):
         self.notebook = notebook
         self.controller = controller
-        self.dummy_var = tk.BooleanVar(value=True)
+        self.dummy_var = tk.BooleanVar(value=False)
         self.cells = {}
         self.manual_vars = {} 
         self._create_tab()
+        self.notebook.after(1500, lambda: self.sync_current_to_inputs(self.sn2_val))
+        self.notebook.after(1500, lambda: self.sync_current_to_inputs(self.sn3_val))
 
     def _create_tab(self):
         self.tab = ttk.Frame(self.notebook)
@@ -30,6 +32,14 @@ class AutomationUI:
         # --- [상단 영역: Dashboard & Logs & Quick Setup] ---
         self.upper_notebook = ttk.Notebook(main_container)
         self.upper_notebook.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
+
+        # Dashboard 영역 내에 파라미터 상태를 보여주는 라벨 추가
+        self.params_label = ttk.Label(dashboard_frame, text="Scan Params: Tilt 5.0° | Rot 90.0° | Rest 3.0s", font=("Helvetica", 10, "bold"), foreground="#007ACC")
+        self.params_label.grid(row=4, column=0, sticky="w", pady=(5,0)) # row 번호는 기존 레이아웃에 맞게 조절하세요.
+
+        # Admin 전용 설정 창을 여는 버튼 추가
+        self.btn_scan_settings = tk.Button(dashboard_frame, text="⚙️ Params (Admin)", command=self.open_scan_params, bg="#f0ad4e", fg="black")
+        self.btn_scan_settings.grid(row=4, column=1, sticky="e", pady=(5,0))
 
         # --- 1. Quick Setup 탭 ---
         info_tab = ttk.Frame(self.upper_notebook, padding=15)
@@ -90,8 +100,8 @@ class AutomationUI:
         for c in range(3): left_ctrl.columnconfigure(c, weight=1)
         for r in range(6): left_ctrl.rowconfigure(r, weight=1)
         
-        self.dummy_chk = tk.Checkbutton(left_ctrl, text="🧪 TEST RUN (Simulation Mode)", 
-                                        variable=self.dummy_var, font=("Helvetica", 13, "bold"), fg="#007ACC")
+        self.dummy_chk = tk.Checkbutton(left_ctrl, text="🧪 TEST RUN (Simulation Mode)",
+                                variable=self.dummy_var, font=("Helvetica", 10), fg="#007ACC")
         self.dummy_chk.grid(row=0, column=0, columnspan=3, padx=8, pady=(5, 15), sticky="w")
 
         self.btn_unlock = tk.Button(left_ctrl, text="🔓 Unlock", bg="#f0ad4e", font=("Helvetica", 12, "bold"), 
@@ -111,6 +121,10 @@ class AutomationUI:
                                       command=self.controller.auto_mgr.handle_stop_continue)
         self.btn_stop_run.grid(row=2, column=1, padx=8, pady=8, sticky="nsew")
 
+        self.scan_status_label = ttk.Label(left_ctrl, text="SYSTEM STATUS: IDLE",
+                                           font=("Helvetica", 12, "bold"), foreground="gray")
+        self.scan_status_label.grid(row=0, column=1, sticky="e", padx=10)
+
         self.eta_label = ttk.Label(left_ctrl, text="ETA: --:--:--", font=("Helvetica", 13, "bold"), 
                                    foreground="#007ACC", anchor="center")
         self.eta_label.grid(row=3, column=0, columnspan=3, pady=10, sticky="nsew")
@@ -127,7 +141,7 @@ class AutomationUI:
             dev_frame.pack(fill=tk.X, pady=(0, 40 if idx==0 else 0)) 
             
             lbl = ttk.Label(dev_frame, text=f"{sn} | Status -> Tilt: 0.0°, Rot: 0.0°", 
-                            font=("Helvetica", 12, "bold"), foreground="#007ACC")
+                font=("Helvetica", 16, "bold"), foreground="#007ACC")
             lbl.pack(anchor="w", pady=(0, 10))
             if not hasattr(self, 'sn_labels'): self.sn_labels = {}
             self.sn_labels[sn] = lbl
@@ -147,12 +161,20 @@ class AutomationUI:
             
             btn_f = ttk.Frame(dev_frame)
             btn_f.pack(fill=tk.X, pady=(12, 0))
-            
-            tk.Button(btn_f, text="🚀 Move to Target", bg="#17a2b8", fg="white", font=("Helvetica", 10, "bold"), width=15,
-                      command=lambda d=idx+2, s=sn: self.controller.rot_mgr.move_rotation(d, *[v.get() for v in self.manual_vars[s]])).pack(side=tk.LEFT, padx=5)
-            tk.Button(btn_f, text="⏹ Stop", bg="#ffc107", font=("Helvetica", 10, "bold"), width=10,
-                      command=self.controller.auto_mgr.emergency_stop).pack(side=tk.LEFT, padx=5)
 
+            tk.Button(btn_f, text="📥 Get Current", bg="#6c757d", fg="white", font=("Helvetica", 9, "bold"),
+                      command=lambda s=sn: self.sync_current_to_inputs(s)).pack(side=tk.LEFT, padx=5)
+            
+            tk.Button(btn_f, text="↕️ Move Tilt", bg="#17a2b8", fg="white", font=("Helvetica", 10, "bold"), width=12,
+                      command=lambda d=idx+2, s=sn: self.controller.rot_mgr.move_tilt_only(d, self.manual_vars[s][0].get())).pack(side=tk.LEFT, padx=5)
+
+            tk.Button(btn_f, text="🔄 Move Rot", bg="#17a2b8", fg="white", font=("Helvetica", 10, "bold"), width=12,
+                      command=lambda d=idx+2, s=sn: self.controller.rot_mgr.move_rot_only(d, self.manual_vars[s][1].get())).pack(side=tk.LEFT, padx=5)
+
+
+            tk.Button(btn_f, text="⏹ Stop", bg="#ffc107", font=("Helvetica", 10, "bold"), width=10,
+                      command=lambda d=idx+2: self.controller.rot_mgr.stop_rotation(d)).pack(side=tk.LEFT, padx=5)
+   
         # --- 3. Logs 탭 ---
         log_tab = ttk.Frame(self.upper_notebook, padding=10)
         self.upper_notebook.add(log_tab, text=" 📝 Logs ")
@@ -214,6 +236,47 @@ class AutomationUI:
                 c.grid(row=r_idx+1, column=i+1, sticky="nsew", padx=2, pady=3, ipady=6)
                 self.cells[(sn, tilt, axis)] = c
 
+
+    def open_scan_params(self):
+        """Opens an Admin-only window to configure scan step sizes and rest time."""
+        # 1. Admin 권한(Unlock) 확인
+        if not self.controller.access_mgr.unlocked:
+            if not self.controller.access_mgr.request_unlock():
+                self.controller._log("[WARNING] Admin access denied for Scan Parameters.")
+                return
+
+        auto_mgr = self.controller.auto_mgr # rotation_manager의 인스턴스
+
+        # 2. 팝업 창 생성
+        win = tk.Toplevel(self.notebook)
+        win.title("Scan Parameters (Admin)")
+        win.geometry("320x250")
+        win.attributes("-topmost", True)
+
+        ttk.Label(win, text="Tilt Step (deg):", font=("Helvetica", 11)).grid(row=0, column=0, padx=20, pady=15, sticky="w")
+        tilt_var = tk.DoubleVar(value=auto_mgr.tilt_step)
+        ttk.Entry(win, textvariable=tilt_var, width=10, font=("Helvetica", 11)).grid(row=0, column=1)
+
+        ttk.Label(win, text="Rot Step (deg):", font=("Helvetica", 11)).grid(row=1, column=0, padx=20, pady=15, sticky="w")
+        rot_var = tk.DoubleVar(value=auto_mgr.rot_step)
+        ttk.Entry(win, textvariable=rot_var, width=10, font=("Helvetica", 11)).grid(row=1, column=1)
+
+        ttk.Label(win, text="Rest Time (sec):", font=("Helvetica", 11)).grid(row=2, column=0, padx=20, pady=15, sticky="w")
+        rest_var = tk.DoubleVar(value=auto_mgr.rest_time)
+        ttk.Entry(win, textvariable=rest_var, width=10, font=("Helvetica", 11)).grid(row=2, column=1)
+
+        def save_params():
+            auto_mgr.tilt_step = tilt_var.get()
+            auto_mgr.rot_step = rot_var.get()
+            auto_mgr.rest_time = rest_var.get()
+
+            self.params_label.config(text=f"Scan Params: Tilt {auto_mgr.tilt_step}° | Rot {auto_mgr.rot_step}° | Rest {auto_mgr.rest_time}s")
+            self.controller._log(f"[INFO] Scan params updated: Tilt {auto_mgr.tilt_step}°, Rot {auto_mgr.rot_step}°, Rest {auto_mgr.rest_time}s")
+            win.destroy()
+
+        btn_save = tk.Button(win, text="Save Parameters", command=save_params, bg="#5cb85c", fg="white", font=("Helvetica", 11, "bold"))
+        btn_save.grid(row=3, column=0, columnspan=2, pady=20, ipadx=10, ipady=5)
+
     def update_run_info(self):
         if not hasattr(self.controller, 'config_manager') or not self.controller.config_manager:
             return
@@ -248,7 +311,8 @@ class AutomationUI:
         colors = {"wait": "#e9ecef", "move": "#ffc107", "daq": "#007bff", "done": "#28a745"}
         if (sn, tilt, axis) in self.cells:
             text = "MOV" if status=="move" else "DAQ" if status=="daq" else "OK" if status=="done" else "-"
-            self.cells[(sn, tilt, axis)].config(bg=colors.get(status, "#e9ecef"), text=text)
+            # [핵심 수정] 백그라운드 스레드에서 UI를 변경할 때 멈추는(Deadlock) 현상을 원천 차단합니다.
+            self.notebook.after(0, lambda: self.cells[(sn, tilt, axis)].config(bg=colors.get(status, "#e9ecef"), text=text))
 
     def confirm_and_reset_angles(self):
         """팝업 창 승인 후, 스캔을 완전히 취소하고 하드웨어 원점 복귀 및 UI 리셋을 동시 수행합니다."""
@@ -273,12 +337,6 @@ class AutomationUI:
                 
             self.add_auto_log("🔄 Run Aborted & Origin Reset Initiated: Moving SN2 & SN3 to 0.0°...")
 
-    # (기존에 있던 reset_matrix 함수는 그대로 둡니다)
-    def reset_matrix(self):
-        for cell in self.cells.values(): cell.config(bg="#e9ecef", text="-")
-        self.log_display.delete('1.0', tk.END)
-        self.eta_label.config(text="ETA: --:--:--")
-
     def reset_matrix(self):
         for cell in self.cells.values(): cell.config(bg="#e9ecef", text="-")
         self.log_display.delete('1.0', tk.END)
@@ -299,9 +357,128 @@ class AutomationUI:
             self.btn_unlock.config(text="🔓 Lock", bg="#28a745", fg="white")
         else:
             self.btn_unlock.config(text="🔒 Unlock", bg="#f0ad4e", fg="black")
-    def update_sn_display(self, sn, tilt, rot):
+
+    def lock_manual_panel(self, is_locked):
+        """자동화 실행 중 우측 수동 패널을 반투명하게 느끼도록 색상을 변경하거나 비활성화합니다."""
+        state = tk.DISABLED if is_locked else tk.NORMAL
+        bg_color = "#3d3d3d" if is_locked else self.controller.ui.colors["dark"]["bg"] # 다크모드 기준
+
+        # 실제 위젯들을 순회하며 상태 변경
+        for sn in [self.sn2_val, self.sn3_val]:
+            # 수동 입력창, 버튼 등을 state=state로 변경하는 로직 추가
+            pass
+
+    def update_start_button(self, is_running):
+        """스캔 상태에 따라 모든 제어 버튼과 라벨을 동기화합니다."""
+        if is_running:
+            # 시작할 때: Start 비활성화 / Stop은 'Stop run'(노란색)으로 활성화
+            self.btn_start.config(text="⏳ RUNNING...", bg="#6c757d", state=tk.DISABLED)
+            self.btn_stop_run.config(text="⏹ Stop run", bg="#ffc107", state=tk.NORMAL)
+            self.btn_reset.config(state=tk.DISABLED)
+            self.scan_status_label.config(text="SYSTEM STATUS: SCANNING...", foreground="#dc3545")
+            
+            # [추가] Start 시 메인 화면의 Run DAQ 버튼 비활성화 (중복 방지)
+            if hasattr(self.controller, 'ui') and 'run_daq' in self.controller.ui.buttons:
+                self.controller.ui.buttons['run_daq'].config(state=tk.DISABLED, text="2. Run DAQ (Scanning)")
+        else:
+            # 정지(IDLE)할 때: Start 활성화 / Stop은 비활성화
+            self.btn_start.config(text="▶ Start run", bg="#28a745", state=tk.NORMAL)
+            self.btn_stop_run.config(text="⏹ Stop run", bg="#ffc107", state=tk.DISABLED) 
+            self.btn_reset.config(state=tk.NORMAL)
+            self.scan_status_label.config(text="SYSTEM STATUS: IDLE", foreground="gray")
+            
+            if hasattr(self.controller, 'ui') and 'run_daq' in self.controller.ui.buttons:
+                if hasattr(self.controller, 'access_mgr') and self.controller.access_mgr.unlocked:
+                    self.controller.ui.buttons['run_daq'].config(state=tk.NORMAL, text="2. Run DAQ")
+
+
+    def update_sn_display(self, dev_num, tilt, rot):
+        """백그라운드 스레드에서 받은 각도를 UI 라벨에 갱신합니다."""
+        sn = None
+        if dev_num == 2: sn = self.sn2_val
+        elif dev_num == 3: sn = self.sn3_val
+        
+        if not sn: return
+
+        t_str = f"{tilt:.1f}" if tilt is not None else "Err"
+        r_str = f"{rot:.1f}" if rot is not None else "Err"
+
         if hasattr(self, 'sn_labels') and sn in self.sn_labels:
-            self.sn_labels[sn].config(text=f"{sn} | Status -> Tilt: {tilt}°, Rot: {rot}°")
+            self.notebook.after(0, lambda: self.sn_labels[sn].config(text=f"{sn} | Status -> Tilt: {t_str}°, Rot: {r_str}°"))
+
+    def sync_current_to_inputs(self, sn):
+        """Reads hardware angles, updates config3.h first, then syncs to the GUI Helper."""
+        if not hasattr(self, 'sn_labels') or sn not in self.sn_labels: return
+        status_text = self.sn_labels[sn].cget("text")
+
+        try:
+            # 1. 상태 라벨에서 장비의 실제 각도(Ground Truth) 추출
+            parts = status_text.split("Tilt: ")[1].split(", Rot: ")
+            tilt_val = float(parts[0].replace("°", ""))
+            rot_val = float(parts[1].replace("°", ""))
+
+            self.update_config_angles(sn, tilt_val, rot_val)
+
+            if sn in self.manual_vars:
+                t_v, r_v = self.manual_vars[sn]
+                t_v.set(tilt_val)
+                r_v.set(rot_val)
+
+            self.controller._log(f"[INFO] Synced {sn} sequence: Hardware -> Config -> UI (Tilt: {tilt_val}°, Rot: {rot_val}°)")
+        except Exception as e:
+            pass 
+
+    def update_config_angles(self, sn, tilt, rot):
+        """Updates config3.h file using regex."""
+        try:
+            import re
+            config_path = "/home/precalkor/ADC/ADC_test/config3.h"
+            
+            with open(config_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+                
+            dev_num = "2" if sn == self.sn2_val else "3"
+            
+            tilt_int = int(round(tilt))
+            rot_int = int(round(rot))
+            
+            content = re.sub(rf'const std::string TiltAngle{dev_num}\s*=\s*".*";', f'const std::string TiltAngle{dev_num} = "{tilt_int}";', content)
+            content = re.sub(rf'const std::string RotateAngle{dev_num}\s*=\s*".*";', f'const std::string RotateAngle{dev_num} = "{rot_int}";', content)
+            
+            with open(config_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+                
+        except Exception as e:
+            self.controller._log(f"[WARNING] Failed to update config file for {sn}: {e}")
+
+
+    def start_eta_countdown(self, total_seconds, total_steps):
+        """스캔 시작 시 호출되어 카운트다운과 총 용량(800MB/step)을 세팅합니다."""
+        self.remaining_eta_seconds = int(total_seconds)
+        self.total_est_size_mb = total_steps * 800.0 
+        self.update_eta_realtime()
+
+    def update_eta_realtime(self):
+        """1초마다 남은 시간을 깎고 화면(self.eta_label)을 갱신합니다."""
+        auto_mgr = getattr(self.controller, 'auto_mgr', None)
+        
+        if not auto_mgr or not auto_mgr.is_running:
+            return 
+            
+        if auto_mgr.pause_event.is_set() and self.remaining_eta_seconds > 0:
+            self.remaining_eta_seconds -= 1
+            
+            m, s = divmod(self.remaining_eta_seconds, 60)
+            h, m = divmod(m, 60)
+            
+            if self.total_est_size_mb >= 1024:
+                size_str = f"{self.total_est_size_mb / 1024.0:.1f} GB"
+            else:
+                size_str = f"{self.total_est_size_mb:.0f} MB"
+            
+            self.eta_label.config(text=f"Storage Warning: ~ {size_str} | ETA: {int(h):02d}:{int(m):02d}:{int(s):02d}")
+            
+        self.notebook.after(1000, self.update_eta_realtime)
 
     def add_auto_log(self, message):
         timestamp = datetime.now().strftime("%H:%M:%S")

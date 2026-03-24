@@ -1,3 +1,5 @@
+# VERSION 3.1 
+
 # ui_manager.py
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, font
