@@ -543,7 +543,7 @@ class AutomationManager:
         # 이 코드가 있어야 Start 버튼이 초록색으로, Stop 버튼이 비활성화로 돌아옵니다.
         self.controller.auto_ui.update_start_button(False)
         
-        self.controller._log("🚨 EMERGENCY STOP: All processes killed and UI reset.")
+        self.controller._log("[INFO] Scan Aborted: Process stopped and UI initialized.")
 
     def _verify_file_integrity(self, file_path):
         """Checks if the recorded file has a valid size. Thread-safe version."""

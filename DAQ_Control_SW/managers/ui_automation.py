@@ -24,21 +24,17 @@ class AutomationUI:
         main_container = ttk.Frame(self.tab, padding=10)
         main_container.pack(fill=tk.BOTH, expand=True)
 
-        # 상하 공간 분배 (매트릭스가 들어갈 하단에 60% 비중 할당)
         main_container.rowconfigure(0, weight=4) 
         main_container.rowconfigure(1, weight=6) 
         main_container.columnconfigure(0, weight=1)
 
-        # --- [상단 영역: Dashboard & Logs & Quick Setup] ---
         self.upper_notebook = ttk.Notebook(main_container)
         self.upper_notebook.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
-
 
         # --- 1. Quick Setup 탭 ---
         info_tab = ttk.Frame(self.upper_notebook, padding=15)
         self.upper_notebook.add(info_tab, text=" 📋 Quick Setup ")
 
-        # SN1도 Dir과 Rot을 통일감 있게 추가
         self.qs_vars = {
                 "Shift_worker": tk.StringVar(), "Expert": tk.StringVar(), "NOTE": tk.StringVar(), 
                 "Laser": tk.StringVar(), "Wavelength": tk.StringVar(),
@@ -50,12 +46,12 @@ class AutomationUI:
         setup_frame = ttk.LabelFrame(info_tab, text=" ⚙️ Quick Configuration (Edit & Save) ", padding=15)
         setup_frame.pack(fill=tk.BOTH, expand=True)
 
-        entry_font = ("Helvetica", 12, "bold") # 입력칸 폰트 확대
-        lbl_font = ("Helvetica", 11, "bold")   # 라벨 폰트 확대
+        entry_font = ("Helvetica", 12, "bold") 
+        lbl_font = ("Helvetica", 11, "bold")   
 
         def make_row(parent, row_idx, items):
             frame = tk.Frame(parent)
-            frame.pack(fill=tk.X, pady=8) # 줄 간격 확대
+            frame.pack(fill=tk.X, pady=8)
             for i, (label_text, var_key) in enumerate(items):
                 tk.Label(frame, text=label_text, font=lbl_font, width=8, anchor="e").pack(side=tk.LEFT, padx=(10 if i>0 else 0, 5))
                 tk.Entry(frame, textvariable=self.qs_vars[var_key], font=entry_font, width=12, justify="center").pack(side=tk.LEFT)
@@ -63,12 +59,10 @@ class AutomationUI:
         make_row(setup_frame, 0, [("Shifter:", "Shift_worker"), ("Expert:", "Expert"), ("Laser:", "Laser"), ("Note:", "NOTE")])
         ttk.Separator(setup_frame, orient="horizontal").pack(fill=tk.X, pady=10)
         
-        # [수정] SN -> Dir(Cable) -> Rot -> HV 순서로 직관적으로 변경
         make_row(setup_frame, 1, [("SN1:", "SN1"), ("Dir(A~H):", "direction1"), ("Rot(°):", "RotateAngle1"), ("HV1(V):", "HV1")])
         make_row(setup_frame, 2, [("SN2:", "SN2"), ("Dir(A~H):", "direction2"), ("Rot(°):", "RotateAngle2"), ("HV2(V):", "HV2")])
         make_row(setup_frame, 3, [("SN3:", "SN3"), ("Dir(A~H):", "direction3"), ("Rot(°):", "RotateAngle3"), ("HV3(V):", "HV3")])
 
-        # [수정] 저장 / 열기 버튼 50:50 황금비율 적용
         btn_frame = tk.Frame(info_tab)
         btn_frame.pack(fill=tk.X, pady=(15, 0))
         btn_frame.columnconfigure(0, weight=1)
@@ -122,8 +116,9 @@ class AutomationUI:
                                    foreground="#007ACC", anchor="center")
         self.eta_label.grid(row=3, column=0, columnspan=3, pady=10, sticky="nsew")
 
-        self.btn_emg_stop = tk.Button(left_ctrl, text="🚨 Emergency", bg="#dc3545", fg="white", 
-                                      font=("Helvetica", 8), height=1, command=self.controller.auto_mgr.emergency_stop)
+        self.btn_emg_stop = tk.Button(left_ctrl, text="⏹ Abort Scan", bg="#6c757d", fg="white", 
+                                      font=("Helvetica", 9, "bold"), height=1, 
+                                      command=self.controller.auto_mgr.emergency_stop)
         self.btn_emg_stop.grid(row=4, column=0, columnspan=3, padx=10, pady=5, sticky="s")
 
         self.params_label = ttk.Label(left_ctrl, text="Scan Params: Tilt 5.0° | Rot 90.0° | Rest 3.0s", font=("Helvetica", 10, "bold"), foreground="#007ACC")
@@ -162,8 +157,13 @@ class AutomationUI:
             btn_f = ttk.Frame(dev_frame)
             btn_f.pack(fill=tk.X, pady=(12, 0))
 
-            tk.Button(btn_f, text="📥 Get Current", bg="#6c757d", fg="white", font=("Helvetica", 9, "bold"),
-                      command=lambda s=sn: self.sync_current_to_inputs(s)).pack(side=tk.LEFT, padx=5)
+            btn_get = tk.Button(btn_f, text="🔄 Get Current", 
+                                command=lambda s=sn: self.sync_current_to_inputs(s),
+                                bg="#007ACC", fg="white", 
+                                font=("Helvetica", 9, "bold"),
+                                relief="flat", overrelief="raised")
+            btn_get.pack(side=tk.LEFT, padx=5)
+
             """
             tk.Button(btn_f, text="↕️ Move Tilt", bg="#17a2b8", fg="white", font=("Helvetica", 10, "bold"), width=12,
                       command=lambda d=idx+2, s=sn: self.controller.rot_mgr.move_tilt_only(d, self.manual_vars[s][0].get())).pack(side=tk.LEFT, padx=5)
@@ -187,7 +187,6 @@ class AutomationUI:
         self.log_display = scrolledtext.ScrolledText(log_tab, font=("Courier", 10), bg="#1e1e1e", fg="#d4d4d4")
         self.log_display.pack(fill=tk.BOTH, expand=True)
 
-        # --- [하단 영역: 매트릭스 테이블 (스크롤 및 크기 대폭 확대)] ---
         matrix_container = ttk.Frame(main_container)
         matrix_container.grid(row=1, column=0, sticky="nsew")
         matrix_container.columnconfigure(0, weight=1)
@@ -245,15 +244,13 @@ class AutomationUI:
 
     def open_scan_params(self):
         """Opens an Admin-only window to configure scan step sizes and rest time."""
-        # 1. Admin 권한(Unlock) 확인
         if not self.controller.access_mgr.unlocked:
             if not self.controller.access_mgr.request_unlock():
                 self.controller._log("[WARNING] Admin access denied for Scan Parameters.")
                 return
 
-        auto_mgr = self.controller.auto_mgr # rotation_manager의 인스턴스
+        auto_mgr = self.controller.auto_mgr 
 
-        # 2. 팝업 창 생성
         win = tk.Toplevel(self.notebook)
         win.title("Scan Parameters (Admin)")
         win.geometry("320x250")
@@ -321,7 +318,6 @@ class AutomationUI:
             self.notebook.after(0, lambda: self.cells[(sn, tilt, axis)].config(bg=colors.get(status, "#e9ecef"), text=text))
 
     def confirm_and_reset_angles(self):
-        """팝업 창 승인 후, 스캔을 완전히 취소하고 하드웨어 원점 복귀 및 UI 리셋을 동시 수행합니다."""
         msg = (
             "⚠️ WARNING: Abort & Hardware Origin Reset\n\n"
             "This will ABORT the current run and physically move both SN2 and SN3 back to the origin (0.0°).\n"
@@ -459,6 +455,37 @@ class AutomationUI:
         except Exception as e:
             self.controller._log(f"[WARNING] Failed to update config file for {sn}: {e}")
 
+    def set_buttons_state(self, state):
+        tk_state = tk.NORMAL if state else tk.DISABLED
+
+        if state:
+            colors = {
+                "start": "#28a745", # Active Green
+                "reset": "#f0ad4e", # Warning Orange
+                "abort": "#6c757d", # Standard Grey
+                "get": "#007ACC"    
+            }
+            fg_color = "white"
+        else:
+            colors = {
+                "start": "#3a3a3a",
+                "reset": "#3a3a3a",
+                "abort": "#3a3a3a",
+                "get": "#3a3a3a"
+            }
+            fg_color = "#777777" 
+
+        self.btn_start.config(state=tk_state, bg=colors["start"], fg=fg_color)
+        self.btn_reset.config(state=tk_state, bg=colors["reset"], fg=fg_color)
+        self.btn_emg_stop.config(state=tk_state, bg=colors["abort"], fg=fg_color)
+
+        if hasattr(self, 'get_current_btns'):
+            for btn in self.get_current_btns:
+                btn.config(state=tk_state, bg=colors["get"], fg=fg_color)
+
+        self.add_auto_log(f"Control Panel {'Activated 🔓' if state else 'Standby 🔒'}")
+
+
     def _move_and_auto_sync(self, dev_num, sn, target_val, axis):
         import threading
         import time
@@ -481,13 +508,11 @@ class AutomationUI:
 
 
     def start_eta_countdown(self, total_seconds, total_steps):
-        """스캔 시작 시 호출되어 카운트다운과 총 용량(800MB/step)을 세팅합니다."""
         self.remaining_eta_seconds = int(total_seconds)
         self.total_est_size_mb = total_steps * 800.0 
         self.update_eta_realtime()
 
     def update_eta_realtime(self):
-        """1초마다 남은 시간을 깎고 화면(self.eta_label)을 갱신합니다."""
         auto_mgr = getattr(self.controller, 'auto_mgr', None)
         
         if not auto_mgr or not auto_mgr.is_running:

@@ -151,7 +151,6 @@ class UIManager:
                       gs1706@naver.com or via Slack """)
     """ UPDATE 2026 03 10 """
 
-
     def create_widgets(self):
         self.main_container = tk.Frame(self.master)
         self.main_container.pack(fill=tk.BOTH, expand=True)
@@ -1247,6 +1246,21 @@ class UIManager:
         if "tec_label_obj" in vars_dict:
             vars_dict["tec_label_obj"].config(foreground=tec_color)
 
+    def set_laser_controls_state(self, state):
+        """기존 레이저 제어 버튼 외에 자동화 탭의 버튼들도 함께 제어합니다."""
+        # 1. 기존 레이저 버튼 제어 (state는 'normal' 또는 'disabled')
+        if hasattr(self, 'laser_tabs_data'):
+            for wl, vars_dict in self.laser_tabs_data.items():
+                if "ld_on_btn" in vars_dict: vars_dict["ld_on_btn"].config(state=state)
+                if "ld_off_btn" in vars_dict: vars_dict["ld_off_btn"].config(state=state)
+                if "tec_on_btn" in vars_dict: vars_dict["tec_on_btn"].config(state=state)
+                if "tec_off_btn" in vars_dict: vars_dict["tec_off_btn"].config(state=state)
+                if "curr_apply_btn_obj" in vars_dict: vars_dict["curr_apply_btn_obj"].config(state=state)
+
+        is_unlocked = (state == tk.NORMAL)
+        if hasattr(self.controller, 'auto_ui'):
+            self.controller.auto_ui.set_buttons_state(is_unlocked)
+
     def _create_laser_settings_frames_multi(self, parent, wl, vars_dict):
         """특정 파장 탭 전용 제어 프레임 생성 (초기 상태: DISABLED)"""
         pwr_frame = ttk.LabelFrame(parent, text=f"Power Control ({wl})", padding=10)
@@ -1851,38 +1865,40 @@ class UIManager:
         tree.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
+
     def refresh_ui_state(self):
-        """제어권 상태에 따라 UI를 업데이트하되, 운영 모드(main.py)에서는 항상 활성화합니다."""
-        
-        # [수정] 모드 판별: access_mgr이 있으면 그 상태를 따르고, 없으면(main.py) 항상 True
-        if hasattr(self.controller, 'access_mgr'):
-            is_unlocked = self.controller.access_mgr.unlocked
-        else:
-            is_unlocked = True 
-            
+        """전체 시스템 버튼의 '불빛'을 제어권 상태에 동기화합니다."""
+        is_unlocked = getattr(self.controller.access_mgr, 'unlocked', True)
         state = tk.NORMAL if is_unlocked else tk.DISABLED
         
-        # 제어권 버튼 업데이트 (테스트 모드일 때만)
+        # Locked 상태 색상 정의 (전등 꺼진 느낌)
+        bg_locked = "#3a3a3a"
+        fg_locked = "#777777"
+        
+        # 1. Unlock 버튼 자체의 상태 업데이트
         if self.unlock_btn:
             if is_unlocked:
                 self.unlock_btn.config(text="🔓 Controls Active", bg="#28a745", fg="white")
             else:
                 self.unlock_btn.config(text="🔒 Unlock Controls", bg="#f0ad4e", fg="black")
 
-        # UPS 관련 버튼들 잠금/해제
-        if hasattr(self, 'ups_conn_btn'): self.ups_conn_btn.config(state=state)
-        if hasattr(self, 'ups_refresh_btn'): self.ups_refresh_btn.config(state=state)
-        if hasattr(self, 'ups_diag_btn'): self.ups_diag_btn.config(state=state)
-        if hasattr(self, 'btn_ups_shutdown'): self.btn_ups_shutdown.config(state=state)
-
-        # Laser 관련 버튼들 잠금/해제
+        # 2. 레이저 탭 버튼들 '불 끄기'
         if hasattr(self, 'laser_tabs_data'):
             for wl, vars_dict in self.laser_tabs_data.items():
-                if "ld_on_btn" in vars_dict: vars_dict["ld_on_btn"].config(state=state)
-                if "ld_off_btn" in vars_dict: vars_dict["ld_off_btn"].config(state=state)
-                if "tec_on_btn" in vars_dict: vars_dict["tec_on_btn"].config(state=state)
-                if "tec_off_btn" in vars_dict: vars_dict["tec_off_btn"].config(state=state)
-                if "curr_apply_btn_obj" in vars_dict: vars_dict["curr_apply_btn_obj"].config(state=state)
+                for btn_key in ["ld_on_btn", "ld_off_btn", "tec_on_btn", "tec_off_btn", "curr_apply_btn_obj"]:
+                    if btn_key in vars_dict:
+                        btn = vars_dict[btn_key]
+                        btn.config(state=state)
+                        
+                        # [보완] 비활성화 시 시각적으로 '꺼진' 효과 부여
+                        if not is_unlocked:
+                            try:
+                                btn.config(bg=bg_locked, fg=fg_locked)
+                            except tk.TclError:
+                                pass
+
+        if hasattr(self.controller, 'auto_ui'):
+            self.controller.auto_ui.set_buttons_state(is_unlocked)
 
     def setup_shortcuts(self):
         """DAQ 탭 전용 단축키 설정"""
