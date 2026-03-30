@@ -224,9 +224,11 @@ class UPSManager:
 
                     self.app._log(f"UPS Manual Connect Success: {port}")
                     self.app.master.after(0, self.update_ups_status_loop)
+
                 except Exception as e:
                     self.ups_serial = None
-                    self.app.master.after(0, lambda: messagebox.showerror("UPS Connection Error", f"Failed to connect: {str(e)}"))
+                    error_msg = str(e) 
+                    self.app.master.after(0, lambda msg=error_msg: messagebox.showerror("UPS Connection Error", f"Failed to connect: {msg}"))
 
             if hasattr(self.app, 'ui'):
                 self.app.ui.ups_vars["conn_status"].set(f"Connecting to {port}...")

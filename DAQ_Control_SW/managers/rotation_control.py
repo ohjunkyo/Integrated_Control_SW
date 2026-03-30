@@ -131,6 +131,9 @@ class RotationManager:
             self.controller._log(f"WARNING: Device {dev_num} is already moving! Command ignored.")
             return
 
+        self.is_moving[dev_num] = True
+        self.target_angles[dev_num] = {"tilt": None, "rot": rot}
+
         current_tilt, _ = self.read_angles(dev_num)
         if current_tilt is not None and abs(current_tilt) > 0.5:
             error_msg = f"ERROR: SAFETY INTERLOCK! Cannot rotate. Tilt is {current_tilt:.1f} deg. Must be 0.0 deg."

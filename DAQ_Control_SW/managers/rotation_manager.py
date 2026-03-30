@@ -282,10 +282,8 @@ class AutomationManager:
                     self.pause_event.wait() # Pause 버튼 눌렸을 때 대기
                     if not self.is_running: return
                     
-                    # 현재 진행 상태 저장 (Crash Recovery용)
                     self._save_state(axis, tilt, current_step)
                     
-                    # UI 상태 업데이트 (현재 움직이는 위치 표시)
                     self.controller.auto_ui.update_cell(sn2_name, tilt, axis, "move")
                     self.controller.auto_ui.update_cell(sn3_name, tilt, axis, "move")
 
@@ -296,9 +294,14 @@ class AutomationManager:
                         self._wait_for_physical_angle(2, target_tilt=tilt)
                         self._wait_for_physical_angle(3, target_tilt=tilt)
                         
-                        # [요청사항] 이동 완료 후 데이터 받기 전 5초 안정화 대기
                         self.controller._log("[INFO] Motor arrived. Waiting 5s for stabilization...")
                         self._safe_sleep(5.0)
+                        #self.controller._log(f"[INFO] Syncing current angles (Tilt: {tilt}°) to config before DAQ...")
+                        self.controller.auto_ui.update_config_angles(sn2_name, tilt, r2)
+                        self.controller.auto_ui.update_config_angles(sn3_name, tilt, r3)
+
+                        if hasattr(self.controller, 'auto_ui'):
+                            self.controller.auto_ui.notebook.after(100, self.controller.refresh_all_data)
                     else:
                         time.sleep(0.5)
 
@@ -417,11 +420,10 @@ class AutomationManager:
         )
         ans = messagebox.askyesno("Scan Completed", summary)
         if ans is True:
-            # UI 매트릭스 초기화
             self.controller.auto_ui.reset_matrix()
-            # [추가] 하드웨어 각도도 (0, 0)으로 복귀
             self.reset_all_angles()
             self.controller._log("User selected NEXT RUN. UI & Hardware Reset initiated.")
+            self.controller.refresh_all_data()
 
     def stop_automation(self):
         """자동화 스캔을 안전하게 중단합니다."""

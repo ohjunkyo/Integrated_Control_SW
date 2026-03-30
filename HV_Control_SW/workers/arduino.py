@@ -1,6 +1,7 @@
 import time, serial
 from PyQt5.QtCore import QObject, pyqtSignal, QTimer, pyqtSlot 
 import numpy as np
+import socket
 
 class ArduinoWorker(QObject):
     data_ready = pyqtSignal(int, object, object)
@@ -13,6 +14,7 @@ class ArduinoWorker(QObject):
         self.ser = None
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._poll_serial_data)
+        self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         
         # 재연결을 위한 타이머 추가
         self.reconnect_timer = QTimer(self)
@@ -60,7 +62,7 @@ class ArduinoWorker(QObject):
             if self.ser.in_waiting > 0:
                 line = self.ser.readline().decode('utf-8', errors='ignore').strip()
                 
-                # 1. 🚨 터미널 확인용: 아두이노가 실제로 뭐라고 보내는지 출력합니다.
+                ## 1. 🚨 터미널 확인용: 아두이노가 실제로 뭐라고 보내는지 출력합니다.
                 #print(f"👉 [Arduino Data] {line}") 
                 
                 # 2. 안전하게 쪼개기 (out of range 및 띄어쓰기 방어막)
@@ -79,7 +81,7 @@ class ArduinoWorker(QObject):
                             self.data_ready.emit(idx, np.nan, np.nan)
                         elif "TEMP" in parts and "HUMI" in parts:
                             self.data_ready.emit(idx, float(parts["TEMP"]), float(parts["HUMI"]))
-
+                            
         except (OSError, serial.SerialException) as e:
             print(f"⚠️ Serial communication lost: {e}")
             self.connection_status.emit("ENV Status: Serial Lost! Retrying...")

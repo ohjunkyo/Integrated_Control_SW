@@ -2,6 +2,7 @@
 import time
 import os
 import collections
+import threading
 from datetime import datetime, timedelta
 from tkinter import messagebox
 import matplotlib.dates as mdates
@@ -10,7 +11,7 @@ import logging
 from tkinter import messagebox, filedialog  
 from logging.handlers import TimedRotatingFileHandler
 import tkinter as tk
-import tkinter.simpledialog as sd # 파일 최상단에 없으면 추가하세요.
+import tkinter.simpledialog as sd 
 
 class LaserManager:
     def __init__(self, app):
@@ -37,6 +38,8 @@ class LaserManager:
 
         self.laser_session_start = None
         self.laser_after_id = None
+        self.watchdog_running = False
+        self.start_interlock_watchdog()
 
     def auto_connect_laser(self):
         last_wls = getattr(self.app, "last_connected_wls", [])
@@ -119,30 +122,30 @@ class LaserManager:
 
 
     def show_interlock_recovery_dialog(self, wl, inst):
-        """인터락 복구 시 팝업창을 띄우는 커스텀 다이얼로그"""
+        """Custom dialog for interlock recovery"""
         dialog = tk.Toplevel(self.app.master)
         dialog.title(f"Interlock Recovery - {wl}")
         dialog.geometry("380x150")
         dialog.attributes("-topmost", True)
-        dialog.grab_set() # 팝업이 떠 있는 동안 메인 창 클릭 방지
+        dialog.grab_set() 
 
-        tk.Label(dialog, text=f"[{wl}] 인터락 해제가 감지되었습니다.\n다시 연결하시겠습니까?", font=("Arial", 10, "bold"), pady=15).pack()
+        tk.Label(dialog, text=f"[{wl}] Interlock release detected.\nDo you want to reconnect?", font=("Arial", 10, "bold"), pady=15).pack()
 
         def on_normal_connect():
             dialog.destroy()
             self._process_post_reconnect(wl, inst, is_admin=False)
 
         def on_admin_connect():
-            pwd = sd.askstring("Admin", "Admin 비밀번호를 입력하세요:", show='*', parent=dialog)
-            if pwd == "1234": # 💡 원하는 Admin 비밀번호로 변경하세요
-                self.app._log(f"🔑 [ {wl} ] Admin 권한 승인됨.")
+            pwd = sd.askstring("Admin", "Enter Admin Password:", show='*', parent=dialog)
+            if pwd == "1234": 
+                self.app._log(f"[INFO] Admin access granted for {wl}.")
                 dialog.destroy()
                 self._process_post_reconnect(wl, inst, is_admin=True)
             elif pwd is not None:
-                messagebox.showerror("Error", "비밀번호가 틀렸습니다.", parent=dialog)
+                messagebox.showerror("Error", "Incorrect password.", parent=dialog)
 
         def on_cancel():
-            self.app._log(f"🚫 [ {wl} ] 사용자가 연결을 취소했습니다.")
+            self.app._log(f"[WARNING] Connection cancelled by user for {wl}.")
             inst.disconnect()
             self._handle_comm_failure(wl, self.wavelengths.index(wl))
             dialog.destroy()
@@ -150,35 +153,83 @@ class LaserManager:
         btn_frame = tk.Frame(dialog)
         btn_frame.pack(pady=10)
 
-        tk.Button(btn_frame, text="일반 연결", width=10, command=on_normal_connect).pack(side=tk.LEFT, padx=5)
-        tk.Button(btn_frame, text="강제 연결 (Admin)", width=15, command=on_admin_connect, fg="red").pack(side=tk.LEFT, padx=5)
-        tk.Button(btn_frame, text="취소", width=10, command=on_cancel).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="Normal Connect", width=14, command=on_normal_connect).pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="Force Connect (Admin)", width=20, command=on_admin_connect, fg="red").pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="Cancel", width=10, command=on_cancel).pack(side=tk.LEFT, padx=5)
+
+    def start_interlock_watchdog(self):
+        """Starts a lightweight background thread to monitor interlock status every 1 second."""
+        if getattr(self, 'watchdog_running', False):
+            return
+            
+        self.watchdog_running = True
+        threading.Thread(target=self._interlock_watchdog_loop, daemon=True).start()
+        self.app._log("[INFO] Safety Interlock Watchdog started (1s polling).")
+
+    def _interlock_watchdog_loop(self):
+        """Runs purely in the background to catch interlock trips instantly without UI lag."""
+        while self.watchdog_running:
+            for wl in self.wavelengths:
+                inst = self.laser_instances.get(wl)
+                ui_vars = self.app.ui.laser_tabs_data.get(wl)
+                
+                if inst and inst.is_connected() and not self.comm_error_flags.get(wl, False):
+                    try:
+                        status_ok = inst.update_status() 
+                        if status_ok:
+                            is_interlock = inst.status.get('alarm', False) or inst.status.get('interlock', False)
+                            
+                            if is_interlock and not self.comm_error_flags[wl]:
+                                self.comm_error_flags[wl] = True
+                                inst.set_ld_on(False)
+                                inst.set_tec_on(False)
+                                
+                                self.app._log(f"[CRITICAL] Interlock tripped for {wl}! LD/TEC forced OFF.")
+                                
+                                if hasattr(self.app, 'master') and ui_vars:
+                                    self.app.master.after(0, lambda w=wl: self._trigger_interlock_ui_alert(w))
+                                    
+                    except Exception as e:
+                        pass 
+
+            time.sleep(1.0)
+
+    def _trigger_interlock_ui_alert(self, wl):
+        """Updates UI immediately when interlock is detected by the watchdog."""
+        ui_vars = self.app.ui.laser_tabs_data.get(wl)
+        if ui_vars:
+            ui_vars["ld_status"].set("🔒 INTERLOCK")
+            if "ld_label_obj" in ui_vars: 
+                ui_vars["ld_label_obj"].config(foreground="#fd7e14")
+            self.app.ui.update_laser_status_colors(wl, False, False)
+            
+        inst = self.laser_instances.get(wl)
+        if inst:
+            self.show_interlock_recovery_dialog(wl, inst)
 
     def _process_post_reconnect(self, wl, inst, is_admin=False):
-        """팝업창 선택 이후의 레이저 상태 처리 로직"""
         inst.update_status()
         is_ld_on = inst.status.get('ld_on', False)
 
         if is_ld_on:
             if is_admin:
-                # 관리자: Restore 기능과 동일하게 끄거나 켤지 물어봄
-                off_msg = f"⚠️ [ {wl} ] 하드웨어 LD가 현재 켜져있습니다(ON)!\n\n안전을 위해 레이저를 끄시겠습니까?\n(아니오 클릭 시 켜진 상태 유지)"
+                off_msg = f"[WARNING] Hardware LD for {wl} is currently ON!\n\nFor safety, do you want to turn OFF the laser?\n(Click No to keep it ON)"
                 if messagebox.askyesno("LD Status Alert (Admin)", off_msg):
                     inst.set_ld_on(False)
                     inst.set_tec_on(False)
-                    self.app._log(f"🛡️ Safety: [ {wl} ] 관리자 권한으로 레이저 OFF 조치됨.")
+                    self.app._log(f"[INFO] Safety: {wl} forced OFF by Admin.")
                 else:
-                    self.app._log(f"⚠️ Warning: [ {wl} ] 관리자가 레이저 ON 유지를 선택했습니다.")
+                    self.app._log(f"[WARNING] Safety: {wl} kept ON by Admin.")
             else:
-                # 일반 사용자: 묻지 않고 무조건 안전하게 강제 OFF
                 inst.set_ld_on(False)
                 inst.set_tec_on(False)
-                self.app._log(f"🛡️ Safety: [ {wl} ] 일반 연결이므로 안전을 위해 강제 OFF 되었습니다.")
-                messagebox.showinfo("Safety Action", "일반 권한으로 연결되어 안전을 위해 레이저가 강제 종료되었습니다.")
+                self.app._log(f"[INFO] Safety: {wl} forced OFF due to normal user privileges.")
+                messagebox.showinfo("Safety Action", "Connected with normal privileges. Laser has been safely forced OFF.")
         
         time.sleep(0.1)
         inst.update_status()
-        self.comm_error_flags[wl] = False # 정상 루프로 복귀
+        self.comm_error_flags[wl] = False
+
 
     def manual_refresh_laser(self, wl=None):
         self.laser_session_start = time.time()
@@ -305,6 +356,7 @@ class LaserManager:
             self.app.master.after_cancel(self.laser_after_id)
             self.laser_after_id = None
 
+        interval = 1000
         interval = 60000 
         for idx, wl in enumerate(self.wavelengths):
             inst = self.laser_instances.get(wl)

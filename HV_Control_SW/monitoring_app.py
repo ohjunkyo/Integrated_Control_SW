@@ -36,6 +36,8 @@ class HVControlPanel(QDialog):
         self.set_voltage_btn.clicked.connect(self.set_voltage); self.set_current_btn.clicked.connect(self.set_current)
         self.power_on_btn.clicked.connect(self.turn_on); self.power_off_btn.clicked.connect(self.turn_off)
         self.channel_selector.currentIndexChanged.connect(self.request_settings_for_channel)
+
+
     def get_ch(self): return int(self.channel_selector.currentText())
     def set_voltage(self): self.control_signal.emit('set_param', 0, self.get_ch(), self.hv_params['v_set'], self.voltage_input.value())
     def set_current(self): self.control_signal.emit('set_param', 0, self.get_ch(), self.hv_params['i_set'], self.current_input.value())
@@ -46,6 +48,7 @@ class HVControlPanel(QDialog):
     def set_initial_values(self, settings):
         ch = self.get_ch()
         if ch in settings: self.voltage_input.setValue(settings[ch]['v_set']); self.current_input.setValue(settings[ch]['i_set'])
+
 
 class MonitoringApp(QMainWindow):
     def __init__(self, config):
@@ -286,6 +289,7 @@ class MonitoringApp(QMainWindow):
         self.worker_manager.arduino_status_changed.connect(lambda s: self.env_status_label.setText(f"ENV Status: {s}")); self.worker_manager.caenhv_status_changed.connect(self.hv_status_label.setText)
         self.worker_manager.hv_command_feedback.connect(self.on_hv_feedback); self.worker_manager.hv_initial_settings_ready.connect(self.on_hv_initial_settings_ready)
         self.control_panel_btn.clicked.connect(self.open_control_panel); self.worker_manager.shutdown_complete.connect(self.close)
+
 
     def setup_timers(self):
         self.indicator_timer = QTimer(self); self.indicator_timer.timeout.connect(self.update_indicators); self.indicator_timer.start(2000)

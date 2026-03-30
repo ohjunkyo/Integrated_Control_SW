@@ -21,6 +21,8 @@ import matplotlib.dates as mdates
 import logging 
 from logging.handlers import TimedRotatingFileHandler 
 import random 
+import socket
+
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from datetime import datetime
 
@@ -84,6 +86,7 @@ class App:
             "375nm": "1-3.3:1.0", "405nm": "1-3.1:1.0",
             "450nm": "1-3.2:1.0", "473nm": "1-3.4:1.0"
         }
+
 
         # 2. 로직 매니저 생성
         self.access_mgr = ControlAccessManager(self, password="root")
@@ -155,7 +158,6 @@ class App:
             self.ui.refresh_ui_state()
 
         self.master.protocol("WM_DELETE_WINDOW", self.on_closing)
-
 
     def _setup_status_bar(self):
         """하단 상태 표시줄 위젯을 생성하고 실시간 업데이트를 시작합니다."""

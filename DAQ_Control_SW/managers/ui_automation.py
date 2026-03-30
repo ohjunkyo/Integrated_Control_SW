@@ -40,7 +40,8 @@ class AutomationUI:
 
         # SN1도 Dir과 Rot을 통일감 있게 추가
         self.qs_vars = {
-            "Shift_worker": tk.StringVar(), "Expert": tk.StringVar(), "NOTE": tk.StringVar(), "Laser": tk.StringVar(),
+                "Shift_worker": tk.StringVar(), "Expert": tk.StringVar(), "NOTE": tk.StringVar(), 
+                "Laser": tk.StringVar(), "Wavelength": tk.StringVar(),
             "SN1": tk.StringVar(), "HV1": tk.StringVar(), "direction1": tk.StringVar(), "RotateAngle1": tk.StringVar(),
             "SN2": tk.StringVar(), "HV2": tk.StringVar(), "direction2": tk.StringVar(), "RotateAngle2": tk.StringVar(),
             "SN3": tk.StringVar(), "HV3": tk.StringVar(), "direction3": tk.StringVar(), "RotateAngle3": tk.StringVar()
@@ -79,9 +80,8 @@ class AutomationUI:
         tk.Button(btn_frame, text="💾 Save Settings", bg="#28a745", fg="white", font=("Helvetica", 12, "bold"), 
                   height=2, command=self.save_quick_setup).grid(row=0, column=1, sticky="ew", padx=5)
 
-        # --- 2. Dashboard 탭 ---
         dash_tab = ttk.Frame(self.upper_notebook, padding=10)
-        self.upper_notebook.add(dash_tab, text=" 🎛️ Dashboard ")
+        self.upper_notebook.add(dash_tab, text=" 🎛️ Control Panel (Master) ")
 
         dash_tab.columnconfigure(0, weight=6) 
         dash_tab.columnconfigure(1, weight=4) 
@@ -164,12 +164,18 @@ class AutomationUI:
 
             tk.Button(btn_f, text="📥 Get Current", bg="#6c757d", fg="white", font=("Helvetica", 9, "bold"),
                       command=lambda s=sn: self.sync_current_to_inputs(s)).pack(side=tk.LEFT, padx=5)
-            
+            """
             tk.Button(btn_f, text="↕️ Move Tilt", bg="#17a2b8", fg="white", font=("Helvetica", 10, "bold"), width=12,
                       command=lambda d=idx+2, s=sn: self.controller.rot_mgr.move_tilt_only(d, self.manual_vars[s][0].get())).pack(side=tk.LEFT, padx=5)
 
             tk.Button(btn_f, text="🔄 Move Rot", bg="#17a2b8", fg="white", font=("Helvetica", 10, "bold"), width=12,
                       command=lambda d=idx+2, s=sn: self.controller.rot_mgr.move_rot_only(d, self.manual_vars[s][1].get())).pack(side=tk.LEFT, padx=5)
+            """
+            tk.Button(btn_f, text="↕️ Move Tilt", bg="#17a2b8", fg="white", font=("Helvetica", 10, "bold"), width=12,
+                      command=lambda d=idx+2, s=sn: self._move_and_auto_sync(d, s, self.manual_vars[s][0].get(), "tilt")).pack(side=tk.LEFT, padx=5)
+
+            tk.Button(btn_f, text="🔄 Move Rot", bg="#17a2b8", fg="white", font=("Helvetica", 10, "bold"), width=12,
+                      command=lambda d=idx+2, s=sn: self._move_and_auto_sync(d, s, self.manual_vars[s][1].get(), "rot")).pack(side=tk.LEFT, padx=5)
 
 
             tk.Button(btn_f, text="⏹ Stop", bg="#ffc107", font=("Helvetica", 10, "bold"), width=10,
@@ -412,7 +418,6 @@ class AutomationUI:
         status_text = self.sn_labels[sn].cget("text")
 
         try:
-            # 1. 상태 라벨에서 장비의 실제 각도(Ground Truth) 추출
             parts = status_text.split("Tilt: ")[1].split(", Rot: ")
             tilt_val = float(parts[0].replace("°", ""))
             rot_val = float(parts[1].replace("°", ""))
@@ -425,14 +430,17 @@ class AutomationUI:
                 r_v.set(rot_val)
 
             self.controller._log(f"[INFO] Synced {sn} sequence: Hardware -> Config -> UI (Tilt: {tilt_val}°, Rot: {rot_val}°)")
+            
+            self.notebook.after(100, self.controller.refresh_all_data)
+
         except Exception as e:
-            pass 
+            self.controller._log(f"[ERROR] Sync failed for {sn}: {e}")
 
     def update_config_angles(self, sn, tilt, rot):
         """Updates config3.h file using regex."""
         try:
             import re
-            config_path = "/home/precalkor/ADC/ADC_test/config3.h"
+            config_path = "/home/precalkor/Integrated_Control_SW/DAQ_Control_SW/config3.h"
             
             with open(config_path, 'r', encoding='utf-8') as f:
                 content = f.read()
@@ -450,6 +458,26 @@ class AutomationUI:
                 
         except Exception as e:
             self.controller._log(f"[WARNING] Failed to update config file for {sn}: {e}")
+
+    def _move_and_auto_sync(self, dev_num, sn, target_val, axis):
+        import threading
+        import time
+
+        if axis == "tilt":
+            self.controller.rot_mgr.move_tilt_only(dev_num, target_val)
+        else:
+            self.controller.rot_mgr.move_rot_only(dev_num, target_val)
+
+        def _wait_for_stop():
+            time.sleep(1.0) 
+
+            while getattr(self.controller.rot_mgr, 'is_moving', {}).get(dev_num, False):
+                time.sleep(0.5)
+
+            #self.controller._log(f"[INFO] Movement finished. Auto-syncing {sn}...")
+            self.notebook.after(500, lambda: self.sync_current_to_inputs(sn))
+
+        threading.Thread(target=_wait_for_stop, daemon=True).start()
 
 
     def start_eta_countdown(self, total_seconds, total_steps):
