@@ -146,8 +146,8 @@ class App:
         self.preload_laser_history()
         self.preload_ups_history()
 
-        self.master.after(1500, self.auto_connect_ups)
-        self.master.after(5000, self.auto_connect_laser)
+        self.master.after(500, self.auto_connect_ups)
+        self.master.after(500, self.auto_connect_laser)
         self.master.after(500, self.handle_mode_change) 
         self.update_laser_status_loop()
 
@@ -160,30 +160,20 @@ class App:
         self.master.protocol("WM_DELETE_WINDOW", self.on_closing)
 
     def _setup_status_bar(self):
-        """하단 상태 표시줄 위젯을 생성하고 실시간 업데이트를 시작합니다."""
-        # 1. 상태바 프레임 생성
         self.status_bar = ttk.Frame(self.master, relief=tk.SUNKEN, padding="2 5")
         self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
 
-        # 2. 표시 변수 선언
         self.elapsed_time_var = tk.StringVar()
         self.clock_var = tk.StringVar()
 
-        # 3. 라벨 배치 (왼쪽: 시계, 오른쪽: 실행 시간)
         ttk.Label(self.status_bar, textvariable=self.clock_var).pack(side=tk.LEFT, padx=10)
         ttk.Label(self.status_bar, textvariable=self.elapsed_time_var).pack(side=tk.RIGHT, padx=10)
 
-        # 4. 업데이트 루프 시작
         self._update_status_bar()
 
-    # App 클래스 내 적당한 위치에 추가
     def is_production_running(self):
-        """현재 시스템에서 main.py(Production)가 실행 중인지 확인"""
         try:
-            # 리눅스 pgrep 명령어로 main.py 프로세스 검색
             result = subprocess.run(['pgrep', '-f', 'main.py'], capture_output=True, text=True)
-            # 자기 자신(main_test.py) 외에 다른 main.py가 있는지 확인
-            # pgrep 결과가 있고, 그 중 하나라도 현재 프로세스 ID(os.getpid)와 다르면 True
             pids = result.stdout.strip().split()
             return len(pids) > 1
         except Exception:
@@ -193,11 +183,9 @@ class App:
         """비밀번호 확인 후 제어권 활성화 및 자동화 UI 연동"""
         if self.access_mgr.request_unlock():
             self.ui.refresh_ui_state()
-            # 자동화 탭의 버튼 텍스트도 실시간 갱신
             if hasattr(self, 'auto_ui'):
                 self.auto_ui.update_unlock_ui(self.access_mgr.unlocked)
             
-           
     def refresh_ui_state(self):
         """제어권 상태에 따라 UI 버튼들의 활성/비활성 상태를 업데이트"""
         state = tk.NORMAL if self.control_unlocked else tk.DISABLED
@@ -215,8 +203,6 @@ class App:
             except Exception as e:
                 self._log(f"Error loading contacts: {e}")
         return [] 
-
-    # main.py
 
     def update_plots_theme(self, is_dark):
         """멀티 탭 구조의 모든 그래프 테마를 일괄 변경합니다."""
@@ -309,7 +295,7 @@ class App:
             if os.path.exists(APP_CONFIG_FILE):
                 with open(APP_CONFIG_FILE, 'r') as f:
                     data = json.load(f)
-                    config_path = data.get("config3h_path") or data.get("config2h_path")
+                    config_path = data.get("config3h_path") or data.get("config3h_path")
                     
                     self.terminal_preference = data.get("terminal_preference", self.terminal_preference)
                     self.last_connected_wls = data.get("last_connected_wls", [])
@@ -318,9 +304,9 @@ class App:
         except: pass
 
         if not config_path or not os.path.exists(config_path):
-            test_h = "/home/precalkor/ADC/ADC_test/config_test.h"
-            std_h = "/home/precalkor/ADC/ADC_test/config3.h"
-            old_h = "/home/precalkor/ADC/ADC_test/config2.h" # [수정] config2.h도 폴백 경로로 추가
+            test_h = "/home/precalkor//home/precalkor/Integrated_Control_SW/DAQ_Control_SW/config_test.h"
+            std_h = "/home/precalkor//home/precalkor/Integrated_Control_SW/DAQ_Control_SW/config3.h"
+            old_h = "/home/precalkor//home/precalkor/Integrated_Control_SW/DAQ_Control_SW/config2.h" 
             config_path = test_h if os.path.exists(test_h) else std_h if os.path.exists(std_h) else old_h if os.path.exists(old_h) else None
 
         if config_path and os.path.exists(config_path):
@@ -498,13 +484,41 @@ class App:
         messagebox.showerror("Error", "Unknown command received from UI.")
 
     def refresh_all_data(self):
-        if self.config_manager:
-            self.config_manager.reload()
-            self.ui.on_config_loaded()
-            self.update_latest_run_number()
-            self.ui.update_data_viewer(force_refresh=True)
-            self.update_data_directory_size()
-        self.refresh_log_view()
+        """Runs the heavy data refresh process in a background thread to prevent UI freezing."""
+        if hasattr(self, 'ui'):
+            self.ui.show_loading_overlay("🔄 Refreshing Data...")
+
+        def background_task():
+            try:
+                if self.config_manager:
+                    self.config_manager.reload()
+                
+                new_files = self.get_data_files()
+                next_run_num, run_msg = self.get_latest_run_number()
+                
+                def apply_to_ui():
+                    if self.config_manager:
+                        self.ui.on_config_loaded()
+                        self.ui.run_number_var.set(str(next_run_num))
+                        self.ui.set_run_number_status(run_msg)
+                        
+                        self.ui.all_data_files = new_files
+                        self.ui.update_data_viewer(force_refresh=False)
+                        self.update_data_directory_size()
+                        
+                    self.refresh_log_view()
+                    
+                    if hasattr(self, 'ui'):
+                        self.ui.hide_loading_overlay()
+
+                self.master.after(0, apply_to_ui)
+
+            except Exception as e:
+                self.master.after(0, lambda: self._log(f"[ERROR] Refresh failed: {e}"))
+                if hasattr(self, 'ui'):
+                    self.master.after(0, self.ui.hide_loading_overlay)
+
+        threading.Thread(target=background_task, daemon=True).start()
 
     def open_config(self):
         self.ui.open_config_window()
@@ -525,9 +539,8 @@ class App:
         """찾은 정확한 경로를 포함하여 Cisco vpnui를 실행합니다."""
         self._log("Attempting to launch SUKAP Connection (Cisco)...")
         
-        # 확인된 경로를 가장 상단에 배치합니다.
         cisco_paths = [
-            "/opt/cisco/secureclient/bin/vpnui", # 사용자님이 확인하신 경로
+            "/opt/cisco/secureclient/bin/vpnui",
             "/opt/cisco/anyconnect/bin/vpnui",
             "/usr/local/bin/vpnui",
             "vpnui"
@@ -554,24 +567,22 @@ class App:
                                  f"확인된 경로: /opt/cisco/secureclient/bin/vpnui\n"
                                  f"파일 권한(chmod +x)을 확인해 보세요.")
 
-
     def run_daq(self, tilt=None, r2=None, r3=None):
-        category = self.ui.run_mode.get() # 현재 모드 확인
-        
-        # [핵심] 현재 자동 스캔 로직이 진행 중인지 확인
+        category = self.ui.run_mode.get() 
         is_auto_running = hasattr(self, 'auto_mgr') and self.auto_mgr.is_running
         
-        # [수정] 수동 클릭일 때는 모드 상관없이 중복 실행을 철저히 막습니다.
+        # [FIXED] is_dummy 선언 확인
+        is_dummy = hasattr(self, 'auto_ui') and self.auto_ui.dummy_var.get()
+        
         if not is_auto_running:
             try:
-                # -f 옵션으로 execute_DAQ 관련 프로세스가 하나라도 켜져있는지 확인
                 check_running = subprocess.run(['pgrep', '-f', 'execute_DAQ'], capture_output=True)
                 if check_running.returncode == 0:
                     messagebox.showwarning("DAQ Already Running", 
                                            "An instance of 'execute_DAQ' is already running.\nPlease close the current terminal first.")
                     return
             except Exception as e:
-                self._log(f"Check process error: {e}")
+                self._log(f"[ERROR] Check process error: {e}")
 
         daq_path = self._get_daq_path()
         if not daq_path: return
@@ -581,18 +592,30 @@ class App:
         else:
             mode = "laser" 
 
+        start_block = "0"
+        if is_dummy:
+            start_block = "900"
+        elif category == "manual":
+            start_block = "800"
+        else:
+            if hasattr(self, 'auto_mgr') and hasattr(self.auto_mgr, 'current_scan_block'):
+                start_block = str(self.auto_mgr.current_scan_block)
+            else:
+                start_block = "0"
+
         script_path = os.path.join(daq_path, 'script_v6.sh')
         config_path = self.config_manager.filepath
         
-        # 1. 기본 Bash 스크립트 실행 명령어
         command = [script_path, mode, config_path]
         
-        # 2. 각도 정보가 넘어왔으면 명령어 뒤에 추가로 붙여줌
         if tilt is not None and r2 is not None and r3 is not None:
             command.extend([str(r2), str(tilt), str(r3), str(tilt)])
             self._log(f"[INFO] Injecting live angles to DAQ -> R2:{r2}, T2:{tilt}, R3:{r3}, T3:{tilt}")
+        else:
+            command.extend(["0", "0", "0", "0"])
 
-        # [핵심 수정] 자동 스캔 '진행 중'일 때만 tmux로 보냄. 수동 클릭 시에는 무조건 새 창 팝업!
+        command.append(start_block)
+
         if is_auto_running:
             cmd_str = " ".join(command)
             tmux_cmd = ['tmux', 'send-keys', '-t', 'GeneralScan', cmd_str, 'C-m']
@@ -879,32 +902,45 @@ class App:
             file_list_str += f"\n...and {num_files - 5} more."
 
         confirmed = messagebox.askyesno(
-                "Confirm Deletion",
-                f"Are you sure you want to permanently delete {num_files} selected file(s)?\n\n{file_list_str}\n\nThis action cannot be undone."
-                )
+            "Confirm Deletion",
+            f"Are you sure you want to permanently delete {num_files} selected file(s)?\n\n{file_list_str}\n\nThis action cannot be undone."
+        )
 
         if not confirmed:
-            self._log("User cancelled file deletion.")
+            self._log("[INFO] User cancelled file deletion.")
             return
 
-        deleted_count = 0
-        failed_files = []
-        for file_path in file_paths:
-            try:
-                os.remove(file_path)
-                self._log(f"Deleted file: {file_path}")
-                deleted_count += 1
-            except Exception as e:
-                self._log(f"Failed to delete {file_path}: {e}")
-                failed_files.append(os.path.basename(file_path))
+        if hasattr(self, 'ui'):
+            self.ui.show_loading_overlay(f"🗑️ Deleting {num_files} file(s)...")
 
-        if deleted_count > 0:
-            self.refresh_all_data() 
+        def delete_task():
+            deleted_count = 0
+            failed_files = []
+            
+            for file_path in file_paths:
+                try:
+                    os.remove(file_path)
+                    self._log(f"[INFO] Deleted file: {file_path}")
+                    deleted_count += 1
+                except Exception as e:
+                    self._log(f"[ERROR] Failed to delete {file_path}: {e}")
+                    failed_files.append(os.path.basename(file_path))
 
-        if failed_files:
-            messagebox.showerror("Deletion Error", f"Successfully deleted {deleted_count} file(s), but failed to delete:\n\n{', '.join(failed_files)}")
-        elif deleted_count > 0:
-            messagebox.showinfo("Success", f"Successfully deleted {deleted_count} file(s).")
+            def update_ui():
+                if hasattr(self, 'ui'):
+                    self.ui.hide_loading_overlay()
+                
+                if deleted_count > 0:
+                    self.refresh_all_data() 
+
+                if failed_files:
+                    messagebox.showerror("Deletion Error", f"Successfully deleted {deleted_count} file(s), but failed to delete:\n\n{', '.join(failed_files)}")
+                elif deleted_count > 0:
+                    messagebox.showinfo("Success", f"Successfully deleted {deleted_count} file(s).")
+
+            self.master.after(0, update_ui)
+
+        threading.Thread(target=delete_task, daemon=True).start()
 
     def _get_daq_path(self):
         if not self.config_manager: return None
@@ -1003,6 +1039,19 @@ class App:
             else:
                 mode = "laser"
 
+            # [ADDED] 현재 모드에 따라 읽어올 대역(Block)을 결정
+            is_dummy = hasattr(self, 'auto_ui') and getattr(self.auto_ui.dummy_var, 'get', lambda: False)()
+            
+            if is_dummy:
+                start_block = 900
+            elif category == "manual":
+                start_block = 800
+            else:
+                if hasattr(self, 'auto_mgr') and hasattr(self.auto_mgr, 'current_scan_block'):
+                    start_block = self.auto_mgr.current_scan_block
+                else:
+                    start_block = 0
+
             serials = [cfg.get("SN1", ""), cfg.get("SN2", ""), cfg.get("SN3", "")]
             directions = [cfg.get("direction1", ""), cfg.get("direction2", ""), cfg.get("direction3", "")]
             hvs = [cfg.get("HV1", ""), cfg.get("HV2", ""), cfg.get("HV3", "")]
@@ -1028,46 +1077,46 @@ class App:
                     core_parts.append(f"{serials[i]}{directions[i]}_hv{hvs[i]}_{rot_part}_{tilt_part}")
 
             filename_core = "_".join(core_parts)
-
             note_suffix = f"_{cfg.get('NOTE', '')}" if cfg.get('NOTE') else ""
+            
             if mode == "dark":
                 mode_tag = f"_dark{note_suffix}"
                 path_to_scan = os.path.join(cfg.get("RawDataPath", ""), "Dark")
-            else: # laser mode
+            else: 
                 laser = cfg.get("Laser", "")
                 mode_tag = f"_laser{laser}{note_suffix}"
                 path_to_scan = os.path.join(cfg.get("RawDataPath", ""), "Laser")
 
             if not os.path.isdir(path_to_scan):
-                return (1, f"Data path not found: {path_to_scan}")
+                return (start_block, f"Data path not found: {path_to_scan}")
 
             search_pattern = os.path.join(path_to_scan, f"{filename_core}{mode_tag}.*.root")
-
-            #self._log(f"DEBUG: Searching with pattern: {search_pattern}")
-
             matching_files = glob.glob(search_pattern)
 
+            # [MODIFIED] 해당 대역(Block) 안의 파일 번호만 추출
+            upper_bound = start_block + 99
             run_numbers = []
             pattern = re.compile(r'_([0-9]+)\.root$')
             for f_path in matching_files:
                 f_name = os.path.basename(f_path)
                 match = pattern.search(f_name)
                 if match:
-                    run_numbers.append(int(match.group(1)))
+                    num = int(match.group(1))
+                    if start_block <= num <= upper_bound:
+                        run_numbers.append(num)
 
             if not run_numbers:
-                message = f"No runs for this config. Next is #1."
-                return (1, message)
+                message = f"Next is #{start_block:03d} (Block {start_block})."
+                return (start_block, message)
             else:
                 latest_run = max(run_numbers)
                 next_run = latest_run + 1
-                message = f"{len(run_numbers)} run(s) found. Latest is #{latest_run}. Next is #{next_run}."
+                message = f"Latest in block {start_block} is #{latest_run:03d}. Next is #{next_run:03d}."
                 return (next_run, message)
 
         except Exception as e:
-            error_msg = f"Error checking run numbers: {e}"
-            self._log(f"ERROR: {error_msg}")
-            return (1, "Error checking for previous runs.")
+            self._log(f"[ERROR] Error checking run numbers: {e}")
+            return (0, "Error checking for previous runs.")
 
 
     def update_latest_run_number(self):
@@ -1095,8 +1144,36 @@ class App:
         return ips
 
     def check_daq_connection(self):
-        thread = threading.Thread(target=self._run_daq_check_in_thread, daemon=True)
-        thread.start()
+        """Starts a single continuous background thread for DAQ status checking."""
+        if hasattr(self, '_daq_check_running') and self._daq_check_running:
+            return
+            
+        self._daq_check_running = True
+        threading.Thread(target=self._daq_check_loop, daemon=True).start()
+
+    def _daq_check_loop(self):
+        """Continuous background loop for DAQ connection checking."""
+        while self._daq_check_running and self.master.winfo_exists():
+            is_connected = False
+            try:
+                daq_path = self.config_manager.get_config_value('BasePath')
+                if daq_path:
+                    command = [os.path.join(daq_path, 'execute_DAQ_v2'), '-j']
+                    result = subprocess.run(
+                        command, capture_output=True, text=True,
+                        timeout=5, preexec_fn=os.setsid
+                    )
+                    if "Communication error" not in result.stderr:
+                        is_connected = True
+            except Exception:
+                pass
+
+            try:
+                self.master.after(0, lambda c=is_connected: self.ui.update_daq_connection_status(c))
+            except Exception:
+                pass
+
+            time.sleep(2.0) 
 
     def _run_daq_check_in_thread(self):
         is_connected = False
@@ -1121,10 +1198,7 @@ class App:
         if self.master.winfo_exists():
             self.master.after(2000, self.check_daq_connection)
 
-    # main.py 수정 (약 1430번 라인 근처)
-
     def update_data_directory_size(self):
-        #print("DEBUG: update_data_directory_size called") # [디버깅] 함수 호출 확인
 
         if not self.config_manager:
             print("DEBUG: ConfigManager is None") # [디버깅] 설정 파일 로드 실패 확인
@@ -1241,7 +1315,6 @@ class App:
     #def auto_connect_ups(self): self.ups_mgr.auto_connect_ups()
 
     def auto_connect_ups(self):
-        """더미 모드일 때는 실제 UPS 연결을 건너뜁니다."""
         try:
             if hasattr(self, 'ui') and hasattr(self.ui, 'auto_ui') and getattr(self.ui.auto_ui, 'dummy_var', None):
                 if self.ui.auto_ui.dummy_var.get():
@@ -1278,10 +1351,8 @@ class App:
 
         if hasattr(self, 'ui') and hasattr(self.ui, 'daq_connected_flag'):
             status["DAQ"] = self.ui.daq_connected_flag
-
         # 2. Laser 상태
-        if self.laser and self.laser.is_connected():
-            status["Laser"] = True
+        status["Laser"] = any(inst.is_connected() for inst in self.laser_mgr.laser_instances.values())
 
         # 3. UPS 상태 (시리얼 포트 체크)
         if self.ups_mgr.ups_serial and self.ups_mgr.ups_serial.is_open:
@@ -1301,34 +1372,81 @@ class App:
         return status
 
     def on_closing(self):
-        """프로그램 종료 시 하드웨어 자원을 안전하게 반환합니다."""
+        """Shows a shutdown progress dialog and safely releases hardware."""
+        if not messagebox.askokcancel("Exit", "Are you sure you want to exit the program?"):
+            return
+
         self._log("Shutting down... Releasing hardware resources.")
         self._log("=== Application Closing Process ===")
-        
-        # 1. UPS 시리얼 포트 안전 해제
-        if self.ups_mgr.ups_serial and self.ups_mgr.ups_serial.is_open:
-            try:
-                self.ups_mgr.ups_serial.close()
-                self._log("✅ UPS serial port safely closed.")
-            except Exception as e:
-                self._log(f"⚠️ Error closing UPS port: {e}")
 
-        # 2. 현재 켜져있던 레이저 목록 최종 저장
-        self.save_app_config()
+        shutdown_win = tk.Toplevel(self.master)
+        shutdown_win.title("Shutting Down")
+        shutdown_win.geometry("380x150")
+        shutdown_win.attributes("-topmost", True)
+        shutdown_win.protocol("WM_DELETE_WINDOW", lambda: None) 
         
-        # 3. 레이저 포트 안전 해제
-        if hasattr(self, 'laser_mgr'):
-            for wl, inst in self.laser_mgr.laser_instances.items():
-                if inst.is_connected():
-                    try:
-                        inst.disconnect()
-                        self._log(f"✅ Laser {wl} safely disconnected.")
-                    except Exception as e:
-                        self._log(f"⚠️ Error disconnecting Laser {wl}: {e}")
-        
-        # 4. GUI 파괴 및 프로세스 종료
-        self._log("Goodbye!")
-        self.master.destroy()
+        shutdown_win.update_idletasks()
+        x = self.master.winfo_x() + (self.master.winfo_width() // 2) - 190
+        y = self.master.winfo_y() + (self.master.winfo_height() // 2) - 75
+        shutdown_win.geometry(f"+{x}+{y}")
+
+        lbl_title = ttk.Label(shutdown_win, text="System Shutdown in Progress...", font=("Helvetica", 12, "bold"))
+        lbl_title.pack(pady=(15, 10))
+
+        lbl_status = ttk.Label(shutdown_win, text="Initializing...", font=("Helvetica", 10))
+        lbl_status.pack(pady=5)
+
+        progress = ttk.Progressbar(shutdown_win, mode='determinate', length=300)
+        progress.pack(pady=10)
+
+        def step1_motors():
+            lbl_status.config(text="Stopping PMT movement... Please wait.")
+            progress['value'] = 25
+            shutdown_win.update()
+            if hasattr(self, 'rot_mgr'):
+                try:
+                    self._log("[INFO] Sending STOP commands to all motors before exit...")
+                    self.rot_mgr.stop_rotation(2)
+                    self.rot_mgr.stop_rotation(3)
+                except Exception as e:
+                    self._log(f"[ERROR] Failed to stop motors on exit: {e}")
+            self.master.after(1000, step2_lasers) 
+
+        def step2_lasers():
+            lbl_status.config(text="Disconnecting Lasers...")
+            progress['value'] = 60
+            shutdown_win.update()
+            self.save_app_config()
+            if hasattr(self, 'laser_mgr'):
+                for wl, inst in self.laser_mgr.laser_instances.items():
+                    if inst.is_connected():
+                        try:
+                            inst.disconnect()
+                            self._log(f"[INFO] Laser {wl} safely disconnected.")
+                        except Exception as e:
+                            self._log(f"[WARNING] Error disconnecting Laser {wl}: {e}")
+            self.master.after(600, step3_ups)
+
+        def step3_ups():
+            lbl_status.config(text="Closing UPS connection...")
+            progress['value'] = 90
+            shutdown_win.update()
+            if hasattr(self, 'ups_mgr') and self.ups_mgr.ups_serial and self.ups_mgr.ups_serial.is_open:
+                try:
+                    self.ups_mgr.ups_serial.close()
+                    self._log("[INFO] UPS serial port safely closed.")
+                except Exception as e:
+                    self._log(f"[WARNING] Error closing UPS port: {e}")
+            self.master.after(600, step4_finish)
+
+        def step4_finish():
+            lbl_status.config(text="Safe to exit. Goodbye!")
+            progress['value'] = 100
+            shutdown_win.update()
+            self._log("[INFO] Goodbye!")
+            self.master.after(500, self.master.destroy)
+
+        self.master.after(100, step1_motors)
 
 
 if __name__ == "__main__":

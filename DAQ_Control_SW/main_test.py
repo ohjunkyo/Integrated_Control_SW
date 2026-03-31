@@ -1,6 +1,3 @@
-# VERSION 3.1
-
-
 # main.py
 import tkinter as tk
 from PIL import Image, ImageTk
@@ -24,6 +21,8 @@ import matplotlib.dates as mdates
 import logging 
 from logging.handlers import TimedRotatingFileHandler 
 import random 
+import socket
+
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from datetime import datetime
 
@@ -37,8 +36,8 @@ from managers.rotation_manager import AutomationManager
 from managers.rotation_control import RotationManager 
 from managers.ui_automation import AutomationUI
 
-#APP_CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".daq_control_config.json")
-APP_CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".daq_control_config_TEST.json")
+APP_CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".daq_control_config.json")
+#APP_CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".daq_control_config_TEST.json")
 
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -76,15 +75,18 @@ class App:
 
         if self.config_manager and self.config_manager.get_config_value("LogDir"):
             base_log_dir = self.config_manager.get_config_value("LogDir")
-            self.laser_log_dir = os.path.join(base_log_dir, "LASER")
+            self.laser_log_dir = "/home/precalkor/ADC/ADC_test/LOG/LASER"
+            os.makedirs(self.laser_log_dir, exist_ok=True)
         else:
             self.laser_log_dir = os.path.join(self.base_dir, "LOG", "LASER")
+            os.makedirs(self.laser_log_dir, exist_ok=True) 
 
-        # [복구된 코드] LaserManager가 필요로 하는 포트 매핑 변수
+
         self.laser_port_mapping = {
             "375nm": "1-3.3:1.0", "405nm": "1-3.1:1.0",
             "450nm": "1-3.2:1.0", "473nm": "1-3.4:1.0"
         }
+
 
         # 2. 로직 매니저 생성
         self.access_mgr = ControlAccessManager(self, password="root")
@@ -99,7 +101,7 @@ class App:
         self.laser_mgr = LaserManager(self)
         self.ups_mgr = UPSManager(self)
 
-        master.title("[TEST MODE] DAQ/LASER/UPS Control Panel")
+        master.title("DAQ/LASER/UPS Control Panel")
         master.geometry("1600x950")
         self.master.minsize(1400, 900)
 
@@ -134,7 +136,15 @@ class App:
             self.master.after(1000, self.check_daq_connection)
         
         self.ui.is_dark_mode = True
-        self.ui.toggle_theme() 
+        self.ui.toggle_theme()
+
+        if hasattr(self, 'laser_mgr') and self.laser_mgr.laser_instances:
+            self.on_laser_trigger_change()
+
+        self.setup_laser_logger()
+        self.load_today_laser_log()
+        self.preload_laser_history()
+        self.preload_ups_history()
 
         self.master.after(1500, self.auto_connect_ups)
         self.master.after(5000, self.auto_connect_laser)
@@ -144,8 +154,10 @@ class App:
         if hasattr(self, 'auto_ui') and hasattr(self.auto_ui, 'update_sn_display'):
             self.rot_mgr.start_monitoring(self.auto_ui.update_sn_display)
 
-        self.master.protocol("WM_DELETE_WINDOW", self.on_closing)
+        if hasattr(self, 'ui'):
+            self.ui.refresh_ui_state()
 
+        self.master.protocol("WM_DELETE_WINDOW", self.on_closing)
 
     def _setup_status_bar(self):
         """하단 상태 표시줄 위젯을 생성하고 실시간 업데이트를 시작합니다."""
@@ -185,10 +197,7 @@ class App:
             if hasattr(self, 'auto_ui'):
                 self.auto_ui.update_unlock_ui(self.access_mgr.unlocked)
             
-            if self.access_mgr.unlocked:
-                self.auto_connect_laser()
-                self.auto_connect_ups()
-
+           
     def refresh_ui_state(self):
         """제어권 상태에 따라 UI 버튼들의 활성/비활성 상태를 업데이트"""
         state = tk.NORMAL if self.control_unlocked else tk.DISABLED
@@ -300,8 +309,8 @@ class App:
             if os.path.exists(APP_CONFIG_FILE):
                 with open(APP_CONFIG_FILE, 'r') as f:
                     data = json.load(f)
-                    config_path = data.get("config3h_path")
-                    # [복구] 레이저 자동 연결 및 환경 설정 변수 로드
+                    config_path = data.get("config3h_path") or data.get("config3h_path")
+                    
                     self.terminal_preference = data.get("terminal_preference", self.terminal_preference)
                     self.last_connected_wls = data.get("last_connected_wls", [])
                     self.laser_port_mapping = data.get("laser_port_mapping", self.laser_port_mapping)
@@ -311,7 +320,8 @@ class App:
         if not config_path or not os.path.exists(config_path):
             test_h = "/home/precalkor/ADC/ADC_test/config_test.h"
             std_h = "/home/precalkor/ADC/ADC_test/config3.h"
-            config_path = test_h if os.path.exists(test_h) else std_h if os.path.exists(std_h) else None
+            old_h = "/home/precalkor/ADC/ADC_test/config2.h" # [수정] config2.h도 폴백 경로로 추가
+            config_path = test_h if os.path.exists(test_h) else std_h if os.path.exists(std_h) else old_h if os.path.exists(old_h) else None
 
         if config_path and os.path.exists(config_path):
             self.config_manager = ConfigManager(config_path)
@@ -319,7 +329,6 @@ class App:
             self._log(f"[INFO] Config loaded: {os.path.basename(config_path)}")
         else:
             self.select_and_set_config_path(initial_setup=True)
-
 
     def save_app_config(self):
         if not self.config_manager: return
@@ -476,11 +485,9 @@ class App:
             self.ui.rb_dark.config(state=tk.NORMAL, text="Dark & Self trigger (1)")
             self._log(f"[INFO] Mode: Manual ({manual_sub}) Active.")
 
-        # [핵심 수정] General Scan 탭은 수동/자동 상관없이 항상 활성화 (로테이션용)
         if hasattr(self, 'auto_ui') and hasattr(self.auto_ui, 'tab'):
             self.ui.notebook.tab(self.auto_ui.tab, state="normal")
 
-        # [핵심 수정] Run DAQ 버튼은 기본적으로 활성화 (단, 제어권이 있고, 스캔 중이 아닐 때만)
         if self.access_mgr.unlocked and 'run_daq' in self.ui.buttons:
             if hasattr(self, 'auto_mgr') and self.auto_mgr.is_running:
                 self.ui.buttons['run_daq'].config(state=tk.DISABLED, text="2. Run DAQ (Scanning)")
@@ -787,18 +794,6 @@ class App:
 
         final_command_string = " && ".join(all_commands_list)
         self._execute_in_new_terminal([final_command_string])
-
-    def run_auto_analysis(self):
-        messagebox.showinfo("Not Implemented", "Auto Analysis button is not configured.")
-        pass
-
-    def run_uniformity_raw(self):
-        messagebox.showinfo("Not Implemented", "Uniformity (Raw) button is not configured.")
-        pass
-
-    def run_uniformity_norm(self):
-        messagebox.showinfo("Not Implemented", "Uniformity (Norm) button is not configured.")
-        pass
 
     def run_transfer(self):
         daq_path = self._get_daq_path()
@@ -1208,56 +1203,79 @@ class App:
         else:
             messagebox.showwarning("Path Not Found", f"'{path_key}' is not defined in your config file.")
 
-    #################### Laser Monitoring ##############################
-    def auto_connect_laser(self):
-        """더미 모드일 때는 레이저 연결을 건너뜁니다."""
-        if hasattr(self, 'ui') and self.ui.auto_ui.dummy_var.get():
-            self._log("[INFO] Dummy Mode: Skipping real Laser connection.")
-            return
-        self.laser_mgr.auto_connect_laser()
+    def _init_managers(self):
+        """매니저 객체들을 관리 딕셔너리에 등록합니다."""
+        self.managers = {
+            "laser": LaserManager(self),
+            "ups": UPSManager(self),
+            "rot": RotationManager(self),
+            "auto": AutomationManager(self),
+            "access": ControlAccessManager(self, password="root")
+        }
+        # 하위 호환성을 위해 기존 변수명도 유지 (코드 수정 최소화)
+        self.laser_mgr = self.managers["laser"]
+        self.ups_mgr = self.managers["ups"]
+        self.rot_mgr = self.managers["rot"]
+        self.auto_mgr = self.managers["auto"]
+        self.access_mgr = self.managers["access"]
 
-    def connect_single_laser(self, wl): self.laser_mgr.connect_single_laser(wl)
-    def disconnect_single_laser(self, wl): self.laser_mgr.disconnect_single_laser(wl)
-    def manual_refresh_laser(self, wl=None): self.laser_mgr.manual_refresh_laser(wl)
-    def set_laser_ld_safe(self, target_wl, state): self.laser_mgr.set_laser_ld_safe(target_wl, state)
-    def apply_laser_frequency_multi(self, wl): self.laser_mgr.apply_laser_frequency_multi(wl)
-    def set_laser_tec_multi(self, wl, state): self.laser_mgr.set_laser_tec_multi(wl, state)
-    def apply_laser_currents_multi(self, wl): self.laser_mgr.apply_laser_currents_multi(wl)
-    def update_laser_status_loop(self): self.laser_mgr.update_laser_status_loop()
-    def on_laser_trigger_change_multi(self, wl): self.laser_mgr.on_laser_trigger_change_multi(wl)
-    def on_laser_trigger_change(self, event=None): self.laser_mgr.on_laser_trigger_change(event)
-    def load_historical_laser_data(self, wl=None): self.laser_mgr.load_historical_laser_data(wl)
-    def refresh_laser_realtime_plot(self, wl="405nm"): self.laser_mgr.refresh_laser_realtime_plot(wl)
-    def setup_laser_logger(self): self.laser_mgr.setup_laser_logger()
-    def load_today_laser_log(self): self.laser_mgr.load_today_laser_log()
-    def preload_laser_history(self): self.laser_mgr.preload_laser_history()
-    def _log_laser(self, msg): self.laser_mgr._log_laser(msg)
+    # =================================================================
+    # [CORE] 통합 매니저 호출 핸들러 (이게 있으면 수십 개 함수 삭제 가능)
+    # =================================================================
+    def call_mgr(self, mgr_name, func_name, *args, **kwargs):
+        """
+        매니저의 함수를 동적으로 호출합니다.
+        사용 예: self.call_mgr("laser", "set_laser_ld_safe", "405nm", True)
+        """
+        mgr = self.managers.get(mgr_name)
+        if mgr and hasattr(mgr, func_name):
+            return getattr(mgr, func_name)(*args, **kwargs)
+        
+        self._log(f"Manager command failed: {mgr_name}.{func_name} not found.", "ERROR")
+        return None
+
+    # =================================================================
+    # [CORE] 통합 로깅 시스템 (Thread-Safe)
+    # =================================================================
+    def _log(self, message, category="SYSTEM"):
+        """모든 로그를 통합 관리하며 카테고리에 따라 적절한 UI에 뿌려줍니다."""
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        log_entry = f"[{timestamp}] [{category}] {message}"
+
+        print(log_entry)
+
+        try:
+            log_dir = os.path.join(self.base_dir, "logs")
+            os.makedirs(log_dir, exist_ok=True)
+            log_file = os.path.join(log_dir, f"{category.lower()}_{datetime.now().strftime('%Y-%m-%d')}.log")
+            with open(log_file, 'a', encoding='utf-8') as f:
+                f.write(log_entry + "\n")
+        except Exception as e:
+            print(f"Logging failed: {e}")
+
+        if hasattr(self, 'ui'):
+            self.master.after(0, lambda: self._update_log_displays(log_entry, category))
+
+    def _update_log_displays(self, entry, category):
+        """UI 위젯 업데이트 담당"""
+        if hasattr(self.ui, 'log_text'):
+            self.ui.log_text.config(state="normal")
+            self.ui.log_text.insert(tk.END, entry + "\n")
+            self.ui.log_text.config(state="disabled")
+            self.ui.log_text.see(tk.END)
+
+        if category == "LASER" and hasattr(self.ui, 'laser_log_text'):
+            self.ui.laser_log_text.config(state="normal")
+            self.ui.laser_log_text.insert(tk.END, entry + "\n")
+            self.ui.laser_log_text.config(state="disabled")
+            self.ui.laser_log_text.see(tk.END)
+
+
+    #################### Laser Monitoring ##############################
     def save_laser_realtime_data(self, wl, temp, pulse): self.laser_mgr.save_laser_realtime_data(wl, temp, pulse)
     #################### Laser Monitoring ##############################
 
     #################### UPS Monitoring ##############################
-    def search_ups_ports(self): self.ups_mgr.search_ups_ports()
-    def diagnose_ups(self): self.ups_mgr.diagnose_ups()
-    #def auto_connect_ups(self): self.ups_mgr.auto_connect_ups()
-
-    def auto_connect_ups(self):
-        """더미 모드일 때는 실제 UPS 연결을 건너뜁니다."""
-        if hasattr(self, 'ui') and self.ui.auto_ui.dummy_var.get():
-            self._log("🧪 Dummy Mode: Skipping real UPS connection.")
-            return
-        self.ups_mgr.auto_connect_ups()
-
-    def _try_ups_handshake(self, port): self.ups_mgr._try_ups_handshake(port)
-    def update_ups_status_loop(self): self.ups_mgr.update_ups_status_loop()
-    def manual_refresh_ups(self): self.ups_mgr.manual_refresh_ups()
-    def toggle_ups_connection(self): self.ups_mgr.toggle_ups_connection()
-    def refresh_ups_plot(self): self.ups_mgr.refresh_ups_plot()
-    def update_ups_outlet_status(self, states): self.ups_mgr.update_ups_outlet_status(states)
-    def shutdown_ups_all(self): self.ups_mgr.shutdown_ups_all()
-    def save_ups_realtime_data(self, watt, temp, vin, vout): self.ups_mgr.save_ups_realtime_data(watt, temp, vin, vout)
-    def preload_ups_history(self): self.ups_mgr.preload_ups_history()
-    def handle_ups_shutdown(self): self.ups_mgr.handle_ups_shutdown()
-    def shutdown_ups_each(self, index): self.ups_mgr.shutdown_ups_each(index)
     def check_ups_alerts(self, watt, temp, batt, load, vin): self.ups_mgr.check_ups_alerts(watt, temp, batt, load, vin)
     #################### UPS Monitoring ##############################
 

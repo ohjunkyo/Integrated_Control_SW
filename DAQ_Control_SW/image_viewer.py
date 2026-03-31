@@ -267,7 +267,6 @@ class ImageViewer(Toplevel):
             messagebox.showwarning("Warning", "No images selected (PDFs are excluded from merge).")
             return
 
-        # 기본 파일명 제안: Report_YYYYMMDD_HHMM.pdf
         default_name = f"Report_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"
         save_path = filedialog.asksaveasfilename(defaultextension=".pdf", 
                                                  filetypes=[("PDF files", "*.pdf")],
@@ -286,19 +285,53 @@ class ImageViewer(Toplevel):
         except Exception as e:
             messagebox.showerror("Error", f"Failed to create PDF:\n{e}")
 
+    def show_loading_overlay(self, message="Processing..."):
+        """Displays a centered loading overlay for the Image Viewer."""
+        if not hasattr(self, 'loading_frame'):
+            self.loading_frame = tk.Frame(self, bg="#2c2c2e", highlightthickness=2, highlightbackground="#0a84ff")
+            self.loading_label = ttk.Label(
+                self.loading_frame, text=message, font=("Helvetica", 16, "bold"), 
+                foreground="white", background="#2c2c2e"
+            )
+            self.loading_label.pack(padx=50, pady=40)
+        else:
+            self.loading_label.config(text=message)
+        
+        self.loading_frame.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
+        self.update_idletasks()
+
+    def hide_loading_overlay(self):
+        """Hides the loading overlay."""
+        if hasattr(self, 'loading_frame'):
+            self.loading_frame.place_forget()
+
     def delete_selected(self):
-        """선택된 파일 삭제"""
+        """선택된 파일 삭제 (백그라운드 스레드 및 로딩 창 적용)"""
+        import threading  
+        
         indices = self.listbox.curselection()
         if not indices: return
         
         if messagebox.askyesno("Confirm", f"Are you sure you want to delete {len(indices)} files?"):
-            for i in sorted(indices, reverse=True):
-                path = self.display_paths[i]
-                try:
-                    os.remove(path)
-                    self.full_image_paths.remove(path)
-                except Exception as e:
-                    print(f"Error deleting {path}: {e}")
-            self.filter_images()
-            self.canvas.delete("all")
-            self.pil_image = None
+            self.show_loading_overlay(f"🗑️ Deleting {len(indices)} file(s)...")
+            
+            def delete_task():
+                paths_to_delete = [self.display_paths[i] for i in sorted(indices, reverse=True)]
+                
+                for path in paths_to_delete:
+                    try:
+                        os.remove(path)
+                        self.full_image_paths.remove(path)
+                    except Exception as e:
+                        print(f"[ERROR] Error deleting {path}: {e}")
+                
+                def update_ui():
+                    self.filter_images()
+                    self.canvas.delete("all")
+                    self.pil_image = None
+                    self.hide_loading_overlay()
+                    
+                self.after(0, update_ui)
+
+            threading.Thread(target=delete_task, daemon=True).start()
+

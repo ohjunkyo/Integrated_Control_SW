@@ -1,7 +1,7 @@
 # managers/ui_automation.py
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
-from datetime import datetime
+from datetime import datetime, timezone, timedelta  
 
 class AutomationUI:
     def __init__(self, notebook, controller):
@@ -13,6 +13,7 @@ class AutomationUI:
         self._create_tab()
         self.notebook.after(1500, lambda: self.sync_current_to_inputs(self.sn2_val))
         self.notebook.after(1500, lambda: self.sync_current_to_inputs(self.sn3_val))
+        self.refresh_schedule_list()
 
     def _create_tab(self):
         self.tab = ttk.Frame(self.notebook)
@@ -56,7 +57,9 @@ class AutomationUI:
                 tk.Label(frame, text=label_text, font=lbl_font, width=8, anchor="e").pack(side=tk.LEFT, padx=(10 if i>0 else 0, 5))
                 tk.Entry(frame, textvariable=self.qs_vars[var_key], font=entry_font, width=12, justify="center").pack(side=tk.LEFT)
 
-        make_row(setup_frame, 0, [("Shifter:", "Shift_worker"), ("Expert:", "Expert"), ("Laser:", "Laser"), ("Note:", "NOTE")])
+        make_row(setup_frame, 0, [("Shifter:", "Shift_worker"), ("Expert:", "Expert"), 
+                                  ("Laser:", "Laser"), ("Wavelength:", "Wavelength"),
+                                  ("Note:", "NOTE")])
         ttk.Separator(setup_frame, orient="horizontal").pack(fill=tk.X, pady=10)
         
         make_row(setup_frame, 1, [("SN1:", "SN1"), ("Dir(A~H):", "direction1"), ("Rot(°):", "RotateAngle1"), ("HV1(V):", "HV1")])
@@ -84,6 +87,10 @@ class AutomationUI:
         left_ctrl = ttk.LabelFrame(dash_tab, text=" ⚙️ Operation Controls ", padding=15)
         left_ctrl.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
 
+        self.scan_status_label = ttk.Label(left_ctrl, text="SYSTEM STATUS: IDLE",
+                                          font=("Helvetica", 14, "bold"), foreground="gray")
+        self.scan_status_label.grid(row=0, column=2, sticky="e", padx=5)
+
         for c in range(3): left_ctrl.columnconfigure(c, weight=1)
         for r in range(6): left_ctrl.rowconfigure(r, weight=1)
         
@@ -108,25 +115,26 @@ class AutomationUI:
                                       command=self.controller.auto_mgr.handle_stop_continue)
         self.btn_stop_run.grid(row=2, column=1, padx=8, pady=8, sticky="nsew")
 
-        self.scan_status_label = ttk.Label(left_ctrl, text="SYSTEM STATUS: IDLE",
-                                           font=("Helvetica", 12, "bold"), foreground="gray")
-        self.scan_status_label.grid(row=0, column=1, sticky="e", padx=10)
-
         self.eta_label = ttk.Label(left_ctrl, text="ETA: --:--:--", font=("Helvetica", 13, "bold"), 
                                    foreground="#007ACC", anchor="center")
         self.eta_label.grid(row=3, column=0, columnspan=3, pady=10, sticky="nsew")
 
-        self.btn_emg_stop = tk.Button(left_ctrl, text="⏹ Abort Scan", bg="#6c757d", fg="white", 
-                                      font=("Helvetica", 9, "bold"), height=1, 
+        abort_frame = ttk.Frame(left_ctrl)
+        abort_frame.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+        
+        am = self.controller.auto_mgr
+        param_text = f"Scan Params: Tilt {am.tilt_step}° | Rot {am.rot_step}° | Rest {am.rest_time}s"
+        self.params_label = ttk.Label(abort_frame, text=param_text, font=("Helvetica", 10, "bold"), foreground="#007ACC")
+        self.params_label.pack(side=tk.LEFT) 
+
+        self.btn_scan_settings = tk.Button(abort_frame, text="⚙️ Params", command=self.open_scan_params, 
+                                          bg="#f0ad4e", fg="black", state=tk.DISABLED)
+        self.btn_scan_settings.pack(side=tk.RIGHT)
+
+        self.btn_emg_stop = tk.Button(abort_frame, text="🚨 Abort Scan & Stop Motors", bg="#dc3545", 
+                                      fg="white", font=("Helvetica", 13, "bold"), height=2, padx=15, 
                                       command=self.controller.auto_mgr.emergency_stop)
-        self.btn_emg_stop.grid(row=4, column=0, columnspan=3, padx=10, pady=5, sticky="s")
-
-        self.params_label = ttk.Label(left_ctrl, text="Scan Params: Tilt 5.0° | Rot 90.0° | Rest 3.0s", font=("Helvetica", 10, "bold"), foreground="#007ACC")
-        self.params_label.grid(row=5, column=0, columnspan=2, sticky="w", pady=(10,0))
-
-        ############## REMOVE state=tk.DISABLED ################# 
-        self.btn_scan_settings = tk.Button(left_ctrl, text="⚙️ Params (Admin)", command=self.open_scan_params, bg="#f0ad4e", fg="black",state=tk.DISABLED)
-        self.btn_scan_settings.grid(row=5, column=2, sticky="e", pady=(10,0))
+        self.btn_emg_stop.pack(side=tk.RIGHT, padx=(10, 0))
 
         right_status = ttk.LabelFrame(dash_tab, text=" 🛰️ Manual Control Panel ", padding=15)
         right_status.grid(row=0, column=1, sticky="nsew")
@@ -181,11 +189,29 @@ class AutomationUI:
             tk.Button(btn_f, text="⏹ Stop", bg="#ffc107", font=("Helvetica", 10, "bold"), width=10,
                       command=lambda d=idx+2: self.controller.rot_mgr.stop_rotation(d)).pack(side=tk.LEFT, padx=5)
    
+        # --- 2. Schedule Managers 탭 ---
+        schedule_tab = ttk.Frame(self.upper_notebook, padding=10)
+        self.upper_notebook.add(schedule_tab, text=" ⏰ Schedule Manager ")
+        self._build_schedule_tab(schedule_tab)
+
         # --- 3. Logs 탭 ---
         log_tab = ttk.Frame(self.upper_notebook, padding=10)
-        self.upper_notebook.add(log_tab, text=" 📝 Logs ")
-        self.log_display = scrolledtext.ScrolledText(log_tab, font=("Courier", 10), bg="#1e1e1e", fg="#d4d4d4")
+        self.upper_notebook.add(log_tab, text=" 📝 Live Scan Logs ")
+        
+        self.log_display = scrolledtext.ScrolledText(log_tab, font=("Consolas", 12, "bold"), bg="#1e1e1e", fg="#e0e0e0")
         self.log_display.pack(fill=tk.BOTH, expand=True)
+
+        self.log_display.tag_config("TIME", foreground="#8c8c8c")     
+        self.log_display.tag_config("INFO", foreground="#4da6ff")     
+        self.log_display.tag_config("WARNING", foreground="#ffcc00")  
+        self.log_display.tag_config("ERROR", foreground="#ff4d4d")    
+        self.log_display.tag_config("SUCCESS", foreground="#00e676")  
+        self.log_display.tag_config("NORMAL", foreground="#e0e0e0")   
+
+        # --- 4. Scan History ---
+        history_tab = ttk.Frame(self.upper_notebook, padding=10)
+        self.upper_notebook.add(history_tab, text=" 📊 Scan History ")
+        self._build_history_tab(history_tab)
 
         matrix_container = ttk.Frame(main_container)
         matrix_container.grid(row=1, column=0, sticky="nsew")
@@ -326,14 +352,11 @@ class AutomationUI:
         )
         
         if messagebox.askyesno("Confirm Reset", msg):
-            # 1. 진행/정지 중이던 스캔 스레드를 완전히 강제 종료(Abort) 및 복구 데이터 삭제
             if hasattr(self.controller, 'auto_mgr') and hasattr(self.controller.auto_mgr, 'abort_run'):
                 self.controller.auto_mgr.abort_run()
                 
-            # 2. UI 매트릭스 지우기
             self.reset_matrix()
             
-            # 3. 실제 모터 0도로 이동
             if hasattr(self.controller, 'auto_mgr') and hasattr(self.controller.auto_mgr, 'reset_all_angles'):
                 self.controller.auto_mgr.reset_all_angles()
                 
@@ -361,41 +384,34 @@ class AutomationUI:
             self.btn_unlock.config(text="🔒 Unlock", bg="#f0ad4e", fg="black")
 
     def lock_manual_panel(self, is_locked):
-        """자동화 실행 중 우측 수동 패널을 반투명하게 느끼도록 색상을 변경하거나 비활성화합니다."""
         state = tk.DISABLED if is_locked else tk.NORMAL
-        bg_color = "#3d3d3d" if is_locked else self.controller.ui.colors["dark"]["bg"] # 다크모드 기준
+        bg_color = "#3d3d3d" if is_locked else self.controller.ui.colors["dark"]["bg"]
 
-        # 실제 위젯들을 순회하며 상태 변경
         for sn in [self.sn2_val, self.sn3_val]:
-            # 수동 입력창, 버튼 등을 state=state로 변경하는 로직 추가
             pass
 
-    def update_start_button(self, is_running):
-        """스캔 상태에 따라 모든 제어 버튼과 라벨을 동기화합니다."""
+
+    def update_start_button(self, is_running, status_text=None):
         if is_running:
-            # 시작할 때: Start 비활성화 / Stop은 'Stop run'(노란색)으로 활성화
             self.btn_start.config(text="⏳ RUNNING...", bg="#6c757d", state=tk.DISABLED)
             self.btn_stop_run.config(text="⏹ Stop run", bg="#ffc107", state=tk.NORMAL)
             self.btn_reset.config(state=tk.DISABLED)
-            self.scan_status_label.config(text="SYSTEM STATUS: SCANNING...", foreground="#dc3545")
-            
-            # [추가] Start 시 메인 화면의 Run DAQ 버튼 비활성화 (중복 방지)
+            display_txt = status_text if status_text else "SYSTEM STATUS: SCANNING..."
+            self.scan_status_label.config(text=display_txt, foreground="#dc3545")
+
             if hasattr(self.controller, 'ui') and 'run_daq' in self.controller.ui.buttons:
                 self.controller.ui.buttons['run_daq'].config(state=tk.DISABLED, text="2. Run DAQ (Scanning)")
         else:
-            # 정지(IDLE)할 때: Start 활성화 / Stop은 비활성화
             self.btn_start.config(text="▶ Start run", bg="#28a745", state=tk.NORMAL)
             self.btn_stop_run.config(text="⏹ Stop run", bg="#ffc107", state=tk.DISABLED) 
             self.btn_reset.config(state=tk.NORMAL)
             self.scan_status_label.config(text="SYSTEM STATUS: IDLE", foreground="gray")
-            
+
             if hasattr(self.controller, 'ui') and 'run_daq' in self.controller.ui.buttons:
                 if hasattr(self.controller, 'access_mgr') and self.controller.access_mgr.unlocked:
                     self.controller.ui.buttons['run_daq'].config(state=tk.NORMAL, text="2. Run DAQ")
 
-
     def update_sn_display(self, dev_num, tilt, rot):
-        """백그라운드 스레드에서 받은 각도를 UI 라벨에 갱신합니다."""
         sn = None
         if dev_num == 2: sn = self.sn2_val
         elif dev_num == 3: sn = self.sn3_val
@@ -433,7 +449,6 @@ class AutomationUI:
             self.controller._log(f"[ERROR] Sync failed for {sn}: {e}")
 
     def update_config_angles(self, sn, tilt, rot):
-        """Updates config3.h file using regex."""
         try:
             import re
             config_path = "/home/precalkor/Integrated_Control_SW/DAQ_Control_SW/config3.h"
@@ -506,6 +521,18 @@ class AutomationUI:
 
         threading.Thread(target=_wait_for_stop, daemon=True).start()
 
+    def _on_schedule_click(self):
+        if self.btn_schedule.cget("text") == "⏰ Set":
+            time_str = self.time_var.get()
+            if hasattr(self.controller.auto_mgr, 'schedule_general_scan'):
+                self.controller.auto_mgr.schedule_general_scan(time_str)
+                if getattr(self.controller.auto_mgr, 'is_scheduled', False):
+                    self.btn_schedule.config(text="Cancel", bg="#dc3545")
+        else:
+            if hasattr(self.controller.auto_mgr, 'cancel_schedule'):
+                self.controller.auto_mgr.cancel_schedule()
+            self.btn_schedule.config(text="⏰ Set", bg="#17a2b8")
+
 
     def start_eta_countdown(self, total_seconds, total_steps):
         self.remaining_eta_seconds = int(total_seconds)
@@ -534,12 +561,211 @@ class AutomationUI:
         self.notebook.after(1000, self.update_eta_realtime)
 
     def add_auto_log(self, message):
-        timestamp = datetime.now().strftime("%H:%M:%S")
+        from datetime import datetime, timezone, timedelta
+        
+        JST = timezone(timedelta(hours=9))
+        timestamp = datetime.now(JST).strftime("%H:%M:%S")
+        
         self.log_display.config(state=tk.NORMAL)
-        self.log_display.insert(tk.END, f"[{timestamp}] {message}\n")
+        
+        self.log_display.insert(tk.END, f"[{timestamp}] ", "TIME")
+        
+        tag = "NORMAL"
+        upper_msg = message.upper()
+        
+        if any(keyword in upper_msg for keyword in ["ERROR", "FAIL", "CRITICAL", "🚨", "❌"]):
+            tag = "ERROR"
+        elif any(keyword in upper_msg for keyword in ["WARNING", "ALERT", "⚠️"]):
+            tag = "WARNING"
+        elif any(keyword in upper_msg for keyword in ["SUCCESS", "DONE", "COMPLETED", "✅"]):
+            tag = "SUCCESS"
+        elif any(keyword in upper_msg for keyword in ["INFO", "MOVE", "SCANNING", "SYNC", "▶"]):
+            tag = "INFO"
+            
+        self.log_display.insert(tk.END, f"{message}\n", tag)
 
         if int(self.log_display.index('end-1c').split('.')[0]) > 1000:
             self.log_display.delete('1.0', '100.0')
 
         self.log_display.config(state=tk.DISABLED)
         self.log_display.see(tk.END)
+
+    # ====================================================================
+    # [NEW] Schedule Manager 탭 빌드
+    # ====================================================================
+    def _build_schedule_tab(self, parent):
+        try:
+            from tkcalendar import DateEntry
+            self.has_calendar = True
+        except ImportError:
+            self.has_calendar = False
+
+        top_frame = ttk.Frame(parent)
+        top_frame.pack(fill=tk.X, pady=10)
+
+        ttk.Label(top_frame, text="Date:", font=("Helvetica", 11, "bold")).pack(side=tk.LEFT, padx=(10, 5))
+        if self.has_calendar:
+            from tkcalendar import DateEntry
+            self.date_picker = DateEntry(top_frame, width=12, background='darkblue', 
+                                         foreground='white', borderwidth=2, date_pattern='yyyy-mm-dd')
+            self.date_picker.pack(side=tk.LEFT, padx=5)
+        else:
+            self.date_entry = ttk.Entry(top_frame, width=12)
+            self.date_entry.insert(0, datetime.now().strftime("%Y-%m-%d"))
+            self.date_entry.pack(side=tk.LEFT, padx=5)
+            ttk.Label(top_frame, text="(YYYY-MM-DD)", font=("Helvetica", 8), foreground="gray").pack(side=tk.LEFT)
+
+        ttk.Label(top_frame, text="Time (JST):", font=("Helvetica", 11, "bold")).pack(side=tk.LEFT, padx=(20, 5))
+        
+        self.sch_hour = tk.StringVar(value=datetime.now().strftime("%H"))
+        self.sch_min = tk.StringVar(value="00")
+        
+        tk.Entry(top_frame, textvariable=self.sch_hour, width=3, font=("Helvetica", 12, "bold"), justify="center").pack(side=tk.LEFT)
+        tk.Label(top_frame, text=":", font=("Helvetica", 12, "bold")).pack(side=tk.LEFT)
+        tk.Entry(top_frame, textvariable=self.sch_min, width=3, font=("Helvetica", 12, "bold"), justify="center").pack(side=tk.LEFT)
+
+        ttk.Button(top_frame, text="⏰ Add Schedule", command=self._add_schedule_click).pack(side=tk.LEFT, padx=15)
+        ttk.Button(top_frame, text="🗑️ Cancel Selected", command=self._cancel_schedule_click).pack(side=tk.LEFT)
+
+        content_pane = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
+        content_pane.pack(fill=tk.BOTH, expand=True, pady=10)
+
+        list_frame = ttk.LabelFrame(content_pane, text=" Queued Schedules (Max 3) ", padding=5)
+        content_pane.add(list_frame, weight=1)
+
+        self.schedule_tree = ttk.Treeview(list_frame, columns=("Time", "Status"), show="headings", height=5)
+        self.schedule_tree.heading("Time", text="Target Time (JST)")
+        self.schedule_tree.heading("Status", text="Status")
+        self.schedule_tree.column("Time", width=150, anchor="center")
+        self.schedule_tree.column("Status", width=100, anchor="center")
+        self.schedule_tree.pack(fill=tk.BOTH, expand=True)
+        self.schedule_tree.bind("<<TreeviewSelect>>", self._on_schedule_select)
+
+        detail_frame = ttk.LabelFrame(content_pane, text=" Live Configuration Preview ", padding=5)
+        content_pane.add(detail_frame, weight=2)
+        
+        self.schedule_detail_text = scrolledtext.ScrolledText(detail_frame, font=("Consolas", 10), state=tk.DISABLED, bg="#1e1e1e", fg="#e0e0e0")
+        self.schedule_detail_text.pack(fill=tk.BOTH, expand=True)
+
+    def _add_schedule_click(self):
+        date_str = self.date_picker.get() if self.has_calendar else self.date_entry.get()
+        h, m = self.sch_hour.get(), self.sch_min.get()
+        
+        success = self.controller.auto_mgr.add_schedule(date_str, h, m)
+        if success:
+            self.refresh_schedule_list()
+
+    def refresh_schedule_list(self):
+        for item in self.schedule_tree.get_children():
+            self.schedule_tree.delete(item)
+        for s in self.controller.auto_mgr.schedules:
+            self.schedule_tree.insert("", tk.END, values=(f"{s['time_str']}", "WAITING"))
+
+    def _cancel_schedule_click(self):
+        selected = self.schedule_tree.selection()
+        if not selected: return
+        index = self.schedule_tree.index(selected[0])
+        self.controller.auto_mgr.remove_schedule(index)
+        self.refresh_schedule_list()
+        self.schedule_detail_text.config(state=tk.NORMAL)
+        self.schedule_detail_text.delete('1.0', tk.END)
+        self.schedule_detail_text.config(state=tk.DISABLED)
+
+    def _on_schedule_select(self, event):
+        selected = self.schedule_tree.selection()
+        if not selected: return
+        index = self.schedule_tree.index(selected[0])
+        cfg = self.controller.auto_mgr.schedules[index]["config"]
+       
+        current_cfg = self.controller.config_manager.get_all_variables()
+        display_text = f"=== Saved Configuration for {self.controller.auto_mgr.schedules[index]['time_str']} ===\n\n"
+        for k, v in cfg.items():
+            display_text += f"{k}: {v}\n"
+            
+        self.schedule_detail_text.config(state=tk.NORMAL)
+        self.schedule_detail_text.delete('1.0', tk.END)
+        self.schedule_detail_text.insert(tk.END, display_text)
+        self.schedule_detail_text.config(state=tk.DISABLED)
+
+    # ====================================================================
+    # [NEW] Scan History 탭 빌드
+    # ====================================================================
+    def _build_history_tab(self, parent):
+        content_pane = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
+        content_pane.pack(fill=tk.BOTH, expand=True)
+
+        list_frame = ttk.LabelFrame(content_pane, text=" Past General Scans ", padding=5)
+        content_pane.add(list_frame, weight=1)
+
+        self.history_tree = ttk.Treeview(list_frame, columns=("Date", "Time", "Shifter", "Result"), show="headings")
+        self.history_tree.heading("Date", text="Date (JST)")
+        self.history_tree.heading("Time", text="End Time")
+        self.history_tree.heading("Shifter", text="Shifter")
+        self.history_tree.heading("Result", text="Result")
+        self.history_tree.column("Date", width=100, anchor="center")
+        self.history_tree.column("Time", width=80, anchor="center")
+        self.history_tree.column("Shifter", width=100, anchor="center")
+        self.history_tree.column("Result", width=80, anchor="center")
+        self.history_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        vsb = ttk.Scrollbar(list_frame, orient="vertical", command=self.history_tree.yview)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        self.history_tree.configure(yscrollcommand=vsb.set)
+        
+        self.history_tree.bind("<<TreeviewSelect>>", self._on_history_select)
+
+        detail_frame = ttk.LabelFrame(content_pane, text=" Run Details & Configuration ", padding=5)
+        content_pane.add(detail_frame, weight=2)
+        
+        self.history_detail_text = scrolledtext.ScrolledText(detail_frame, font=("Consolas", 10), state=tk.DISABLED, bg="#1e1e1e", fg="#e0e0e0")
+        self.history_detail_text.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Button(parent, text="🔄 Refresh History", command=self.refresh_history_list).pack(pady=5)
+        
+        # 최초 1회 자동으로 데이터 불러오기
+        self.notebook.after(500, self.refresh_history_list)
+
+    def refresh_history_list(self):
+        import os
+        import glob
+        import json
+        for item in self.history_tree.get_children():
+            self.history_tree.delete(item)
+            
+        history_dir = os.path.join(self.controller.base_dir, "LOG", "ScanHistory")
+        if not os.path.exists(history_dir): return
+        
+        files = glob.glob(os.path.join(history_dir, "*.json"))
+        files.sort(reverse=True) # 최신순
+        
+        for f in files:
+            try:
+                with open(f, 'r', encoding='utf-8') as json_file:
+                    data = json.load(json_file)
+                    self.history_tree.insert("", tk.END, values=(data.get("date"), data.get("end_time"), data.get("shifter"), data.get("status")), tags=(f,))
+            except Exception: pass
+
+    def _on_history_select(self, event):
+        import json
+        selected = self.history_tree.selection()
+        if not selected: return
+        
+        file_path = self.history_tree.item(selected[0], "tags")[0]
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                
+            display_text = f"=== Scan Finished at {data.get('date')} {data.get('end_time')} ===\n"
+            display_text += f"Shifter: {data.get('shifter')}\nStatus: {data.get('status')}\n"
+            display_text += "-"*50 + "\n[ Configuration Snapshot ]\n"
+            
+            for k, v in data.get("config", {}).items():
+                display_text += f"{k}: {v}\n"
+                
+            self.history_detail_text.config(state=tk.NORMAL)
+            self.history_detail_text.delete('1.0', tk.END)
+            self.history_detail_text.insert(tk.END, display_text)
+            self.history_detail_text.config(state=tk.DISABLED)
+        except Exception:
+            pass
+

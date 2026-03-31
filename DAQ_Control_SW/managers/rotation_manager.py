@@ -1,12 +1,11 @@
-# managers/rotation_manager.py
-import time
+from datetime import datetime, timezone, timedelta
 import threading
-import subprocess
+import time
 import os
 import json
 import glob
+import subprocess
 import shutil
-from datetime import datetime
 from tkinter import messagebox
 
 class AutomationManager:
@@ -19,22 +18,31 @@ class AutomationManager:
         self.state_file = os.path.join(self.controller.base_dir, "scan_recovery_state.json")
         self.initial_angles = None 
 
+        ######### Plz don't modified #########3
         self.tilt_step = 5.0
         self.rot_step = 90.0
+        self.safe_move_step = 15.0  
         self.rest_time = 3.0
+
+        self.scan_range = {"start": -55, "end": 55} 
+
+        self.schedule_file = os.path.join(self.controller.base_dir, "queued_schedules.json")
+        self.schedules = [] 
+        self._load_schedules_from_disk()
+        self.schedule_thread_running = False
+        self.history_dir = os.path.join(self.controller.base_dir, "LOG", "ScanHistory")
+        os.makedirs(self.history_dir, exist_ok=True)
 
     def _safe_sleep(self, seconds, bypass_check=False):
         """Sleeps but aborts immediately if Stop/Emergency is triggered."""
         start = time.time()
         while time.time() - start < seconds:
-            # bypass_check가 True(원상복구 모드)일 때는 is_running이 False여도 무시하고 대기
             if not self.is_running and not bypass_check: break
             self.pause_event.wait()
             if not self.is_running and not bypass_check: break
             time.sleep(0.5)
 
     def _wait_for_motors(self, bypass_check=False):
-        """하드웨어 모터가 움직임을 멈출 때까지 대기합니다."""
         while self.is_running or bypass_check:
             is_moving_2 = self.controller.rot_mgr.is_moving.get(2, False)
             is_moving_3 = self.controller.rot_mgr.is_moving.get(3, False)
@@ -42,9 +50,8 @@ class AutomationManager:
                 break
             time.sleep(0.5)
 
-    def _move_safely_stepped(self, target_2, target_3, axis_type, bypass_check=False):
-        """Moves both devices safely in steps with 3s rest."""
-        step_size = self.tilt_step if axis_type == "tilt" else self.rot_step
+    def _move_safely_stepped(self, target_2, target_3, axis_type, bypass_check=False, step_override=None):    
+        step_size = step_override if step_override else (self.tilt_step if axis_type == "tilt" else self.rot_step)
 
         # 1. 현재 각도 읽기
         curr_t2, curr_r2 = self.controller.rot_mgr.read_angles(2)
@@ -63,7 +70,6 @@ class AutomationManager:
             if abs(diff2) <= 0.5 and abs(diff3) <= 0.5:
                 break
 
-            # 이번 스텝에 이동할 각도 계산
             move2 = min(abs(diff2), step_size) * (1 if diff2 > 0 else -1) if abs(diff2) > 0.5 else 0
             move3 = min(abs(diff3), step_size) * (1 if diff3 > 0 else -1) if abs(diff3) > 0.5 else 0
 
@@ -72,20 +78,17 @@ class AutomationManager:
 
             self.controller._log(f"[INFO] Safe Step {axis_type.upper()}: Dev2 -> {next2:.1f}, Dev3 -> {next3:.1f}")
 
-            # 4. 하드웨어 명령 전송
             if axis_type == "tilt":
-                if move2 != 0: self.controller.rot_mgr.move_tilt_only(2, next2)
-                if move3 != 0: self.controller.rot_mgr.move_tilt_only(3, next3)
+                if move2 != 0: self.controller.rot_mgr.move_tilt_only(2, next2, skip_lock=bypass_check)
+                if move3 != 0: self.controller.rot_mgr.move_tilt_only(3, next3, skip_lock=bypass_check)
             else:
-                if move2 != 0: self.controller.rot_mgr.move_rot_only(2, next2)
-                if move3 != 0: self.controller.rot_mgr.move_rot_only(3, next3)
+                if move2 != 0: self.controller.rot_mgr.move_rot_only(2, next2, skip_lock=bypass_check)
+                if move3 != 0: self.controller.rot_mgr.move_rot_only(3, next3, skip_lock=bypass_check)
 
-            # [핵심] 명령을 전송한 뒤, 모터가 도착할 때까지 확실하게 기다리도록 수정
             self._wait_for_motors(bypass_check)
 
             if abs(target_2 - next2) > 0.5 or abs(target_3 - next3) > 0.5:
                 self.controller._log(f"[INFO] Step reached. Waiting {self.rest_time}s for hardware safety...")
-                # [핵심] 스텝 사이의 휴식 시간도 확실하게 보장하도록 수정
                 self._safe_sleep(self.rest_time, bypass_check)
 
             c2, c3 = next2, next3
@@ -96,10 +99,14 @@ class AutomationManager:
         x_rot = (cable_deg - 180) % 360
         return x_rot if axis == "X" else (x_rot + 90) % 360
 
-    def start_general_scan(self):
-        if not self.controller.access_mgr.unlocked:
-            messagebox.showwarning("Locked", "🔒 Please click 'Unlock Controls' first.")
-            return
+    def start_general_scan(self, skip_validation=False):
+        self.is_skipping_validation = skip_validation
+
+        if not skip_validation:
+            if not self.controller.access_mgr.unlocked:
+                messagebox.showwarning("Locked", "🔒 Please click 'Unlock Controls' first.")
+                return
+        
         if self.is_running: return
 
         cfg = self.controller.config_manager.get_all_variables()
@@ -109,7 +116,7 @@ class AutomationManager:
         step_time_seconds = 220 if not is_dummy else 1 
         total_seconds = total_steps * step_time_seconds
 
-        if not is_dummy:
+        if not is_dummy and not skip_validation:
             raw_path = cfg.get("RawDataPath", "")
             if not os.path.exists(raw_path):
                 messagebox.showerror("Error", f"Save path not found:\n{raw_path}")
@@ -118,7 +125,6 @@ class AutomationManager:
             usage = shutil.disk_usage(raw_path)
             free_gb = usage.free / (1024**3)
             
-            # [수정] 한 데이터당 800MB (0.8GB) 적용
             estimated_required_gb = total_steps * 0.8
             
             if free_gb < estimated_required_gb:
@@ -150,19 +156,25 @@ class AutomationManager:
 
         self.resume_data = None
         if os.path.exists(self.state_file):
-            ans = messagebox.askyesno(
-                "Recovery Found", 
-                "🚨 A record of an abnormally terminated scan was found.\n\n"
-                "Would you like to resume from the last angle?\n"
-                "(Click 'No' to delete the record and start over)"
-            )
+            if skip_validation:
+                self.controller._log("[INFO] ⏰ Scheduled scan: Clearing old recovery data for a clean start.")
+                os.remove(self.state_file) 
+                ans = False 
+            else:
+                ans = messagebox.askyesno(
+                    "Recovery Found", 
+                    "🚨 A record of an abnormally terminated scan was found.\n\n"
+                    "Would you like to resume from the last angle?\n"
+                    "(Click 'No' to delete the record and start over)"
+                )
+            
             if ans:
                 try:
                     with open(self.state_file, 'r') as f:
                         self.resume_data = json.load(f)
                 except Exception as e:
                     self.controller._log(f"Recovery load failed: {e}")
-            else:
+            elif os.path.exists(self.state_file):
                 os.remove(self.state_file)
 
         t2, r2 = self.controller.rot_mgr.read_angles(2)
@@ -173,13 +185,91 @@ class AutomationManager:
         }
         self.controller._log(f"Saved initial angles for Reset: Dev2({t2}, {r2}), Dev3({t3}, {r3})")
 
-        self.controller.auto_ui.update_start_button(True)
+        status_msg = "SYSTEM STATUS: SCHEDULED RUN IN PROGRESS..." if skip_validation else "SYSTEM STATUS: SCANNING..."
+        
+        self.controller.auto_ui.update_start_button(True, status_text=status_msg)
+        #self.controller.auto_ui.update_start_button(True)
 
         if hasattr(self.controller.auto_ui, 'start_eta_countdown'):
             self.controller.auto_ui.start_eta_countdown(total_seconds, total_steps)
 
         self.is_running = True
         threading.Thread(target=self._scan_sequence, daemon=True).start()
+
+    def schedule_general_scan(self, time_str):
+        if not self.controller.access_mgr.unlocked:
+            messagebox.showwarning("Locked", "🔒 Please click 'Unlock Controls' first.")
+            return
+        if self.is_running: return
+
+        try:
+            target_time = datetime.strptime(time_str.strip(), "%H:%M").time()
+        except ValueError:
+            messagebox.showerror("Invalid Time", "Please use HH:MM format (e.g., 14:30).")
+            return
+
+        cfg = self.controller.config_manager.get_all_variables()
+        is_dummy = self.controller.auto_ui.dummy_var.get()
+        total_steps = 46
+
+        if not is_dummy:
+            raw_path = cfg.get("RawDataPath", "")
+            if not os.path.exists(raw_path):
+                messagebox.showerror("Error", f"Save path not found:\n{raw_path}")
+                return
+            
+            usage = shutil.disk_usage(raw_path)
+            free_gb = usage.free / (1024**3)
+            estimated_required_gb = total_steps * 0.8
+            
+            if free_gb < estimated_required_gb:
+                if not messagebox.askyesno("Storage Warning", f"⚠️ Low Storage: {free_gb:.1f} GB left. Schedule anyway?"): 
+                    return
+
+            sn2, dir2 = cfg.get("SN2", "N/A"), cfg.get("direction2", "N/A")
+            sn3, dir3 = cfg.get("SN3", "N/A"), cfg.get("direction3", "N/A")
+            
+            if sn2 == "N/A" or sn3 == "N/A":
+                if not messagebox.askyesno("Missing Info", "SN2 or SN3 is missing! Schedule anyway?"): return
+
+            checklist_msg = (
+                f"⏰ Schedule Pre-flight Checklist (JST)\n\n"
+                f"• Target Time: {time_str} (JST)\n"
+                f"• Free Space: {free_gb:.1f} GB (OK)\n"
+                f"• Target SN2: {sn2} (Dir: {dir2})\n"
+                f"• Target SN3: {sn3} (Dir: {dir3})\n\n"
+                f"Are these parameters correct? The scan will start automatically at {time_str} JST."
+            )
+            if not messagebox.askyesno("Schedule Checklist", checklist_msg): return
+
+        self.is_scheduled = True
+        
+        self.controller.auto_ui.add_auto_log(f"⏰ Scan scheduled successfully for {time_str} (JST).")
+        self._update_scan_status_label(f"SCHEDULED: {time_str} (JST)", "#007ACC")
+        self.controller.auto_ui.btn_start.config(state=tk.DISABLED)
+        
+        threading.Thread(target=self._wait_for_schedule, args=(target_time,), daemon=True).start()
+
+    def _wait_for_schedule(self, target_time):
+        JST = timezone(timedelta(hours=9))  
+        
+        while self.is_scheduled:
+            now_jst = datetime.now(JST)
+            
+            if now_jst.hour == target_time.hour and now_jst.minute == target_time.minute:
+                self.controller.auto_ui.add_auto_log(f"▶ Scheduled time ({target_time.strftime('%H:%M')} JST) reached. Starting auto-scan...")
+                self.is_scheduled = False
+                
+                self.controller.master.after(0, lambda: self.start_general_scan(skip_validation=True))
+                break
+            time.sleep(10)
+
+
+    def cancel_schedule(self):
+        self.is_scheduled = False
+        self.controller._log("[INFO] ⏰ Scheduled scan cancelled by user.")
+        self._update_scan_status_label("SYSTEM STATUS: IDLE", "gray")
+        self.controller.auto_ui.btn_start.config(state=tk.NORMAL)
 
     def _save_state(self, axis, tilt, step):
         state = {"axis": axis, "tilt": tilt, "step": step}
@@ -188,80 +278,80 @@ class AutomationManager:
                 json.dump(state, f)
         except: pass
 
-
     def _scan_sequence(self):
         start_time = datetime.now()
         is_dummy = self.controller.auto_ui.dummy_var.get()
         cfg = self.controller.config_manager.get_all_variables()
         
+        # 1. Shifter + Expert 정보 로그 표시 (잘 반영됨)
         shifter = cfg.get("Shift_worker", "").strip()
-        if not shifter:
-            shifter = cfg.get("Expert", "Unknown").strip()
-        self.controller.auto_ui.add_auto_log(f"Scan Started (Shifter: {shifter})")
-        
+        expert = cfg.get("Expert", "N/A").strip()
+        self.controller.auto_ui.add_auto_log(f"Scan Started (Shifter: {shifter} / Expert: {expert})")
+
         sn2_name = cfg.get("SN2", "SN2") 
         sn3_name = cfg.get("SN3", "SN3")
 
-        total_steps = 46 # X축 23개 + Y축 23개
+        points_per_axis = int((self.scan_range["end"] - self.scan_range["start"]) / self.tilt_step + 1)
+        total_steps = points_per_axis * 2
         current_step = 0
 
         start_axis = "X"
-        start_tilt = -55
+        start_tilt = self.scan_range["start"]
         skip_until_match = False
 
         if self.resume_data:
             start_axis = self.resume_data.get("axis", "X")
-            start_tilt = self.resume_data.get("tilt", -55)
+            start_tilt = self.resume_data.get("tilt", self.scan_range["start"])
             current_step = self.resume_data.get("step", 0)
             skip_until_match = True
-            self.controller._log(f"🔄 Crash Recovery Activated: Jumping to {start_axis}-Axis, {start_tilt}°...")
+            self.controller._log(f"🔄 Recovery Mode: Target position -> {start_axis}-Axis, {start_tilt}°")
 
+        # [수정 1] 기존 309~313번(루프 밖 이동)을 삭제하고 DAQ 터미널 준비만 수행
         if not is_dummy:
-            self.controller._log("[INFO] Opening unified DAQ terminal...")
             subprocess.run(['tmux', 'kill-session', '-t', 'GeneralScan'], capture_output=True)
-
             term_cmd = ['gnome-terminal', '--title=General Scan DAQ', '--', 'tmux', 'new-session', '-s', 'GeneralScan']
             subprocess.Popen(term_cmd)
             time.sleep(2.0) 
 
         try:
             for axis in ["X", "Y"]:
+                if skip_until_match and axis != start_axis:
+                    current_step += points_per_axis
+                    continue
+                
                 r2 = self._get_rot_for_cable(axis, cfg.get("direction2", "B"))
                 r3 = self._get_rot_for_cable(axis, cfg.get("direction3", "B"))
 
                 if not is_dummy:
-                    if not skip_until_match:
-                        self.controller.auto_ui.update_cell(sn2_name, -55, axis, "move")
-                        self.controller.auto_ui.update_cell(sn3_name, -55, axis, "move")
                     self.controller._log(f"[INFO] --- Checking {axis}-Axis Rotation ---")
-                    
-                    # 현재 실제 회전 각도 읽기
                     _, curr_r2 = self.controller.rot_mgr.read_angles(2)
                     _, curr_r3 = self.controller.rot_mgr.read_angles(3)
                     
-                    # 0.5도 오차 이내로 이미 회전이 맞춰져 있는지 확인
-                    already_at_rot = False
-                    if (curr_r2 is not None and abs(curr_r2 - r2) < 0.5) and \
-                       (curr_r3 is not None and abs(curr_r3 - r3) < 0.5):
-                        already_at_rot = True
+                    already_at_rot = (curr_r2 is not None and abs(curr_r2 - r2) < 0.5) and \
+                                     (curr_r3 is not None and abs(curr_r3 - r3) < 0.5)
 
                     if not already_at_rot:
-                        self.controller._log(f"[INFO] Rotation mismatch. Moving TILT to 0.0 first for safety.")
-                        # 1단계: 기울기 0도로 이동 (회전축 보호)
-                        self._move_safely_stepped(0.0, 0.0, "tilt")
-                        self._wait_for_physical_angle(2, target_tilt=0.0)
-                        self._wait_for_physical_angle(3, target_tilt=0.0)
-                        self._safe_sleep(2.0)
+                        self.controller._log(f"[INFO] Rotation mismatch. Moving TILT to 0.0 first.")
+                        self._move_safely_stepped(0.0, 0.0, "tilt", bypass_check=self.is_skipping_validation, step_override=self.safe_move_step)
+                        self._wait_for_physical_angle(2, target_tilt=0.0, bypass_check=self.is_skipping_validation)
+                        self._wait_for_physical_angle(3, target_tilt=0.0, bypass_check=self.is_skipping_validation)
+                        
+                        self._move_safely_stepped(r2, r3, "rot", bypass_check=self.is_skipping_validation)
+                        self._wait_for_physical_angle(2, target_rot=r2, bypass_check=self.is_skipping_validation)
+                        self._wait_for_physical_angle(3, target_rot=r3, bypass_check=self.is_skipping_validation)
+                        self._safe_sleep(2.0, bypass_check=self.is_skipping_validation)
 
-                        # 2단계: 목표 회전 각도로 이동
-                        self._move_safely_stepped(r2, r3, "rot")
-                        self._wait_for_physical_angle(2, target_rot=r2)
-                        self._wait_for_physical_angle(3, target_rot=r3)
-                        self._safe_sleep(2.0)
-                    else:
-                        self.controller._log(f"[INFO] {axis}-Axis rotation already at target ({r2:.1f}, {r3:.1f}). Skipping 0-reset.")
-                
-                for tilt in range(-55, 60, 5):
+                    # [수정 2] 축이 확인/정렬된 직후에 "해당 축의 시작 지점"으로 이동
+                    target_init_tilt = start_tilt if skip_until_match else self.scan_range["start"]
+                    self.controller._log(f"[INFO] Axis Aligned. Moving to start tilt: {target_init_tilt}°")
+                    self._move_safely_stepped(target_init_tilt, target_init_tilt, "tilt", 
+                                             bypass_check=self.is_skipping_validation, 
+                                             step_override=self.safe_move_step)
+                    self._wait_for_physical_angle(2, target_tilt=target_init_tilt, bypass_check=self.is_skipping_validation)
+                    self._wait_for_physical_angle(3, target_tilt=target_init_tilt, bypass_check=self.is_skipping_validation)
+
+                for tilt in range(self.scan_range["start"], self.scan_range["end"] + 1, int(self.tilt_step)):
+
                     if not self.is_running: return
 
                     if skip_until_match:
@@ -290,7 +380,7 @@ class AutomationManager:
                     # 2. 개별 스텝 이동 및 물리적 확인
                     if not is_dummy:
                         self.controller._log(f"[INFO] Scanning: Moving TILT to {tilt} deg...")
-                        self._move_safely_stepped(tilt, tilt, "tilt")
+                        self._move_safely_stepped(tilt, tilt, "tilt", bypass_check=self.is_skipping_validation)
                         self._wait_for_physical_angle(2, target_tilt=tilt)
                         self._wait_for_physical_angle(3, target_tilt=tilt)
                         
@@ -365,7 +455,6 @@ class AutomationManager:
                             self._verify_file_integrity(max(current_files, key=os.path.getctime))
 
 
-                        # [요청사항] DAQ 종료 후 다음 이동 전 5초 안전 대기
                         if self.is_running:
                             self.controller._log("[INFO] DAQ Done. Waiting 5s for safety...")
                             self._safe_sleep(5.0)
@@ -405,8 +494,9 @@ class AutomationManager:
         time_str = time.strftime('%H:%M:%S', time.gmtime(eta_seconds))
         self.controller.auto_ui.eta_label.config(text=f"ETA: {time_str} ({current} / {total})")
 
-
     def _show_scan_summary(self, start, end, shifter):
+        self.save_scan_history(start, end, shifter, is_success=True) # 성공 시 저장
+        
         summary = (
             f"📊 Scan Result Summary\n"
             f"--------------------------\n"
@@ -503,9 +593,8 @@ class AutomationManager:
         def _reset_sequence():
             # 1단계: 기울기부터 0도로 이동
             self.controller._log("[INFO] Reset Phase 1: Moving TILT to 0.0")
-            # [확인] bypass_check=True 전달
-            self._move_safely_stepped(0.0, 0.0, "tilt", bypass_check=True) 
-            
+            self._move_safely_stepped(0.0, 0.0, "tilt", bypass_check=True, step_override=self.safe_move_step)
+
             # [확인] bypass_check=True 전달
             self._wait_for_physical_angle(2, target_tilt=0.0, bypass_check=True)
             self._wait_for_physical_angle(3, target_tilt=0.0, bypass_check=True)
@@ -523,24 +612,18 @@ class AutomationManager:
             
         threading.Thread(target=_reset_sequence, daemon=True).start()
 
-
     def emergency_stop(self):
-        """강제 종료 시 모든 소프트웨어/하드웨어 상태를 즉시 리셋합니다."""
         self.is_running = False
         self.pause_event.set() 
         
-        # 1. 물리적 모터 즉시 정지
         if hasattr(self.controller, 'rot_mgr'):
             self.controller.rot_mgr.stop_rotation(2)
             self.controller.rot_mgr.stop_rotation(3)
 
-        # 2. DAQ 프로세스 강제 종료
         is_dummy = self.controller.auto_ui.dummy_var.get()
         if not is_dummy:
             subprocess.run(['pkill', '-9', 'execute_DAQ_v2'], capture_output=True)
 
-        # 3. [핵심] UI 버튼 상태를 IDLE로 강제 복구
-        # 이 코드가 있어야 Start 버튼이 초록색으로, Stop 버튼이 비활성화로 돌아옵니다.
         self.controller.auto_ui.update_start_button(False)
         
         self.controller._log("[INFO] Scan Aborted: Process stopped and UI initialized.")
@@ -553,7 +636,6 @@ class AutomationManager:
             
         file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
         
-        # [수정] 압축률을 고려하여 1MB -> 0.05MB(50KB)로 기준 대폭 완화
         if file_size_mb < 0.05: 
             self.controller.master.after(0, lambda: messagebox.showwarning("Incomplete Data", 
                                    f"⚠️ Integrity Check Failed!\nFile: {os.path.basename(file_path)}\n"
@@ -561,3 +643,155 @@ class AutomationManager:
             return False
         return True
 
+    def save_scan_history(self, start_time, end_time, shifter, is_success=True):
+        JST = timezone(timedelta(hours=9))
+        end_time_jst = datetime.now(JST)
+        
+        cfg_snapshot = self.controller.config_manager.get_all_variables()
+        history_data = {
+            "date": end_time_jst.strftime('%Y-%m-%d'),
+            "start_time": start_time.strftime('%H:%M:%S'),
+            "end_time": end_time_jst.strftime('%H:%M:%S'),
+            "shifter": shifter,
+            "status": "SUCCESS" if is_success else "ABORTED/ERROR",
+            "config": cfg_snapshot
+        }
+        
+        file_name = f"history_{end_time_jst.strftime('%Y%m%d_%H%M%S')}.json"
+        file_path = os.path.join(self.history_dir, file_name)
+        
+        try:
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(history_data, f, indent=4)
+            self.controller._log(f"[INFO] Scan history saved: {file_name}")
+            
+            if hasattr(self.controller.auto_ui, 'refresh_history_list'):
+                self.controller.master.after(0, self.controller.auto_ui.refresh_history_list)
+        except Exception as e:
+            self.controller._log(f"[ERROR] Failed to save scan history: {e}")
+
+    def add_schedule(self, date_str, hour, minute):
+        """[수정본] 스케줄 추가 및 파일 저장"""
+        if len(self.schedules) >= 3:
+            messagebox.showwarning("Limit Reached", "You can only schedule up to 3 runs.")
+            return False
+
+        try:
+            time_str = f"{hour.zfill(2)}:{minute.zfill(2)}"
+            full_str = f"{date_str} {time_str}"
+            
+            JST = timezone(timedelta(hours=9))
+            target_dt = datetime.strptime(full_str, "%Y-%m-%d %H:%M").replace(tzinfo=JST)
+            now_jst = datetime.now(JST)
+
+            if target_dt <= now_jst:
+                messagebox.showerror("Time Error", f"Cannot schedule for a past time.\n(Input: {full_str} JST)")
+                return False
+
+            cfg_snapshot = self.controller.config_manager.get_all_variables()
+            schedule_item = {
+                "time_obj": target_dt,
+                "time_str": target_dt.strftime("%Y-%m-%d %H:%M"),
+                "config": cfg_snapshot
+            }
+
+            self.schedules.append(schedule_item)
+            self.schedules.sort(key=lambda x: x["time_obj"])
+            
+            self._save_schedules_to_disk()
+            self.controller._log(f"[INFO] ⏰ Schedule added for {schedule_item['time_str']} JST.")
+            self._start_schedule_watchdog()
+            return True
+
+        except Exception as e:
+            messagebox.showerror("Format Error", f"Invalid input: {e}")
+            return False
+
+
+
+    def remove_schedule(self, index):
+        if 0 <= index < len(self.schedules):
+            removed = self.schedules.pop(index)
+            self._save_schedules_to_disk()
+            self.controller._log(f"[INFO] ⏰ Scheduled run for {removed['time_str']} JST cancelled.")
+    
+    def _save_schedules_to_disk(self):
+        try:
+            save_data = []
+            for s in self.schedules:
+                save_data.append({
+                    "time_str": s["time_str"],
+                    "config": s["config"]
+                })
+            
+            with open(self.schedule_file, 'w', encoding='utf-8') as f:
+                json.dump(save_data, f, indent=4)
+        except Exception as e:
+            self.controller._log(f"[ERROR] Failed to save schedules: {e}")
+
+    def _load_schedules_from_disk(self):
+        if not os.path.exists(self.schedule_file):
+            return
+
+        try:
+            with open(self.schedule_file, 'r', encoding='utf-8') as f:
+                load_data = json.load(f)
+            
+            JST = timezone(timedelta(hours=9))
+            now_jst = datetime.now(JST)
+
+            for item in load_data:
+                target_dt = datetime.strptime(item["time_str"], "%Y-%m-%d %H:%M").replace(tzinfo=JST)
+                
+                if target_dt > now_jst:
+                    self.schedules.append({
+                        "time_obj": target_dt,
+                        "time_str": item["time_str"],
+                        "config": item["config"]
+                    })
+            
+            if self.schedules:
+                self.schedules.sort(key=lambda x: x["time_obj"])
+                self._start_schedule_watchdog()
+                self.controller._log(f"[INFO] Restored {len(self.schedules)} schedules from disk.")
+        except Exception as e:
+            self.controller._log(f"[ERROR] Failed to load schedules: {e}")
+
+    def _start_schedule_watchdog(self):
+        if self.schedule_thread_running: return
+        self.schedule_thread_running = True
+        threading.Thread(target=self._schedule_watchdog_loop, daemon=True).start()
+
+    def _schedule_watchdog_loop(self):
+        JST = timezone(timedelta(hours=9))
+
+        while self.schedule_thread_running:
+            if not self.schedules:
+                self.schedule_thread_running = False
+                break
+
+            now_jst = datetime.now(JST)
+            next_run = self.schedules[0]
+
+            if now_jst >= next_run["time_obj"]:
+                self.controller._log(f"[INFO] ▶ Scheduled time ({next_run['time_str']} JST) reached. Starting auto-scan...")
+
+                self.schedules.pop(0)
+
+                if hasattr(self.controller.auto_ui, 'refresh_schedule_list'):
+                    self.controller.master.after(0, self.controller.auto_ui.refresh_schedule_list)
+
+                if not self.is_running:
+                    self.controller.master.after(0, lambda: self.start_general_scan(skip_validation=True))
+                else:
+                    self.controller._log("[WARNING] Another scan is already running. Scheduled run skipped.")
+
+            time.sleep(5.0) 
+
+    def _update_scan_status_label(self, text, color):
+        """Safely updates the scan status label avoiding AttributeError."""
+        if hasattr(self.controller, 'auto_ui') and hasattr(self.controller.auto_ui, 'scan_status_label'):
+            try:
+                self.controller.master.after(0, lambda: self.controller.auto_ui.scan_status_label.config(text=text, foreground=color))
+            except Exception:
+                pass

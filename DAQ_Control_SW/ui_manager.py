@@ -1919,3 +1919,28 @@ class UIManager:
         
         # 6. Refresh: F5
         self.master.bind("<F5>", lambda e: self.controller.refresh_all_data())
+
+    def show_loading_overlay(self, message="Processing..."):
+        """Displays a centered loading overlay."""
+        if not hasattr(self, 'loading_frame'):
+            self.loading_frame = tk.Frame(self.master, bg="#2c2c2e", highlightthickness=2, highlightbackground="#0a84ff")
+
+            self.loading_label = ttk.Label(
+                self.loading_frame,
+                text=message,
+                font=("Helvetica", 16, "bold"),
+                foreground="white",
+                background="#2c2c2e"
+            )
+            self.loading_label.pack(padx=50, pady=40)
+        else:
+            self.loading_label.config(text=message)
+
+        self.loading_frame.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
+        self.loading_frame.lift()
+        self.master.update_idletasks()
+
+    def hide_loading_overlay(self):
+        """Hides the loading overlay."""
+        if hasattr(self, 'loading_frame'):
+            self.loading_frame.place_forget()

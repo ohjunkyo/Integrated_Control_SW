@@ -46,7 +46,7 @@ class LaserManager:
         if not last_wls: return
 
         msg = f"The following lasers were connected last time:\n[{', '.join(last_wls)}]\n\nDo you want to restore these connections?"
-        if not messagebox.askyesno("Laser Auto-Connect", msg):
+        if not messagebox.askyesno("Laser Auto-Connect", msg, parent=self.app.master):
             self.app._log("Auto-connect cancelled by user.")
             return
 
@@ -96,6 +96,8 @@ class LaserManager:
             self.comm_error_flags[wl] = False
             if inst.update_status():
                 vars_dict["ld_status"].set("ON" if inst.status.get('ld_on', False) else "OFF")
+            
+            self.on_laser_trigger_change_multi(wl)
             self.laser_session_start = time.time()
             self.update_laser_status_loop()
             self.app._log(f"✅ {wl} Connected successfully.")
@@ -229,7 +231,16 @@ class LaserManager:
         time.sleep(0.1)
         inst.update_status()
         self.comm_error_flags[wl] = False
-
+        
+        if hasattr(self.app, 'ui') and hasattr(self.app.ui, 'laser_tabs_data'):
+            vars_dict = self.app.ui.laser_tabs_data.get(wl)
+            if vars_dict and "trigger_mode" in vars_dict:
+                vars_dict["trigger_mode"].set("External") 
+                self.app._log(f"[INFO] {wl} Trigger mode forced to External after interlock recovery.")
+        
+        if hasattr(self, 'on_laser_trigger_change_multi'):
+            self.on_laser_trigger_change_multi(wl)
+        # =====================================================================
 
     def manual_refresh_laser(self, wl=None):
         self.laser_session_start = time.time()
@@ -240,54 +251,53 @@ class LaserManager:
         self.update_laser_status_loop()
 
     def set_laser_ld_safe(self, target_wl, state):
-        """[수정] LD 제어: 다른 레이저가 켜져 있으면 경고창을 띄우고 끕니다."""
-
-        # 1. 켜려고 할 때(state=True) 다른 놈들이 켜져 있는지 검사
         if state is True:
             active_lasers = []
             for wl, inst in self.laser_instances.items():
-                # 내가 아니고(wl != target_wl), 연결되어 있고, LD가 켜져 있는 놈 찾기
-                # (주의: inst.status는 update_status()가 호출되어야 최신임.
-                #  확실하게 하기 위해 UI 변수나 내부 플래그를 확인)
                 if wl != target_wl and inst.is_connected():
-                    # 안전하게 UI 상태 변수로 확인 (가장 최근 업데이트된 값)
                     if self.app.ui.laser_tabs_data[wl]["ld_status"].get() == "ON":
                         active_lasers.append(wl)
 
-            # 다른 켜진 레이저가 발견되면 경고창 띄움
             if active_lasers:
                 msg = f"Laser {', '.join(active_lasers)} is currently ON.\n\n" \
-                        f"To turn on {target_wl}, the others must be turned OFF.\n" \
-                        f"Proceed?"
+                      f"To turn on {target_wl}, the others must be turned OFF.\n" \
+                      f"Proceed?"
 
                 if not messagebox.askyesno("Safety Interlock", msg):
-                    self.app._log(f"Operation cancelled: {target_wl} ON blocked by user.")
-                    return # 사용자가 '아니오' 누르면 함수 종료 (안 켬)
+                    self.app._log(f"[WARNING] Operation cancelled: {target_wl} ON blocked by user.")
+                    return
 
-                # 사용자가 '예' 누르면 -> 다른 레이저들 끄기
                 for wl in active_lasers:
                     inst = self.laser_instances.get(wl)
                     if inst:
-                        inst.set_ld_on(False) # 하드웨어 OFF
-                        self.app.ui.laser_tabs_data[wl]["ld_status"].set("OFF") # UI OFF
-                        self.app.ui.update_laser_status_colors(wl, False, False) # 빨간색
-                        self.app._log(f"Safety: Auto-shutdown {wl}")
+                        self.app.ui.laser_tabs_data[wl]["ld_status"].set("OFF")
+                        self.app.ui.update_laser_status_colors(wl, False, False)
+                        self.app._log(f"[INFO] Safety: Auto-shutdown initiated for {wl}")
+                        
+                        threading.Thread(target=inst.set_ld_on, args=(False,), daemon=True).start()
 
-        # 2. 타겟 레이저 제어 (이제 안전함)
         inst = self.laser_instances.get(target_wl)
         if inst and inst.is_connected():
-            inst.set_ld_on(state)
-            self.app._log(f"Command Sent: Laser {target_wl} LD -> {'ON' if state else 'OFF'}")
+            def apply_task():
+                try:
+                    inst.set_ld_on(state)
+                    
+                    def update_ui():
+                        self.app._log(f"[INFO] Command Sent: Laser {target_wl} LD -> {'ON' if state else 'OFF'}")
+                        self.laser_session_start = time.time()
+                        if self.laser_after_id:
+                            self.app.master.after_cancel(self.laser_after_id)
+                        self.app.master.after(200, self.update_laser_status_loop)
+                        
+                    self.app.master.after(0, update_ui)
+                except Exception as e:
+                    self.app.master.after(0, lambda: self.app._log(f"[ERROR] LD control error for {target_wl}: {e}"))
 
-            # 빠른 확인을 위해 0.2초 후 루프 실행
-            self.laser_session_start = time.time()
-            if self.laser_after_id:
-                self.app.master.after_cancel(self.laser_after_id)
-            self.app.master.after(200, self.update_laser_status_loop)
+            threading.Thread(target=apply_task, daemon=True).start()
 
 
     def apply_laser_frequency_multi(self, wl):
-        """특정 파장 기기에 트리거 모드 및 주파수 적용"""
+        """Apply trigger mode and frequency to the specified laser wavelength."""
         inst = self.laser_instances.get(wl)
         vars_dict = self.app.ui.laser_tabs_data.get(wl)
 
@@ -296,40 +306,62 @@ class LaserManager:
                 hz = int(vars_dict["freq_hz"].get())
                 mode = vars_dict["trigger_mode"].get()
 
-                pg1, pg2, ext = (mode=="Internal (PG1)"), (mode=="Internal (PG2)"), (mode=="External")
-                inst.set_trigger_mode(pg1, pg2, ext) 
-                
-                time.sleep(0.1) 
+                pg1 = (mode == "Internal (PG1)")
+                pg2 = (mode == "Internal (PG2)")
+                ext = (mode == "External")
 
-                if pg1: inst.set_pg1_frequency(hz)
-                elif pg2: inst.set_pg2_frequency(hz)
-                
-                time.sleep(0.1) 
+                # Define the background task to prevent UI freezing
+                def apply_task():
+                    try:
+                        inst.set_trigger_mode(pg1, pg2, ext)
+                        time.sleep(0.1)
 
-                if "current_mode_disp" in vars_dict:
-                    vars_dict["current_mode_disp"].set(f"Current: {mode}")
+                        if pg1:
+                            inst.set_pg1_frequency(hz)
+                        elif pg2:
+                            inst.set_pg2_frequency(hz)
+                        
+                        time.sleep(0.1)
 
-                self.app._log(f"✅ Laser {wl} Config: {mode}, {hz} Hz applied.")
+                        # Safely update the UI from the main thread
+                        def update_ui():
+                            if "current_mode_disp" in vars_dict:
+                                vars_dict["current_mode_disp"].set(f"Current: {mode}")
+                            self.app._log(f"[INFO] Laser {wl} Config: {mode}, {hz} Hz applied.")
+
+                        self.app.master.after(0, update_ui)
+
+                    except Exception as e:
+                        error_msg = f"[ERROR] Failed applying frequency to {wl}: {e}"
+                        self.app.master.after(0, lambda: self.app._log(error_msg))
+
+                # Start the hardware communication in a separate thread
+                threading.Thread(target=apply_task, daemon=True).start()
+
             except ValueError:
-                messagebox.showerror("Error", f"Invalid frequency for {wl}. Must be integer.")
-
+                messagebox.showerror("Error", f"Invalid frequency for {wl}. Must be an integer.")
 
     def set_laser_tec_multi(self, wl, state):
-        """TEC 제어: 하드웨어 명령 후 즉시 상태를 재확인합니다."""
         inst = self.laser_instances.get(wl)
         if inst and inst.is_connected():
-            inst.set_tec_on(state)
-            self.app._log(f"Command Sent: Laser {wl} TEC -> {'ON' if state else 'OFF'}")
+            def apply_task():
+                try:
+                    inst.set_tec_on(state)
+                    
+                    def update_ui():
+                        self.app._log(f"[INFO] Command Sent: Laser {wl} TEC -> {'ON' if state else 'OFF'}")
+                        self.laser_session_start = time.time()
+                        if self.laser_after_id:
+                            self.app.master.after_cancel(self.laser_after_id)
+                        self.app.master.after(500, self.update_laser_status_loop)
+                        
+                    self.app.master.after(0, update_ui)
+                except Exception as e:
+                    self.app.master.after(0, lambda: self.app._log(f"[ERROR] TEC control error for {wl}: {e}"))
 
-            self.laser_session_start = time.time()
-
-            if self.laser_after_id:
-                self.app.master.after_cancel(self.laser_after_id)
-
-            self.app.master.after(500, self.update_laser_status_loop)
+            threading.Thread(target=apply_task, daemon=True).start()
 
     def apply_laser_currents_multi(self, wl):
-        """특정 파장 탭의 Bias/Pulse 전류 설정을 기기에 적용합니다."""
         inst = self.laser_instances.get(wl)
         vars_dict = self.app.ui.laser_tabs_data.get(wl)
 
@@ -338,17 +370,23 @@ class LaserManager:
                 bias = vars_dict["bias_set"].get()
                 pulse = vars_dict["pulse_set"].get()
 
-                inst.set_bias_current(bias)
-                time.sleep(0.2) 
-                inst.set_pulse_current(pulse)
-                time.sleep(0.2) 
-                self.app._log(f"✅ Applied to {wl}: Bias={bias:.2f}mA, Pulse={pulse:.2f}mA")
+                def apply_task():
+                    try:
+                        inst.set_bias_current(bias)
+                        time.sleep(0.2) 
+                        inst.set_pulse_current(pulse)
+                        time.sleep(0.2) 
+                        self.app._log(f"[INFO] Applied to {wl}: Bias={bias:.2f}mA, Pulse={pulse:.2f}mA")
+                    except Exception as e:
+                        self.app._log(f"[ERROR] Failed applying currents to {wl}: {e}")
+
+                threading.Thread(target=apply_task, daemon=True).start()
 
                 if self.laser_after_id:
                     self.app.master.after_cancel(self.laser_after_id)
-                self.app.master.after(100, self.update_laser_status_loop)
+                self.app.master.after(500, self.update_laser_status_loop)
             except Exception as e:
-                self.app._log(f"❌ Error applying currents to {wl}: {e}")
+                self.app._log(f"[ERROR] Configuration error for {wl}: {e}")
 
     def update_laser_status_loop(self):
         """Core loop for status, interlock sync, auto-recovery, and Tab indicators"""
@@ -357,7 +395,6 @@ class LaserManager:
             self.laser_after_id = None
 
         interval = 1000
-        interval = 60000 
         for idx, wl in enumerate(self.wavelengths):
             inst = self.laser_instances.get(wl)
             ui_vars = self.app.ui.laser_tabs_data.get(wl)
@@ -406,8 +443,17 @@ class LaserManager:
                         # Data recording
                         self.plot_history[wl]["temp"].append(temp)
                         self.plot_history[wl]["pulse"].append(pulse)
+                        #self.refresh_laser_realtime_plot(wl)
+                        #self.save_laser_realtime_data(wl, temp, pulse)
                         self.plot_history[wl]["time"].append(datetime.now())
-                        self.refresh_laser_realtime_plot(wl)
+                        try:
+                            current_tab_idx = self.app.ui.laser_sub_notebook.index(self.app.ui.laser_sub_notebook.select())
+                            if idx == current_tab_idx:
+                                self.refresh_laser_realtime_plot(wl)
+                        except Exception as e:
+                            self.app._log(f"[WARNING] Failed to update plot: {e}")
+                            pass
+
                         self.save_laser_realtime_data(wl, temp, pulse)
                     else:
                         self._handle_comm_failure(wl, idx)
@@ -654,12 +700,11 @@ class LaserManager:
                 self.app._log(f"[WARNING] Could not load past logs for {wl}: {e}")
 
     def save_laser_realtime_data(self, wl, temp, pulse):
-        """[보완] 경로 강제 확인 및 예외 처리 강화"""
         try:
             # 1. 경로 재확인 및 생성
             log_dir = getattr(self.app, 'laser_log_dir', self.laser_log_dir)
-            if not os.path.exists(log_dir):
-                os.makedirs(log_dir, exist_ok=True)
+            #if not os.path.exists(log_dir):
+                #os.makedirs(log_dir, exist_ok=True)
 
             today_str = datetime.now().strftime('%Y%m%d')
             file_path = os.path.join(log_dir, f"laser_data_{wl}_{today_str}.csv")

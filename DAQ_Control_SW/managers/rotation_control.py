@@ -37,9 +37,8 @@ class RotationManager:
         cfg_file = f"config_dev{dev_num}.json"
         cfg_path = os.path.join(self.controller.base_dir, cfg_file)
         
-        # JSON 파일이 없으면 기본 설정(self.devices) 사용
         if not os.path.exists(cfg_path):
-            self.controller._log(f"WARNING: {cfg_file} not found. Using default settings for Dev {dev_num}.")
+            #self.controller._log(f"WARNING: {cfg_file} not found. Using default settings for Dev {dev_num}.")
             if dev_num in self.devices:
                 cfg = {"connection": {"host": self.devices[dev_num]["host"], "unit": self.devices[dev_num]["unit"]}}
                 client = ModbusTcpClient(host=cfg["connection"]["host"], port=502, timeout=3)
@@ -48,7 +47,6 @@ class RotationManager:
                 self.controller._log(f"ERROR: No default settings for Dev {dev_num}.")
                 return None, None
                 
-        # JSON 파일이 있으면 로드
         try:
             with open(cfg_path, 'r', encoding='utf-8') as f: 
                 cfg = json.load(f)
@@ -99,9 +97,8 @@ class RotationManager:
         finally:
             client.close()
 
-    def move_tilt_only(self, dev_num, tilt):
-        """Move only the Tilt axis."""
-        if not self.controller.access_mgr.unlocked: return
+    def move_tilt_only(self, dev_num, tilt, skip_lock=False): 
+        if not skip_lock and not self.controller.access_mgr.unlocked: return
 
         if self.is_moving[dev_num]:
             self.controller._log(f"WARNING: Device {dev_num} is already moving! Command ignored.")
@@ -123,9 +120,8 @@ class RotationManager:
         finally:
             client.close()
 
-    def move_rot_only(self, dev_num, rot):
-        """Move only the Rotation axis with Safety Interlock."""
-        if not self.controller.access_mgr.unlocked: return
+    def move_rot_only(self, dev_num, rot, skip_lock=False): 
+        if not skip_lock and not self.controller.access_mgr.unlocked: return
 
         if self.is_moving[dev_num]:
             self.controller._log(f"WARNING: Device {dev_num} is already moving! Command ignored.")
@@ -138,9 +134,11 @@ class RotationManager:
         if current_tilt is not None and abs(current_tilt) > 0.5:
             error_msg = f"ERROR: SAFETY INTERLOCK! Cannot rotate. Tilt is {current_tilt:.1f} deg. Must be 0.0 deg."
             self.controller._log(error_msg)
-            from tkinter import messagebox
-            messagebox.showerror("Safety Interlock", f"Cannot rotate Device {dev_num}!\n\nTilt must be 0.0° before rotating.\nCurrent tilt is {current_tilt:.1f}°.")
+
+            if not skip_lock:
+                messagebox.showerror("Safety Interlock", f"Cannot rotate Device {dev_num}!\n\nTilt must be 0.0° before rotating.\nCurrent tilt is {current_tilt:.1f}°.")
             return
+
 
         client, cfg = self._get_config_and_client(dev_num)
         if not client or not client.connect(): return
@@ -156,28 +154,34 @@ class RotationManager:
         finally:
             client.close()
 
+    def _fast_pulse_trigger(self, client, unit, address):
+        """A faster pulse trigger specifically for STOP commands to avoid mechanical delay."""
+        client.write_coil(address, True, unit=unit)
+        time.sleep(0.1)  # Minimal delay just to register the pulse
+        client.write_coil(address, False, unit=unit)
+
     def stop_rotation(self, dev_num):
-        """Send hardware stop signals to the motors."""
+        """Send hardware stop signals to the motors immediately."""
         self.is_moving[dev_num] = False
         self.target_angles[dev_num] = {"tilt": None, "rot": None}
-        self.controller._log(f"Device {dev_num} Lock released due to STOP command.")
+        self.controller._log(f"[INFO] Device {dev_num} Lock released due to STOP command.")
 
         client, cfg = self._get_config_and_client(dev_num)
         if not client or not client.connect(): return
 
         try:
             unit = cfg["connection"]["unit"]
-            # 틸트(Tilt)와 로테이션(Rot) 모두에 정지 펄스 전송
-            self._pulse_trigger(client, unit, self.addr["stop_tilt"])
-            self._pulse_trigger(client, unit, self.addr["stop_rot"])
-            self.controller._log(f"Device {dev_num} Hardware STOP command sent.")
+            # Use the fast pulse trigger for immediate response
+            self._fast_pulse_trigger(client, unit, self.addr["stop_tilt"])
+            self._fast_pulse_trigger(client, unit, self.addr["stop_rot"])
+            self.controller._log(f"[INFO] Device {dev_num} Hardware STOP command sent rapidly.")
         except Exception as e:
-            self.controller._log(f"ERROR: Modbus Stop Error (Dev {dev_num}): {e}")
+            self.controller._log(f"[ERROR] Modbus Stop Error (Dev {dev_num}): {e}")
         finally:
             client.close()
 
+    """
     def read_angles(self, dev_num):
-        """Read actual Tilt and Rotation angles from hardware."""
         client, cfg = self._get_config_and_client(dev_num)
         if not client or not client.connect(): return None, None
 
@@ -203,7 +207,35 @@ class RotationManager:
             client.close()
             
         return tilt_deg, rot_deg
+        """
+    def read_angles(self, dev_num):
+        """Read actual Tilt and Rotation angles from hardware in a single Modbus request."""
+        client, cfg = self._get_config_and_client(dev_num)
+        if not client or not client.connect():
+            return None, None
 
+        tilt_deg, rot_deg = None, None
+        try:
+            unit = cfg["connection"]["unit"]
+
+            # Read 12 registers starting from read_rot (422) to cover up to read_tilt (433)
+            # registers[0:2] = Rotation (422, 423)
+            # registers[10:12] = Tilt (432, 433)
+            res = client.read_holding_registers(self.addr["read_rot"], 12, unit=unit)
+
+            if not res.isError():
+                rot_raw = self._unpack_32bit_read(res.registers[0:2])
+                rot_deg = rot_raw / 250.0
+
+                tilt_raw = self._unpack_32bit_read(res.registers[10:12])
+                tilt_deg = tilt_raw / 250.0
+
+        except Exception as e:
+            pass  
+        finally:
+            client.close()
+
+        return tilt_deg, rot_deg
     def start_monitoring(self, update_callback):
         """Starts a background thread to update the UI with current angles."""
         if self.is_monitoring: return
@@ -212,13 +244,13 @@ class RotationManager:
         def monitor_loop():
             self.controller._log("Started background hardware monitoring thread.")
             while self.is_monitoring:
+                currently_moving = any(self.is_moving.values())
                 for dev_num in [2, 3]:
                     tilt, rot = self.read_angles(dev_num)
                     
                     if update_callback:
                         update_callback(dev_num, tilt, rot)
                     
-                    # === [잠금 해제] 목표 각도에 도달했는지 실시간 체크 ===
                     if self.is_moving[dev_num]:
                         target = self.target_angles[dev_num]
                         reached_tilt = True
@@ -235,12 +267,10 @@ class RotationManager:
                             self.is_moving[dev_num] = False
                             self.target_angles[dev_num] = {"tilt": None, "rot": None}
                             self.controller._log(f"Device {dev_num} reached target. Lock automatically released.")
-                    # =======================================================
 
+                sleep_time = 0.5 if currently_moving else 1.0
+                time.sleep(sleep_time)
 
-                time.sleep(1.0) # Polling interval (1 second)
-
-        # Use daemon=True so thread dies when program closes
         threading.Thread(target=monitor_loop, daemon=True).start()
 
     def stop_monitoring(self):

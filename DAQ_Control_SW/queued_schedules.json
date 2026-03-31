@@ -1,0 +1,42 @@
+[
+    {
+        "time_str": "2026-03-31 17:00",
+        "config": {
+            "BasePath": "/home/precalkor/ADC/ADC_test",
+            "DaqProgramPath": "/home/precalkor/ADC/ADC_test/",
+            "RawDataPath": "/home/precalkor/ADC/ADC_test/Data/RAW/",
+            "ProcessedDataPath": "/home/precalkor/ADC/ADC_test/Data/production/",
+            "FinalResultPath": "/home/precalkor/ADC/ADC_test/Data/FinalResult/",
+            "ExternalPath": "/home/precalkor/external_HDD_1_4T/Data_Backup/RAW/",
+            "ImagePath": "/home/precalkor/ADC/ADC_test/Data/image/",
+            "LogDir": "/home/precalkor/ADC/ADC_test/LOG/DAQ/",
+            "Events": "200000",
+            "TimeWindow": "1024",
+            "PostTrigger": "60",
+            "ChannelMask": "00001111",
+            "NumSequences": "1",
+            "IntervalTime": "0",
+            "Laser": "133",
+            "Wavelength": "405",
+            "SN1": "EM2740",
+            "direction1": "A",
+            "SN2": "EL1635",
+            "direction2": "B",
+            "SN3": "EL9590",
+            "direction3": "B",
+            "RotateAngle1": "0",
+            "TiltAngle1": "0",
+            "RotateAngle2": "45",
+            "TiltAngle2": "0",
+            "RotateAngle3": "45",
+            "TiltAngle3": "0",
+            "HV1": "1670",
+            "HV2": "1840",
+            "HV3": "1770",
+            "NOTE": "",
+            "TriggerCh": "3",
+            "Shift_worker": "Junkyo",
+            "Expert": "Junkyo"
+        }
+    }
+]

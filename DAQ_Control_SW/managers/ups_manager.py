@@ -128,6 +128,7 @@ class UPSManager:
         threading.Thread(target=handshake_task, daemon=True).start()
 
     def update_ups_status_loop(self):
+        """Core loop for UPS status without UI freezing."""
         if self.ups_after_id:
             self.app.master.after_cancel(self.ups_after_id)
             self.ups_after_id = None
@@ -139,51 +140,58 @@ class UPSManager:
                 self.ups_session_start = time.time()
 
             elapsed = time.time() - self.ups_session_start
-            interval = 1000 if elapsed < 60 else 60000 
+            interval = 1000 if elapsed < 60 else 60000
 
-            try:
-                self.ups_serial.write(b'Q1\r')
-                time.sleep(0.3)
-                if self.ups_serial.in_waiting > 0:
-                    response = self.ups_serial.read(self.ups_serial.in_waiting).decode('ascii', errors='ignore').strip()
-                    if response.startswith('('):
-                        data = response[1:].split()
-                        if len(data) >= 7:
-                            input_v  = float(data[0])
-                            output_v = float(data[2])
-                            load_p   = float(data[3])
-                            freq     = float(data[4])
-                            batt_v   = float(data[5])
-                            temp_c   = float(data[6])
+            def fetch_ups_task():
+                try:
+                    self.ups_serial.write(b'Q1\r')
+                    time.sleep(0.3)
+                    
+                    if self.ups_serial.in_waiting > 0:
+                        response = self.ups_serial.read(self.ups_serial.in_waiting).decode('ascii', errors='ignore').strip()
+                        if response.startswith('('):
+                            data = response[1:].split()
+                            if len(data) >= 7:
+                                input_v  = float(data[0])
+                                output_v = float(data[2])
+                                load_p   = float(data[3])
+                                freq     = float(data[4])
+                                batt_v   = float(data[5])
+                                temp_c   = float(data[6])
 
-                            current_watt = 800 * (load_p / 100.0)
-                            batt_pct = min(100, max(0, int((batt_v - 21) / (27.5 - 21) * 100)))
+                                current_watt = 800 * (load_p / 100.0)
+                                batt_pct = min(100, max(0, int((batt_v - 21) / (27.5 - 21) * 100)))
 
-                            if output_v > 50:
-                                self.update_ups_outlet_status([1, 1, 0, 0])
-                            else:
-                                self.update_ups_outlet_status([0, 0, 0, 0])
+                                # Safely update UI from the main thread
+                                def update_ui():
+                                    if output_v > 50:
+                                        self.update_ups_outlet_status([1, 1, 0, 0])
+                                    else:
+                                        self.update_ups_outlet_status([0, 0, 0, 0])
 
-                            self.save_ups_realtime_data(current_watt, temp_c, input_v, output_v)
+                                    self.save_ups_realtime_data(current_watt, temp_c, input_v, output_v)
 
-                            if hasattr(self.app, 'ui'):
-                                self.app.ui.ups_vars["input_volt"].set(f"{input_v:.1f} V")
-                                self.app.ui.ups_vars["output_volt"].set(f"{output_v:.1f} V")
-                                self.app.ui.ups_vars["load_level"].set(int(load_p))
-                                self.app.ui.ups_vars["batt_level"].set(batt_pct)
-                                self.app.ui.ups_vars["frequency"].set(f"{freq:.1f} Hz")
-                                self.app.ui.ups_vars["status_msg"].set(f"Normal ({current_watt:.1f} W) / Temp: {temp_c:.1f}°C")
-                                self.app._log(f"UPS Check Interval: {interval/1000}s")
+                                    if hasattr(self.app, 'ui'):
+                                        self.app.ui.ups_vars["input_volt"].set(f"{input_v:.1f} V")
+                                        self.app.ui.ups_vars["output_volt"].set(f"{output_v:.1f} V")
+                                        self.app.ui.ups_vars["load_level"].set(int(load_p))
+                                        self.app.ui.ups_vars["batt_level"].set(batt_pct)
+                                        self.app.ui.ups_vars["frequency"].set(f"{freq:.1f} Hz")
+                                        self.app.ui.ups_vars["status_msg"].set(f"Normal ({current_watt:.1f} W) / Temp: {temp_c:.1f}°C")
+                                    
+                                    now_dt = datetime.now()
+                                    self.ups_plot_history["time"].append(now_dt)
+                                    self.ups_plot_history["watt"].append(current_watt)
+                                    self.ups_plot_history["temp"].append(temp_c)
+                                    self.ups_plot_history["vin"].append(input_v)
+                                    self.ups_plot_history["vout"].append(output_v)
+                                    self.refresh_ups_plot()
 
-                            now_dt = datetime.now()
-                            self.ups_plot_history["time"].append(now_dt)
-                            self.ups_plot_history["watt"].append(current_watt)
-                            self.ups_plot_history["temp"].append(temp_c)
-                            self.ups_plot_history["vin"].append(input_v)
-                            self.ups_plot_history["vout"].append(output_v)
-                            self.refresh_ups_plot()
-            except Exception as e:
-                self.app._log(f"UPS Loop Error: {e}")
+                                self.app.master.after(0, update_ui)
+                except Exception as e:
+                    self.app.master.after(0, lambda: self.app._log(f"[ERROR] UPS Loop Error: {e}"))
+
+            threading.Thread(target=fetch_ups_task, daemon=True).start()
 
         if hasattr(self.app, 'master') and self.app.master.winfo_exists():
             self.ups_after_id = self.app.master.after(interval, self.update_ups_status_loop)
@@ -235,6 +243,15 @@ class UPSManager:
             threading.Thread(target=manual_connect_task, daemon=True).start()
 
     def refresh_ups_plot(self):
+        try:
+            if hasattr(self.app, 'ui') and hasattr(self.app.ui, 'main_notebook'):
+                current_tab_id = self.app.ui.main_notebook.select()
+                tab_text = self.app.ui.main_notebook.tab(current_tab_id, "text")
+                if "UPS" not in tab_text:
+                    return 
+        except Exception:
+            pass
+
         h = self.ups_plot_history
         times = list(h["time"])
         if not times: return
