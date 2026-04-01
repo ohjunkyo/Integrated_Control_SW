@@ -1,6 +1,6 @@
 [
     {
-        "time_str": "2026-03-31 17:00",
+        "time_str": "2026-04-01 07:20",
         "config": {
             "BasePath": "/home/precalkor/ADC/ADC_test",
             "DaqProgramPath": "/home/precalkor/ADC/ADC_test/",
@@ -26,10 +26,10 @@
             "direction3": "B",
             "RotateAngle1": "0",
             "TiltAngle1": "0",
-            "RotateAngle2": "45",
-            "TiltAngle2": "0",
-            "RotateAngle3": "45",
-            "TiltAngle3": "0",
+            "RotateAngle2": "135",
+            "TiltAngle2": "55",
+            "RotateAngle3": "135",
+            "TiltAngle3": "55",
             "HV1": "1670",
             "HV2": "1840",
             "HV3": "1770",

@@ -193,6 +193,27 @@ class AutomationManager:
         if hasattr(self.controller.auto_ui, 'start_eta_countdown'):
             self.controller.auto_ui.start_eta_countdown(total_seconds, total_steps)
 
+        raw_path = cfg.get("RawDataPath", "./Data/RAW/")
+        today = datetime.now().strftime("%Y%m%d")
+
+        mode = cfg.get("RunMode", "Laser")
+        mode_dir = "Dark" if mode.lower() == "dark" else "Laser"
+        search_path = os.path.join(raw_path, mode_dir, f"*_{today}_*.root")
+
+        existing_files = glob.glob(search_path)
+        max_block = -100
+
+        import re
+        for f in existing_files:
+            match = re.search(r'_([0-9]{3})\.root', f)
+            if match:
+                num = int(match.group(1))
+                if num < 800:
+                    max_block = max(max_block, (num // 100) * 100)
+
+        self.current_scan_block = max_block + 100 if max_block >= 0 else 0
+        self.controller._log(f"[INFO] New Scan Block Assigned: {self.current_scan_block:03d}")
+        # =========================================================================
         self.is_running = True
         threading.Thread(target=self._scan_sequence, daemon=True).start()
 

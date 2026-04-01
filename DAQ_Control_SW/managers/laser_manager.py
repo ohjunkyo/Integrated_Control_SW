@@ -251,8 +251,10 @@ class LaserManager:
         self.update_laser_status_loop()
 
     def set_laser_ld_safe(self, target_wl, state):
+        active_lasers = []
+        
+        # 1. 켜야 하는 상황(state == True)일 때 기존에 켜진 레이저 탐색
         if state is True:
-            active_lasers = []
             for wl, inst in self.laser_instances.items():
                 if wl != target_wl and inst.is_connected():
                     if self.app.ui.laser_tabs_data[wl]["ld_status"].get() == "ON":
@@ -267,33 +269,45 @@ class LaserManager:
                     self.app._log(f"[WARNING] Operation cancelled: {target_wl} ON blocked by user.")
                     return
 
-                for wl in active_lasers:
-                    inst = self.laser_instances.get(wl)
-                    if inst:
-                        self.app.ui.laser_tabs_data[wl]["ld_status"].set("OFF")
-                        self.app.ui.update_laser_status_colors(wl, False, False)
-                        self.app._log(f"[INFO] Safety: Auto-shutdown initiated for {wl}")
-                        
-                        threading.Thread(target=inst.set_ld_on, args=(False,), daemon=True).start()
-
         inst = self.laser_instances.get(target_wl)
-        if inst and inst.is_connected():
-            def apply_task():
-                try:
-                    inst.set_ld_on(state)
-                    
-                    def update_ui():
-                        self.app._log(f"[INFO] Command Sent: Laser {target_wl} LD -> {'ON' if state else 'OFF'}")
-                        self.laser_session_start = time.time()
-                        if self.laser_after_id:
-                            self.app.master.after_cancel(self.laser_after_id)
-                        self.app.master.after(200, self.update_laser_status_loop)
-                        
-                    self.app.master.after(0, update_ui)
-                except Exception as e:
-                    self.app.master.after(0, lambda: self.app._log(f"[ERROR] LD control error for {target_wl}: {e}"))
+        if not inst or not inst.is_connected():
+            return
 
-            threading.Thread(target=apply_task, daemon=True).start()
+        def apply_task():
+            try:
+                # (A) 먼저 켜져있는 레이저들을 안전하게 끕니다.
+                if state is True and active_lasers:
+                    for wl in active_lasers:
+                        old_inst = self.laser_instances.get(wl)
+                        if old_inst:
+                            old_inst.set_ld_on(False) # 동기적 실행 (완료될 때까지 대기)
+                            
+                            def update_old_ui(w=wl):
+                                self.app.ui.laser_tabs_data[w]["ld_status"].set("OFF")
+                                self.app.ui.update_laser_status_colors(w, False, False)
+                                self.app._log(f"[INFO] Safety: Auto-shutdown completed for {w}")
+                            
+                            self.app.master.after(0, update_old_ui)
+                    
+                    time.sleep(0.5) 
+
+                # (B) 타겟 레이저 상태 변경
+                inst.set_ld_on(state)
+                time.sleep(0.1)
+                
+                def update_target_ui():
+                    self.app._log(f"[INFO] Command Sent: Laser {target_wl} LD -> {'ON' if state else 'OFF'}")
+                    self.laser_session_start = time.time()
+                    if self.laser_after_id:
+                        self.app.master.after_cancel(self.laser_after_id)
+                    self.update_laser_status_loop()
+                    
+                self.app.master.after(0, update_target_ui)
+
+            except Exception as e:
+                self.app.master.after(0, lambda: self.app._log(f"[ERROR] LD control error for {target_wl}: {e}"))
+
+        threading.Thread(target=apply_task, daemon=True).start()
 
 
     def apply_laser_frequency_multi(self, wl):

@@ -570,8 +570,6 @@ class App:
     def run_daq(self, tilt=None, r2=None, r3=None):
         category = self.ui.run_mode.get() 
         is_auto_running = hasattr(self, 'auto_mgr') and self.auto_mgr.is_running
-        
-        # [FIXED] is_dummy 선언 확인
         is_dummy = hasattr(self, 'auto_ui') and self.auto_ui.dummy_var.get()
         
         if not is_auto_running:
@@ -592,16 +590,32 @@ class App:
         else:
             mode = "laser" 
 
+        # =========================================================
+        # [FIXED] 런 번호 대역 할당 로직 우선순위 전면 수정
+        # =========================================================
         start_block = "0"
-        if is_dummy:
-            start_block = "900"
-        elif category == "manual":
-            start_block = "800"
-        else:
-            if hasattr(self, 'auto_mgr') and hasattr(self.auto_mgr, 'current_scan_block'):
-                start_block = str(self.auto_mgr.current_scan_block)
+
+        if is_auto_running:
+            # 1. 자동 스캔이 도는 중이면 사용자가 탭을 바꿔도 무시하고 자동 스캔 대역 강제 유지
+            if is_dummy:
+                start_block = "900"
             else:
-                start_block = "0"
+                if hasattr(self, 'auto_mgr') and hasattr(self.auto_mgr, 'current_scan_block'):
+                    start_block = str(self.auto_mgr.current_scan_block)
+                else:
+                    start_block = "0"
+        else:
+            # 2. 자동 스캔 중이 아닐 때(버튼을 직접 누를 때)만 현재 화면(탭) 상태 참조
+            if is_dummy:
+                start_block = "900"
+            elif category == "manual":
+                start_block = "800"
+            else:
+                if hasattr(self, 'auto_mgr') and hasattr(self.auto_mgr, 'current_scan_block'):
+                    start_block = str(self.auto_mgr.current_scan_block)
+                else:
+                    start_block = "0"
+        # =========================================================
 
         script_path = os.path.join(daq_path, 'script_v6.sh')
         config_path = self.config_manager.filepath
@@ -1039,18 +1053,28 @@ class App:
             else:
                 mode = "laser"
 
-            # [ADDED] 현재 모드에 따라 읽어올 대역(Block)을 결정
             is_dummy = hasattr(self, 'auto_ui') and getattr(self.auto_ui.dummy_var, 'get', lambda: False)()
+            is_auto_running = hasattr(self, 'auto_mgr') and getattr(self.auto_mgr, 'is_running', False)
             
-            if is_dummy:
-                start_block = 900
-            elif category == "manual":
-                start_block = 800
-            else:
-                if hasattr(self, 'auto_mgr') and hasattr(self.auto_mgr, 'current_scan_block'):
-                    start_block = self.auto_mgr.current_scan_block
+            # [FIXED] UI 표시용 번호도 자동 스캔 유무를 최우선으로 판단
+            if is_auto_running:
+                if is_dummy:
+                    start_block = 900
                 else:
-                    start_block = 0
+                    if hasattr(self, 'auto_mgr') and hasattr(self.auto_mgr, 'current_scan_block'):
+                        start_block = self.auto_mgr.current_scan_block
+                    else:
+                        start_block = 0
+            else:
+                if is_dummy:
+                    start_block = 900
+                elif category == "manual":
+                    start_block = 800
+                else:
+                    if hasattr(self, 'auto_mgr') and hasattr(self.auto_mgr, 'current_scan_block'):
+                        start_block = self.auto_mgr.current_scan_block
+                    else:
+                        start_block = 0
 
             serials = [cfg.get("SN1", ""), cfg.get("SN2", ""), cfg.get("SN3", "")]
             directions = [cfg.get("direction1", ""), cfg.get("direction2", ""), cfg.get("direction3", "")]
@@ -1093,7 +1117,6 @@ class App:
             search_pattern = os.path.join(path_to_scan, f"{filename_core}{mode_tag}.*.root")
             matching_files = glob.glob(search_pattern)
 
-            # [MODIFIED] 해당 대역(Block) 안의 파일 번호만 추출
             upper_bound = start_block + 99
             run_numbers = []
             pattern = re.compile(r'_([0-9]+)\.root$')

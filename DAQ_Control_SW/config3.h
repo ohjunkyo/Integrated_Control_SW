@@ -26,8 +26,8 @@ const int NumSequences = 1;
 const int IntervalTime = 0;
 
 // -- Laser (Current, mA) --- //
-const std::string Laser = "133";
-const std::string Wavelength = "405";
+const std::string Laser = "200";
+const std::string Wavelength = "450";
 
 // --- PMT configuration --- //
 // Ch0 - monitor, Ch1 - PMT 1, Ch2 - PMT 2 same as High voltage setting
@@ -54,7 +54,7 @@ const std::string HV2 = "1840";
 const std::string HV3 = "1770";
 
 // --- NOTE ---
-const std::string NOTE = "test";
+const std::string NOTE = "Switching 375->405";
 
 // --- Trigger Channel ---
 const int TriggerCh = 3;
