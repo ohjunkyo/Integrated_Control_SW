@@ -32,7 +32,8 @@ class LaserManager:
             self.plot_history[wl] = {
                 "time": collections.deque(maxlen=90000), 
                 "temp": collections.deque(maxlen=90000), 
-                "pulse": collections.deque(maxlen=90000)
+                "pulse": collections.deque(maxlen=90000),
+                "bias": collections.deque(maxlen=90000)
             }
             self.load_todays_log(wl)
 
@@ -432,7 +433,7 @@ class LaserManager:
                         ld_on, tec_on = status.get('ld_on', False), status.get('tec_on', False)
 
                         temp, pulse = status.get('ld_temp', 0), status.get('pulse', 0)
-                        
+                        actual_bias = status.get('bias', 0.0)      
                         ld_mark = "●" if ld_on else "○"
                         tec_mark = "●" if tec_on else "○"
                         tab_text = f" {wl} [L:{ld_mark} T:{tec_mark}] "
@@ -452,11 +453,13 @@ class LaserManager:
                         ui_vars["tec_status"].set("ON" if tec_on else "OFF")
                         ui_vars["temp"].set(f"{temp:.2f} °C")
                         ui_vars["pulse_live"].set(f"{pulse:.2f} mA")
+                        ui_vars["bias_live"].set(f"{actual_bias:.2f} mA")
                         #self.app.ui.update_laser_status_colors(wl, ld_on, tec_on)
 
                         # Data recording
                         self.plot_history[wl]["temp"].append(temp)
                         self.plot_history[wl]["pulse"].append(pulse)
+                        self.plot_history[wl]["bias"].append(actual_bias) # <- Added bias append
                         #self.refresh_laser_realtime_plot(wl)
                         #self.save_laser_realtime_data(wl, temp, pulse)
                         self.plot_history[wl]["time"].append(datetime.now())
@@ -575,7 +578,6 @@ class LaserManager:
                 messagebox.showerror("Error", f"Failed to load data: {e}")
 
     def refresh_laser_realtime_plot(self, wl="405nm"):
-        """파장별 독립 히스토리 데이터를 사용하여 그래프를 그립니다."""
         vars_dict = self.app.ui.laser_tabs_data.get(wl)
         history = self.plot_history.get(wl)
         if not vars_dict or not history or "ax_temp" not in vars_dict: return
@@ -586,6 +588,10 @@ class LaserManager:
         step = max(1, len(times) // 1000)
 
         d_times, d_temp, d_pulse = times[::step], list(history["temp"])[::step], list(history["pulse"])[::step]
+        bias_history = list(history.get("bias", []))
+        if len(bias_history) < len(times):
+            bias_history = [0.0] * (len(times) - len(bias_history)) + bias_history
+        d_bias = bias_history[::step]
 
         ax_temp = vars_dict["ax_temp"]
         ax_temp.clear()
@@ -596,10 +602,13 @@ class LaserManager:
 
         ax_curr = vars_dict["ax_curr"]
         ax_curr.clear()
-        ax_curr.plot(d_times, d_pulse, 'g-', linewidth=1)
+
+        ax_curr.plot(d_times, d_pulse, 'g-', linewidth=1, label='Pulse')
+        ax_curr.plot(d_times, d_bias, color='purple', linestyle='-', linewidth=1, label='Bias')
         ax_curr.set_ylabel("Current (mA)", color='g')
         ax_curr.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
         ax_curr.grid(True, alpha=0.3)
+        ax_curr.legend(loc='upper left') 
 
         vars_dict["fig"].autofmt_xdate(rotation=30)
         vars_dict["canvas"].draw()
@@ -661,6 +670,7 @@ class LaserManager:
                                     self.plot_history[wl]["time"].append(ts)
                                     self.plot_history[wl]["temp"].append(float(row['temp_c']))
                                     self.plot_history[wl]["pulse"].append(float(row['pulse_ma']))
+                                    self.plot_history[wl]["bias"].append(float(row.get('bias_ma', 0.0)))
                                     total_points += 1
                             except: continue
                     except Exception as e:
@@ -704,6 +714,7 @@ class LaserManager:
                         self.plot_history[wl]["time"].append(t_num)
                         self.plot_history[wl]["temp"].append(float(row['temp']))
                         self.plot_history[wl]["pulse"].append(float(row['pulse']))
+                        self.plot_history[wl]["bias"].append(float(row.get('bias_ma', 0.0)))
                     except ValueError:
                         pass # 헤더나 형식이 맞지 않는 줄은 무시
 

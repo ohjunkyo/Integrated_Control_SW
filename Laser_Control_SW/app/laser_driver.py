@@ -360,7 +360,7 @@ class TamadenshiLaser:
                  self.status['tec_current_raw'] = 0
 
             self.status['pulse'] = self._dac_to_val(data[9], data[10], 200.0)
-            self.status['bias'] = self._dac_to_val(data[11], data[12], 200.0)
+            self.status['bias'] = self._dac_to_val(data[7], data[8], 200.0)
             
             info_byte = data[14]
             self.status['ld_on'] = (info_byte & 4) == 4

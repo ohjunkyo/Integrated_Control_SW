@@ -1,6 +1,6 @@
 [
     {
-        "time_str": "2026-04-01 07:20",
+        "time_str": "2026-04-02 07:00",
         "config": {
             "BasePath": "/home/precalkor/ADC/ADC_test",
             "DaqProgramPath": "/home/precalkor/ADC/ADC_test/",
@@ -16,8 +16,8 @@
             "ChannelMask": "00001111",
             "NumSequences": "1",
             "IntervalTime": "0",
-            "Laser": "133",
-            "Wavelength": "405",
+            "Laser": "0",
+            "Wavelength": "0",
             "SN1": "EM2740",
             "direction1": "A",
             "SN2": "EL1635",
@@ -26,14 +26,14 @@
             "direction3": "B",
             "RotateAngle1": "0",
             "TiltAngle1": "0",
-            "RotateAngle2": "135",
-            "TiltAngle2": "55",
-            "RotateAngle3": "135",
-            "TiltAngle3": "55",
+            "RotateAngle2": "45",
+            "TiltAngle2": "-55",
+            "RotateAngle3": "45",
+            "TiltAngle3": "-55",
             "HV1": "1670",
             "HV2": "1840",
             "HV3": "1770",
-            "NOTE": "",
+            "NOTE": "Dark test",
             "TriggerCh": "3",
             "Shift_worker": "Junkyo",
             "Expert": "Junkyo"

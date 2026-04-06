@@ -1096,7 +1096,7 @@ class UIManager:
             tab_frame = ttk.Frame(self.laser_sub_notebook)
             self.laser_sub_notebook.add(tab_frame, text=f" {wl} ")
             
-            default_pulse = 132.99 if wl == "405nm" else 0.0
+            default_pulse = 133 if wl == "405nm" else 0.0
             
             vars_dict = {
                 # [NEW] 개별 연결 상태 표시용 문자열 변수
@@ -1111,6 +1111,7 @@ class UIManager:
                 "pulse_set": tk.DoubleVar(value=default_pulse),
                 "trigger_mode": tk.StringVar(value="External"),
                 "freq_hz": tk.StringVar(value="10000000"),
+                "bias_current": tk.StringVar(value="0.00 mA"),
                 "check_interval": tk.StringVar(value="1s")
             }
             self.laser_tabs_data[wl] = vars_dict
@@ -1303,7 +1304,8 @@ class UIManager:
             ("LD Status", "ld_status"),
             ("TEC Status", "tec_status"),
             ("Temperature", "temp"),
-            ("Live Pulse", "pulse_live"),
+            ("Bias Current", "bias_live"),
+            ("Pulse Current", "pulse_live"),
             ("Check Int.", "check_interval")
         ]
 
@@ -1311,15 +1313,11 @@ class UIManager:
             row = ttk.Frame(status_grid)
             row.pack(fill=tk.X, pady=2)
             
-            # 항목 이름 라벨
             ttk.Label(row, text=f"{label_text}:", width=15, font=("Helvetica", 10, "bold")).pack(side=tk.LEFT)
             
-            # 실제 값이 표시될 라벨 객체 생성
-            # .pack()을 뒤로 빼고 변수 lbl에 먼저 할당합니다.
             lbl = ttk.Label(row, textvariable=vars_dict[var_key], width=15, relief="groove")
             lbl.pack(side=tk.LEFT)
 
-            # 나중에 색상을 바꾸기 위해 특정 항목(LD, TEC)의 라벨 객체만 vars_dict에 저장합니다.
             if var_key == "ld_status":
                 vars_dict["ld_label_obj"] = lbl
             if var_key == "tec_status":

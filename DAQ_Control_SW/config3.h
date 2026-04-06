@@ -26,7 +26,7 @@ const int NumSequences = 1;
 const int IntervalTime = 0;
 
 // -- Laser (Current, mA) --- //
-const std::string Laser = "200";
+const std::string Laser = "116";
 const std::string Wavelength = "450";
 
 // --- PMT configuration --- //
@@ -54,7 +54,7 @@ const std::string HV2 = "1840";
 const std::string HV3 = "1770";
 
 // --- NOTE ---
-const std::string NOTE = "Switching 375->405";
+const std::string NOTE = "6+110";
 
 // --- Trigger Channel ---
 const int TriggerCh = 3;
