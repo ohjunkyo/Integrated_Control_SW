@@ -113,7 +113,7 @@ class TamadenshiLaser:
             return True, msg
         except IOError as e:
             # 이 에러는 주로 권한 문제나 케이블 연결 불량 시 발생합니다.
-            msg = f"Device connection failed: {e}\n  1. Is the device connected via USB?\n  2. (Linux) Are you running with 'sudo' or are udev rules set up?"
+            msg = f"Device connection failed: {e}\n  1. Is the device connected via USB?\n  2. (Linux) Are you running with 'sudo' or are udev rules set up? \n 3. You should check interlock system. \n All interlock must attach to the magnet."
             print(f"❌ {msg}")
             self.device = None
             return False, msg

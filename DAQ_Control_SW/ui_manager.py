@@ -3,7 +3,8 @@ import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox, font
 import os
 import json
-import math 
+import math
+import re
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
@@ -989,6 +990,9 @@ class UIManager:
             filename, dir_path, _ = item_values
             full_path = os.path.join(dir_path, filename)
             self.update_file_info_panel(full_path)
+            match = re.search(r'(\d+)(?=[^\d]*\.root$)', filename)
+            extracted_run = match.group(1) if match else "0"
+            self.run_number_var.set(extracted_run)
 
     def open_image_viewer(self):
         if self.image_viewer_window and self.image_viewer_window.winfo_exists():
@@ -1401,16 +1405,13 @@ class UIManager:
         h_scroll.pack(side=tk.BOTTOM, fill=tk.X)
         self.web_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # [기존] 드래그 이동 (Pan)
         self.web_canvas.bind("<ButtonPress-1>", self._on_canvas_click)
         self.web_canvas.bind("<B1-Motion>", self._on_canvas_drag)
 
-        # [추가] 마우스 휠로 줌 (Linux: Button-4/5, Windows: MouseWheel)
         self.web_canvas.bind("<Button-4>", self._on_canvas_scroll_zoom) # Linux Scroll UP
         self.web_canvas.bind("<Button-5>", self._on_canvas_scroll_zoom) # Linux Scroll DOWN
         self.web_canvas.bind("<MouseWheel>", self._on_canvas_scroll_zoom) # Windows Scroll
 
-        # 안내 문구
         w_center = 600
         h_center = 350
         self.canvas_text_id = self.web_canvas.create_text(
@@ -1418,7 +1419,6 @@ class UIManager:
         )
         self.web_image_id = None 
 
-        # 변수 초기화
         self.is_monitoring = False
         self.driver = None
         self.monitor_w = 1280

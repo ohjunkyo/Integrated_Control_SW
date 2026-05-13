@@ -304,9 +304,9 @@ class App:
         except: pass
 
         if not config_path or not os.path.exists(config_path):
-            test_h = "/home/precalkor//home/precalkor/Integrated_Control_SW/DAQ_Control_SW/config_test.h"
-            std_h = "/home/precalkor//home/precalkor/Integrated_Control_SW/DAQ_Control_SW/config3.h"
-            old_h = "/home/precalkor//home/precalkor/Integrated_Control_SW/DAQ_Control_SW/config2.h" 
+            test_h = "/home/precalkor/Integrated_Control_SW/DAQ_Control_SW/config_test.h"
+            std_h = "/home/precalkor/Integrated_Control_SW/DAQ_Control_SW/config3.h"
+            old_h = "/home/precalkor/Integrated_Control_SW/DAQ_Control_SW/config2.h" 
             config_path = test_h if os.path.exists(test_h) else std_h if os.path.exists(std_h) else old_h if os.path.exists(old_h) else None
 
         if config_path and os.path.exists(config_path):
@@ -652,7 +652,8 @@ class App:
         runs_to_process = [] 
 
         if selected_files:
-            pattern = re.compile(r'_([0-9]+)\.root$')
+            pattern = re.compile(r'(\d+)(?=[^\d]*\.root$)')
+            #pattern = re.compile(r'_([0-9]+)\.root$')
             for f_path in selected_files:
                 if "raw" in f_path.lower():
                     f_name = os.path.basename(f_path)
@@ -694,7 +695,8 @@ class App:
         runs_to_process = [] 
 
         if selected_files:
-            pattern = re.compile(r'_([0-9]+)\.root$')
+           #pattern = re.compile(r'_([0-9]+)\.root$')
+            pattern = re.compile(r'(\d+)(?=[^\d]*\.root$)')
             for f_path in selected_files:
                 f_name = os.path.basename(f_path)
                 match = pattern.search(f_name)
@@ -756,7 +758,8 @@ class App:
             # Case: 파일이 하나 선택된 경우
             f_path = selected_files[0]
             f_name = os.path.basename(f_path)
-            pattern = re.compile(r'_([0-9]+)\.root$')
+            #pattern = re.compile(r'_([0-9]+)\.root$')
+            pattern = re.compile(r'(\d+)(?=[^\d]*\.root$)')
             match = pattern.search(f_name)
             
             if match:
@@ -798,7 +801,8 @@ class App:
         runs_to_process = [] # (run_num_str, file_path) 튜플을 저장
 
         if selected_files:
-            pattern = re.compile(r'_([0-9]+)\.root$')
+            #pattern = re.compile(r'_([0-9]+)\.root$')
+            pattern = re.compile(r'(\d+)(?=[^\d]*\.root$)')
             for f_path in selected_files:
                 f_name = os.path.basename(f_path)
                 match = pattern.search(f_name)
@@ -1119,7 +1123,8 @@ class App:
 
             upper_bound = start_block + 99
             run_numbers = []
-            pattern = re.compile(r'_([0-9]+)\.root$')
+            #pattern = re.compile(r'_([0-9]+)\.root$')
+            pattern = re.compile(r'(\d+)(?=[^\d]*\.root$)')
             for f_path in matching_files:
                 f_name = os.path.basename(f_path)
                 match = pattern.search(f_name)
