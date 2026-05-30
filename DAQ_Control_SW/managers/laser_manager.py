@@ -404,12 +404,14 @@ class LaserManager:
                 self.app._log(f"[ERROR] Configuration error for {wl}: {e}")
 
     def update_laser_status_loop(self):
-        """Core loop for status, interlock sync, auto-recovery, and Tab indicators"""
+        """Core loop for status tracking with isolated pipeline redirects and heavy capacity optimization."""
         if self.laser_after_id:
             self.app.master.after_cancel(self.laser_after_id)
             self.laser_after_id = None
 
         interval = 1000
+        current_time_floored = int(time.time())
+
         for idx, wl in enumerate(self.wavelengths):
             inst = self.laser_instances.get(wl)
             ui_vars = self.app.ui.laser_tabs_data.get(wl)
@@ -418,51 +420,42 @@ class LaserManager:
             if inst.is_connected():
                 try:
                     status_ok = inst.update_status()
-
                     if status_ok:
-                        
-                        # ==========================================
                         if self.comm_error_flags[wl]:
                             self.comm_error_flags[wl] = False 
-                            
                             self.app.master.after(10, lambda w=wl, i=inst: self.show_interlock_recovery_dialog(w, i))
                             continue
-                        # ==========================================
 
                         status = inst.status
                         ld_on, tec_on = status.get('ld_on', False), status.get('tec_on', False)
-
                         temp, pulse = status.get('ld_temp', 0), status.get('pulse', 0)
                         actual_bias = status.get('bias', 0.0)      
+                        
                         ld_mark = "●" if ld_on else "○"
                         tec_mark = "●" if tec_on else "○"
                         tab_text = f" {wl} [L:{ld_mark} T:{tec_mark}] "
                         self.app.ui.laser_sub_notebook.tab(idx, text=tab_text, image=self.app.ui.tab_led_green, compound=tk.RIGHT)
 
                         interlock_alarm = status.get('alarm', False) or status.get('interlock', False)
-                        
                         if interlock_alarm:
                             ui_vars["ld_status"].set("🔒 INTERLOCK")
                             if "ld_label_obj" in ui_vars: 
-                                ui_vars["ld_label_obj"].config(foreground="#fd7e14") # 주황색 경고
+                                ui_vars["ld_label_obj"].config(foreground="#fd7e14")
                         else:
                             ui_vars["ld_status"].set("ON" if ld_on else "OFF")
                             self.app.ui.update_laser_status_colors(wl, ld_on, tec_on)
 
-                        #ui_vars["ld_status"].set("ON" if ld_on else "OFF")
                         ui_vars["tec_status"].set("ON" if tec_on else "OFF")
                         ui_vars["temp"].set(f"{temp:.2f} °C")
                         ui_vars["pulse_live"].set(f"{pulse:.2f} mA")
                         ui_vars["bias_live"].set(f"{actual_bias:.2f} mA")
-                        #self.app.ui.update_laser_status_colors(wl, ld_on, tec_on)
 
-                        # Data recording
+                        # RAM cache arrays update every 1s for immediate smooth GUI line plots
                         self.plot_history[wl]["temp"].append(temp)
                         self.plot_history[wl]["pulse"].append(pulse)
-                        self.plot_history[wl]["bias"].append(actual_bias) # <- Added bias append
-                        #self.refresh_laser_realtime_plot(wl)
-                        #self.save_laser_realtime_data(wl, temp, pulse)
+                        self.plot_history[wl]["bias"].append(actual_bias)
                         self.plot_history[wl]["time"].append(datetime.now())
+                        
                         try:
                             current_tab_idx = self.app.ui.laser_sub_notebook.index(self.app.ui.laser_sub_notebook.select())
                             if idx == current_tab_idx:
@@ -471,16 +464,20 @@ class LaserManager:
                             self.app._log(f"[WARNING] Failed to update plot: {e}")
                             pass
 
-                        self.save_laser_realtime_data(wl, temp, pulse)
+                        # [FIX & OPTIMIZATION] 
+                        # 1. Removed the old duplicate 3-argument call that generated the broken "laser_data_날짜.csv" files.
+                        # 2. Downsample logging to disk: Write only once every 30 seconds, OR immediately if hardware is currently running (LD ON).
+                        if ld_on or tec_on or (current_time_floored % 30 == 0):
+                            self.save_laser_realtime_data(wl, temp, pulse, ld_on, tec_on)
                     else:
                         self._handle_comm_failure(wl, idx)
-                except (OSError, serial.SerialException) as e:
-                    self.app._log(f"🚨 {wl} Comm Error: {e}")
+                except Exception as e:
+                    self.app._log(f"[ERROR] {wl} Comm Error: {e}")
                     inst.disconnect()
                     self._handle_comm_failure(wl, idx)
             else:
                 if wl in self.expected_connections:
-                    self.app._log(f"🔄 {wl} Attempting auto-reconnect...")
+                    self.app._log(f"[INFO] {wl} Attempting auto-reconnect...")
                     inst.connect(dev_path=self.laser_port_mapping.get(wl))
 
         if hasattr(self.app, 'master') and self.app.master.winfo_exists():
@@ -679,63 +676,56 @@ class LaserManager:
             if total_points > 0:
                 self.refresh_laser_realtime_plot(wl)
 
-    def _log_laser(self, msg):
-        """레이저 전용 로그 위젯과 파일에 동시에 기록"""
-        # 1. 파일에 기록
-        if hasattr(self, 'laser_logger'):
-            self.laser_logger.info(msg)
-
-        # 2. UI 텍스트 위젯에 기록
-        timestamp = datetime.now().strftime('%H:%M:%S')
-        if hasattr(self.app.ui, 'laser_log_text'):
-            self.app.ui.laser_log_text.config(state="normal")
-            self.app.ui.laser_log_text.insert(tk.END, f"[{timestamp}] {msg}\n")
-            self.app.ui.laser_log_text.config(state="disabled")
-            self.app.ui.laser_log_text.yview(tk.END)
-
-    def load_todays_log(self, wl):
-        """Loads today's CSV file to restore the plot history when the GUI starts."""
+    def _log_laser(self, wl, msg):
+        """Logs session messages into wavelength-isolated text files and distinct UI widgets."""
+        # 1. Write to wavelength-isolated file
         try:
-            log_dir = getattr(self.app, 'laser_log_dir', self.laser_log_dir)
-            today_str = datetime.now().strftime('%Y%m%d')
-            file_path = os.path.join(log_dir, f"laser_data_{wl}_{today_str}.csv")
-
-            if os.path.exists(file_path):
-                # pandas를 이용해 기존 파일 읽기
-                df = pd.read_csv(file_path)
-
-                # 메모리 과부하를 막기 위해 최근 90000개의 데이터만 가져옴
-                for _, row in df.tail(90000).iterrows():
-                    try:
-                        # CSV의 timestamp 형식을 datetime으로 변환 (예: 2026-03-24 15:30:00)
-                        dt = datetime.strptime(str(row['timestamp']), '%Y-%m-%d %H:%M:%S')
-                        t_num = mdates.date2num(dt)
-
-                        self.plot_history[wl]["time"].append(t_num)
-                        self.plot_history[wl]["temp"].append(float(row['temp']))
-                        self.plot_history[wl]["pulse"].append(float(row['pulse']))
-                        self.plot_history[wl]["bias"].append(float(row.get('bias_ma', 0.0)))
-                    except ValueError:
-                        pass # 헤더나 형식이 맞지 않는 줄은 무시
-
-                if hasattr(self.app, '_log'):
-                    self.app._log(f"[INFO] Loaded previous log data for {wl}.")
+            today_str = datetime.now().strftime('%Y-%m-%d')
+            log_file = os.path.join(self.laser_log_dir, f"laser_log_{wl}_{today_str}.txt")
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(f"[{timestamp}] {msg}\n")
         except Exception as e:
-            if hasattr(self.app, '_log'):
-                self.app._log(f"[WARNING] Could not load past logs for {wl}: {e}")
+            print(f"Failed to write laser text log for {wl}: {e}")
 
-    def save_laser_realtime_data(self, wl, temp, pulse):
+        # 2. Write to wavelength-isolated UI ScrolledText widget
+        time_str = datetime.now().strftime('%H:%M:%S')
+        if hasattr(self.app, 'ui') and hasattr(self.app.ui, 'laser_tabs_data'):
+            vars_dict = self.app.ui.laser_tabs_data.get(wl)
+            if vars_dict and "log_text_obj" in vars_dict:
+                widget = vars_dict["log_text_obj"]
+                widget.config(state="normal")
+                widget.insert(tk.END, f"[{time_str}] {msg}\n")
+                widget.config(state="disabled")
+                widget.see(tk.END)
+
+    def load_today_laser_log(self):
+        """Loads today's text logs for each wavelength upon application startup."""
+        today_str = datetime.now().strftime('%Y-%m-%d')
+        for wl in self.wavelengths:
+            log_file = os.path.join(self.laser_log_dir, f"laser_log_{wl}_{today_str}.txt")
+            if os.path.exists(log_file):
+                try:
+                    with open(log_file, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    vars_dict = self.app.ui.laser_tabs_data.get(wl)
+                    if vars_dict and "log_text_obj" in vars_dict:
+                        widget = vars_dict["log_text_obj"]
+                        widget.config(state="normal")
+                        widget.insert(tk.END, content)
+                        widget.config(state="disabled")
+                        widget.see(tk.END)
+                except Exception as e:
+                    print(f"Failed to load today's laser text log for {wl}: {e}")
+
+    def save_laser_realtime_data(self, wl, temp, pulse, ld_on, tec_on):
+        """Saves telemetry data to CSV file with complete state monitoring flags."""
         try:
-            # 1. 경로 재확인 및 생성
             log_dir = getattr(self.app, 'laser_log_dir', self.laser_log_dir)
-            #if not os.path.exists(log_dir):
-                #os.makedirs(log_dir, exist_ok=True)
-
             today_str = datetime.now().strftime('%Y%m%d')
             file_path = os.path.join(log_dir, f"laser_data_{wl}_{today_str}.csv")
             file_exists = os.path.isfile(file_path)
 
-            # 2. 메타데이터 수집 (UI에서 안전하게 가져오기)
             mode, freq, bias = "Unknown", "0", 0.0
             if hasattr(self.app, 'ui') and hasattr(self.app.ui, 'laser_tabs_data'):
                 vars_dict = self.app.ui.laser_tabs_data.get(wl)
@@ -744,13 +734,205 @@ class LaserManager:
                     freq = vars_dict["freq_hz"].get()
                     bias = vars_dict["bias_set"].get()
 
-            # 3. 파일 쓰기 (버퍼링 없이 즉시 쓰기)
-            with open(file_path, "a", buffering=1) as f:
+            with open(file_path, "a", buffering=1, encoding="utf-8") as f:
                 if not file_exists:
-                    f.write("timestamp,temp_c,pulse_ma,bias_ma,trigger_mode,freq_hz\n")
+                    f.write("timestamp,temp_c,pulse_ma,bias_ma,trigger_mode,freq_hz,ld_on,tec_on\n")
                 now_iso = datetime.now().isoformat()
-                f.write(f"{now_iso},{temp:.2f},{pulse:.2f},{float(bias):.2f},{mode},{freq}\n")
+                f.write(f"{now_iso},{temp:.2f},{pulse:.2f},{float(bias):.2f},{mode},{freq},{1 if ld_on else 0},{1 if tec_on else 0}\n")
             
         except Exception as e:
-            # 에러 발생 시 메인 로그에 출력하여 추적 가능하게 함
-            self.app._log(f"⚠️ Laser Logging Error ({wl}): {e}")
+            self.app._log(f"[ERROR] Laser Logging Error ({wl}): {e}")
+
+    def load_todays_log(self, wl):
+        """Restores complete telemetry metrics matching the exact CSV structure safely."""
+        try:
+            log_dir = getattr(self.app, 'laser_log_dir', self.laser_log_dir)
+            today_str = datetime.now().strftime('%Y%m%d')
+            file_path = os.path.join(log_dir, f"laser_data_{wl}_{today_str}.csv")
+
+            if os.path.exists(file_path):
+                df = pd.read_csv(file_path)
+
+                for _, row in df.tail(90000).iterrows():
+                    try:
+                        dt = datetime.fromisoformat(str(row['timestamp']))
+                        self.plot_history[wl]["time"].append(dt)
+                        self.plot_history[wl]["temp"].append(float(row['temp_c']))
+                        self.plot_history[wl]["pulse"].append(float(row['pulse_ma']))
+                        self.plot_history[wl]["bias"].append(float(row.get('bias_ma', 0.0)))
+                    except Exception:
+                        pass
+
+                if hasattr(self.app, '_log'):
+                    self.app._log(f"[INFO] Loaded previous log data for {wl}.")
+        except Exception as e:
+            if hasattr(self.app, '_log'):
+                self.app._log(f"[WARNING] Could not load past logs for {wl}: {e}")
+
+    def preload_laser_history(self):
+        """Restores historical telemetry for the past 24 hours safely without memory mismatch."""
+        from datetime import timedelta
+        now = datetime.now()
+        start_point = (now - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        dates_to_check = [(now - timedelta(days=1)).strftime('%Y%m%d'), now.strftime('%Y%m%d')]
+
+        for wl in self.wavelengths:
+            self.plot_history[wl]["time"].clear()
+            self.plot_history[wl]["temp"].clear()
+            self.plot_history[wl]["pulse"].clear()
+            self.plot_history[wl]["bias"].clear()
+            total_points = 0
+
+            for date_str in dates_to_check:
+                log_file = os.path.join(self.laser_log_dir, f"laser_data_{wl}_{date_str}.csv")
+                if os.path.exists(log_file):
+                    try:
+                        df = pd.read_csv(log_file)
+                        for _, row in df.iterrows():
+                            try:
+                                ts = datetime.fromisoformat(row['timestamp'])
+                                if ts >= start_point:
+                                    self.plot_history[wl]["time"].append(ts)
+                                    self.plot_history[wl]["temp"].append(float(row['temp_c']))
+                                    self.plot_history[wl]["pulse"].append(float(row['pulse_ma']))
+                                    self.plot_history[wl]["bias"].append(float(row.get('bias_ma', 0.0)))
+                                    total_points += 1
+                            except: continue
+                    except Exception as e:
+                        self.app._log(f"[ERROR] Preload error ({wl}, {date_str}): {e}")
+
+            if total_points > 0:
+                self.refresh_laser_realtime_plot(wl)
+
+    def refresh_laser_realtime_plot(self, wl="405nm"):
+        """Plots telemetry metrics without clearing user view tracking interactions."""
+        vars_dict = self.app.ui.laser_tabs_data.get(wl)
+        history = self.plot_history.get(wl)
+        if not vars_dict or not history or "ax_temp" not in vars_dict: return
+
+        times = list(history["time"])
+        if not times: return
+
+        # Detect user interaction state (Zoom / Pan) using the Matplotlib navigation stack
+        toolbar = vars_dict["canvas"].toolbar
+        user_zoomed = False
+        if toolbar and hasattr(toolbar, '_nav_stack'):
+            depth = toolbar._nav_stack.depth() if hasattr(toolbar._nav_stack, 'depth') else len(getattr(toolbar._nav_stack, '_elements', []))
+            if depth > 1:
+                user_zoomed = True
+
+        ax_temp = vars_dict["ax_temp"]
+        ax_curr = vars_dict["ax_curr"]
+
+        # Cache existing bounds before drawing
+        old_xlim = ax_temp.get_xlim()
+        old_ylim_temp = ax_temp.get_ylim()
+        old_ylim_curr = ax_curr.get_ylim()
+
+        step = max(1, len(times) // 1000)
+        d_times, d_temp, d_pulse = times[::step], list(history["temp"])[::step], list(history["pulse"])[::step]
+        bias_history = list(history.get("bias", []))
+        if len(bias_history) < len(times):
+            bias_history = [0.0] * (len(times) - len(bias_history)) + bias_history
+        d_bias = bias_history[::step]
+
+        ax_temp.clear()
+        ax_temp.plot(d_times, d_temp, 'r-', linewidth=1)
+        ax_temp.set_ylabel("Temp (°C)", color='r')
+        ax_temp.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
+        ax_temp.grid(True, alpha=0.3)
+
+        ax_curr.clear()
+        ax_curr.plot(d_times, d_pulse, 'g-', linewidth=1, label='Pulse')
+        ax_curr.plot(d_times, d_bias, color='purple', linestyle='-', linewidth=1, label='Bias')
+        ax_curr.set_ylabel("Current (mA)", color='g')
+        ax_curr.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
+        ax_curr.grid(True, alpha=0.3)
+        ax_curr.legend(loc='upper left') 
+
+        # Restore limits strictly if zoom or pan is active
+        if user_zoomed:
+            ax_temp.set_xlim(old_xlim)
+            ax_temp.set_ylim(old_ylim_temp)
+            ax_curr.set_xlim(old_xlim)
+            ax_curr.set_ylim(old_ylim_curr)
+
+        vars_dict["fig"].autofmt_xdate(rotation=30)
+        vars_dict["canvas"].draw()
+
+    def update_laser_status_loop(self):
+        """Core loop for status tracking with isolated pipeline redirects."""
+        if self.laser_after_id:
+            self.app.master.after_cancel(self.laser_after_id)
+            self.laser_after_id = None
+
+        interval = 1000
+        for idx, wl in enumerate(self.wavelengths):
+            inst = self.laser_instances.get(wl)
+            ui_vars = self.app.ui.laser_tabs_data.get(wl)
+            if not inst or not ui_vars: continue
+
+            if inst.is_connected():
+                try:
+                    status_ok = inst.update_status()
+                    if status_ok:
+                        if self.comm_error_flags[wl]:
+                            self.comm_error_flags[wl] = False 
+                            self.app.master.after(10, lambda w=wl, i=inst: self.show_interlock_recovery_dialog(w, i))
+                            continue
+
+                        status = inst.status
+                        ld_on, tec_on = status.get('ld_on', False), status.get('tec_on', False)
+                        temp, pulse = status.get('ld_temp', 0), status.get('pulse', 0)
+                        actual_bias = status.get('bias', 0.0)      
+                        
+                        ld_mark = "●" if ld_on else "○"
+                        tec_mark = "●" if tec_on else "○"
+                        tab_text = f" {wl} [L:{ld_mark} T:{tec_mark}] "
+                        self.app.ui.laser_sub_notebook.tab(idx, text=tab_text, image=self.app.ui.tab_led_green, compound=tk.RIGHT)
+
+                        interlock_alarm = status.get('alarm', False) or status.get('interlock', False)
+                        if interlock_alarm:
+                            ui_vars["ld_status"].set("🔒 INTERLOCK")
+                            if "ld_label_obj" in ui_vars: 
+                                ui_vars["ld_label_obj"].config(foreground="#fd7e14")
+                        else:
+                            ui_vars["ld_status"].set("ON" if ld_on else "OFF")
+                            self.app.ui.update_laser_status_colors(wl, ld_on, tec_on)
+
+                        ui_vars["tec_status"].set("ON" if tec_on else "OFF")
+                        ui_vars["temp"].set(f"{temp:.2f} °C")
+                        ui_vars["pulse_live"].set(f"{pulse:.2f} mA")
+                        ui_vars["bias_live"].set(f"{actual_bias:.2f} mA")
+
+                        self.plot_history[wl]["temp"].append(temp)
+                        self.plot_history[wl]["pulse"].append(pulse)
+                        self.plot_history[wl]["bias"].append(actual_bias)
+                        self.plot_history[wl]["time"].append(datetime.now())
+
+                        try:
+                            current_tab_idx = self.app.ui.laser_sub_notebook.index(self.app.ui.laser_sub_notebook.select())
+                            if idx == current_tab_idx:
+                                self.refresh_laser_realtime_plot(wl)
+                        except Exception as e:
+                            self.app._log(f"[WARNING] Failed to update plot: {e}")
+                            pass
+
+                        # [FIX] Removed duplicate 3-argument call block to prevent TypeError crash
+                        self.save_laser_realtime_data(wl, temp, pulse, ld_on, tec_on)
+                    else:
+                        self._handle_comm_failure(wl, idx)
+                        
+                except Exception as e:
+                    self.app._log(f"[ERROR] {wl} Comm Error: {e}")
+                    inst.disconnect()
+                    self._handle_comm_failure(wl, idx)
+            else:
+                if wl in self.expected_connections:
+                    self.app._log(f"[INFO] {wl} Attempting auto-reconnect...")
+                    inst.connect(dev_path=self.laser_port_mapping.get(wl))
+
+        if hasattr(self.app, 'master') and self.app.master.winfo_exists():
+            if self.laser_session_start and (time.time() - self.laser_session_start < 10):
+                interval = 1000
+            self.laser_after_id = self.app.master.after(interval, self.update_laser_status_loop)

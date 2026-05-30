@@ -139,6 +139,8 @@ class AutomationUI:
         right_status = ttk.LabelFrame(dash_tab, text=" 🛰️ Manual Control Panel ", padding=15)
         right_status.grid(row=0, column=1, sticky="nsew")
 
+        self.manual_control_buttons = []
+
         for idx, sn in enumerate([self.sn2_val, self.sn3_val]):
             dev_frame = ttk.Frame(right_status)
             dev_frame.pack(fill=tk.X, pady=(0, 40 if idx==0 else 0)) 
@@ -172,23 +174,19 @@ class AutomationUI:
                                 relief="flat", overrelief="raised")
             btn_get.pack(side=tk.LEFT, padx=5)
 
-            """
-            tk.Button(btn_f, text="↕️ Move Tilt", bg="#17a2b8", fg="white", font=("Helvetica", 10, "bold"), width=12,
-                      command=lambda d=idx+2, s=sn: self.controller.rot_mgr.move_tilt_only(d, self.manual_vars[s][0].get())).pack(side=tk.LEFT, padx=5)
+            btn_tilt = tk.Button(btn_f, text="↕️ Move Tilt", bg="#17a2b8", fg="white", font=("Helvetica", 10, "bold"), width=12,
+                      command=lambda d=idx+2, s=sn: self._move_and_auto_sync(d, s, self.manual_vars[s][0].get(), "tilt"))
+            btn_tilt.pack(side=tk.LEFT, padx=5)
+            self.manual_control_buttons.append(btn_tilt)
 
-            tk.Button(btn_f, text="🔄 Move Rot", bg="#17a2b8", fg="white", font=("Helvetica", 10, "bold"), width=12,
-                      command=lambda d=idx+2, s=sn: self.controller.rot_mgr.move_rot_only(d, self.manual_vars[s][1].get())).pack(side=tk.LEFT, padx=5)
-            """
-            tk.Button(btn_f, text="↕️ Move Tilt", bg="#17a2b8", fg="white", font=("Helvetica", 10, "bold"), width=12,
-                      command=lambda d=idx+2, s=sn: self._move_and_auto_sync(d, s, self.manual_vars[s][0].get(), "tilt")).pack(side=tk.LEFT, padx=5)
-
-            tk.Button(btn_f, text="🔄 Move Rot", bg="#17a2b8", fg="white", font=("Helvetica", 10, "bold"), width=12,
-                      command=lambda d=idx+2, s=sn: self._move_and_auto_sync(d, s, self.manual_vars[s][1].get(), "rot")).pack(side=tk.LEFT, padx=5)
-
+            btn_rot = tk.Button(btn_f, text="🔄 Move Rot", bg="#17a2b8", fg="white", font=("Helvetica", 10, "bold"), width=12,
+                      command=lambda d=idx+2, s=sn: self._move_and_auto_sync(d, s, self.manual_vars[s][1].get(), "rot"))
+            btn_rot.pack(side=tk.LEFT, padx=5)
+            self.manual_control_buttons.append(btn_rot)
 
             tk.Button(btn_f, text="⏹ Stop", bg="#ffc107", font=("Helvetica", 10, "bold"), width=10,
                       command=lambda d=idx+2: self.controller.rot_mgr.stop_rotation(d)).pack(side=tk.LEFT, padx=5)
-   
+
         # --- 2. Schedule Managers 탭 ---
         schedule_tab = ttk.Frame(self.upper_notebook, padding=10)
         self.upper_notebook.add(schedule_tab, text=" ⏰ Schedule Manager ")
@@ -384,14 +382,19 @@ class AutomationUI:
             self.btn_unlock.config(text="🔒 Unlock", bg="#f0ad4e", fg="black")
 
     def lock_manual_panel(self, is_locked):
+        """Secures the manual panel configuration items preventing runtime collision interferences."""
         state = tk.DISABLED if is_locked else tk.NORMAL
-        bg_color = "#3d3d3d" if is_locked else self.controller.ui.colors["dark"]["bg"]
-
-        for sn in [self.sn2_val, self.sn3_val]:
-            pass
+        
+        if hasattr(self, 'manual_control_buttons'):
+            for btn in self.manual_control_buttons:
+                if btn.winfo_exists():
+                    self.notebook.after(0, lambda b=btn: b.config(state=state))
+        
+        self.add_auto_log(f"Manual Override Panel structure state set to: {state.upper()}")
 
 
     def update_start_button(self, is_running, status_text=None):
+        self.lock_manual_panel(is_running)
         if is_running:
             self.btn_start.config(text="⏳ RUNNING...", bg="#6c757d", state=tk.DISABLED)
             self.btn_stop_run.config(text="⏹ Stop run", bg="#ffc107", state=tk.NORMAL)

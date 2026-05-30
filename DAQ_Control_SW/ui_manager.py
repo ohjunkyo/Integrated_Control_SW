@@ -1194,13 +1194,12 @@ class UIManager:
         ttk.Label(trig_frame, textvariable=vars_dict["current_mode_disp"],
                   font=("Helvetica", 10, "bold"), foreground="#c92a2a").pack(side=tk.LEFT, padx=10)
 
-        # 좌측 하단 Notebook (History Plot & Log)
         left_notebook = ttk.Notebook(left_pane)
         left_notebook.pack(fill=tk.BOTH, expand=True, pady=10)
 
         hist_tab = ttk.Frame(left_notebook)
         left_notebook.add(hist_tab, text=" Historical Plot ")
-        
+
         fig_h, ax_h = plt.subplots(figsize=(4, 2.5), dpi=80)
         canvas_h = FigureCanvasTkAgg(fig_h, master=hist_tab)
         canvas_h.get_tk_widget().pack(fill=tk.BOTH, expand=True)
@@ -1211,6 +1210,10 @@ class UIManager:
 
         log_tab = ttk.Frame(left_notebook)
         left_notebook.add(log_tab, text=" Laser Session Log ")
+
+        log_text = scrolledtext.ScrolledText(log_tab, wrap=tk.WORD, bg="#1e1e1e", fg="#d4d4d4", font=("Menlo", 10), state="disabled")
+        log_text.pack(fill=tk.BOTH, expand=True)
+        vars_dict["log_text_obj"] = log_text # Assign object to handle isolated logging entries
 
         # 우측 실시간 모니터링 그래프
         realtime_container = ttk.LabelFrame(right_pane, text=f"Real-time Monitoring ({wl})", padding=5)

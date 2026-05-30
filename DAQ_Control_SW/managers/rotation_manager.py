@@ -109,6 +109,8 @@ class AutomationManager:
         
         if self.is_running: return
 
+        os.environ["SCAN_START_DATE"] = datetime.now().strftime("%Y%m%d")
+
         cfg = self.controller.config_manager.get_all_variables()
         is_dummy = self.controller.auto_ui.dummy_var.get()
 
@@ -304,7 +306,6 @@ class AutomationManager:
         is_dummy = self.controller.auto_ui.dummy_var.get()
         cfg = self.controller.config_manager.get_all_variables()
         
-        # 1. Shifter + Expert 정보 로그 표시 (잘 반영됨)
         shifter = cfg.get("Shift_worker", "").strip()
         expert = cfg.get("Expert", "N/A").strip()
         self.controller.auto_ui.add_auto_log(f"Scan Started (Shifter: {shifter} / Expert: {expert})")
@@ -327,7 +328,6 @@ class AutomationManager:
             skip_until_match = True
             self.controller._log(f"🔄 Recovery Mode: Target position -> {start_axis}-Axis, {start_tilt}°")
 
-        # [수정 1] 기존 309~313번(루프 밖 이동)을 삭제하고 DAQ 터미널 준비만 수행
         if not is_dummy:
             subprocess.run(['tmux', 'kill-session', '-t', 'GeneralScan'], capture_output=True)
             term_cmd = ['gnome-terminal', '--title=General Scan DAQ', '--', 'tmux', 'new-session', '-s', 'GeneralScan']
@@ -416,7 +416,6 @@ class AutomationManager:
                     else:
                         time.sleep(0.5)
 
-                    # UI 상태 업데이트 (DAQ 시작 표시)
                     self.controller.auto_ui.update_cell(sn2_name, tilt, axis, "daq")
                     self.controller.auto_ui.update_cell(sn3_name, tilt, axis, "daq")
                     
@@ -436,45 +435,52 @@ class AutomationManager:
                                 daq_started = True; break
                             time.sleep(1); startup_wait += 1
 
+                        # [FIXED] Dynamically switch watchdog directory based on the active configuration mode (Dark vs Laser)
+                        run_mode_str = cfg.get("RunMode", "Laser")
+                        mode_dir = "Dark" if run_mode_str.lower() == "dark" else "Laser"
+                        
                         last_size = 0
                         stagnant_count = 0
                         raw_path = cfg.get("RawDataPath", "./Data/RAW/")
-                        
-                        # [핵심 수정] 파이썬 감시견이 'Laser' 폴더 안쪽을 보도록 경로 수정!
-                        search_path = os.path.join(raw_path, "Laser", "*.root")
-                        
+                        search_path = os.path.join(raw_path, mode_dir, "*.root")
+
                         max_wait_time = 350
                         elapsed = 0
+                        current_files = []
+                        
                         while elapsed < max_wait_time:
                             if not self.is_running: return
                             self.pause_event.wait()
 
-                            # [수정 적용] 변경된 search_path로 파일 찾기
                             current_files = glob.glob(search_path)
                             if current_files:
-                                latest_file = max(current_files, key=os.path.getctime)
-                                current_size = os.path.getsize(latest_file)
+                                try:
+                                    latest_file = max(current_files, key=os.path.getctime)
+                                    current_size = os.path.getsize(latest_file)
 
-                                if current_size == last_size and current_size > 0:
-                                    stagnant_count += 1
-                                else:
-                                    stagnant_count = 0
+                                    if current_size == last_size and current_size > 0:
+                                        stagnant_count += 1
+                                    else:
+                                        stagnant_count = 0
 
-                                if stagnant_count > 30: # 30초 동안 변화 없음
-                                    self.controller._log(f"[CRITICAL] Watchdog: DAQ hung at {latest_file}. Killing process.")
-                                    subprocess.run(['pkill', '-9', 'execute_DAQ_v2'])
-                                    break
-                                last_size = current_size
-                            
+                                    if stagnant_count > 30:
+                                        self.controller._log(f"[CRITICAL] Watchdog: DAQ hung at {latest_file}. Killing process.")
+                                        subprocess.run(['pkill', '-9', 'execute_DAQ_v2'])
+                                        break
+                                    last_size = current_size
+                                except (FileNotFoundError, PermissionError) as ex:
+                                    self.controller._log(f"[WARNING] Watchdog filesystem race caught: {ex}")
+                                    pass
+
                             check_proc = subprocess.run(['pgrep', '-x', 'execute_DAQ_v2'], capture_output=True)
-                            if check_proc.returncode != 0: 
+                            if check_proc.returncode != 0:
                                 self.controller._log(f"[INFO] DAQ finished in {elapsed}s.")
                                 break
                             time.sleep(1); elapsed += 1
 
+                        # Verify the integrity of the correct active mode file
                         if current_files:
                             self._verify_file_integrity(max(current_files, key=os.path.getctime))
-
 
                         if self.is_running:
                             self.controller._log("[INFO] DAQ Done. Waiting 5s for safety...")
@@ -491,17 +497,17 @@ class AutomationManager:
                 os.remove(self.state_file)
 
             self.is_running = False
-            self.controller._log("✅ Automation sequence completed successfully.")
-            self._show_scan_summary(start_time, datetime.now(), shifter)
+            self.controller._log("Automation sequence completed successfully.")
+            
+            # [FIXED] Redirect the UI dialog box creation to the main GUI thread to prevent unexpected Tcl/Tk thread crash
+            self.controller.master.after(0, lambda: self._show_scan_summary(start_time, datetime.now(), shifter))
 
         except Exception as e:
-            self.controller._log(f"❌ Auto Error: {e}")
+            self.controller._log(f"[ERROR] Auto Run Thread Error: {e}")
             
         finally:
             self.controller.auto_ui.update_start_button(False)
             self.is_running = False
-            #self.controller.auto_ui.update_stop_button(False)
-
 
 
     def _update_progress_ui(self, current, total):
@@ -513,7 +519,11 @@ class AutomationManager:
         eta_seconds = remaining_points * step_time
         
         time_str = time.strftime('%H:%M:%S', time.gmtime(eta_seconds))
-        self.controller.auto_ui.eta_label.config(text=f"ETA: {time_str} ({current} / {total})")
+        
+        if hasattr(self.controller, 'master') and self.controller.master.winfo_exists():
+            self.controller.master.after(0, lambda: self.controller.auto_ui.eta_label.config(
+                text=f"ETA: {time_str} ({current} / {total})"
+            ))
 
     def _show_scan_summary(self, start, end, shifter):
         self.save_scan_history(start, end, shifter, is_success=True) # 성공 시 저장
@@ -537,20 +547,17 @@ class AutomationManager:
             self.controller.refresh_all_data()
 
     def stop_automation(self):
-        """자동화 스캔을 안전하게 중단합니다."""
+        """Safely stops the automation scan sequence and updates grid states."""
         self.is_running = False
         self.pause_event.set()
         
-        # [수정] ui_automation.py의 cells 딕셔너리 키 구조 (sn, tilt, axis)에 맞춤
         for (sn, tilt, axis), cell in self.controller.auto_ui.cells.items():
-            # 초록색(OK)이 아닌 칸들은 모두 '-' 상태로 초기화 (status="wait" 전달)
             if cell.cget("text") != "OK":
                 self.controller.auto_ui.update_cell(sn, tilt, axis, "wait")
 
         self.controller.auto_ui.update_start_button(False)
-        self._save_recovery_state() 
-        self.controller._log("[INFO] Automation stopped. Progress saved.")
-
+        
+        self.controller._log("[INFO] Automation stopped cleanly. Current progress is preserved.")
 
     def handle_stop_continue(self):
         if not self.is_running:
@@ -586,10 +593,19 @@ class AutomationManager:
 
 
     def _wait_for_physical_angle(self, dev_num, target_tilt=None, target_rot=None, bypass_check=False):
-        """Polls the hardware until the actual angle matches the target within 0.5 degrees."""
-        self.controller._log(f"[DEBUG] Waiting for Device {dev_num} to physically reach target...")
+        """Polls the hardware until target angle is reached, with anti-jam stagnation monitoring."""
+        self.controller._log(f"[INFO] Waiting for Device {dev_num} to physically reach target...")
+        
+        retry_count = 0
+        max_retries = 120 # 120 * 0.5s = 60 Seconds Safety Timeout Cap
 
-        while self.is_running or bypass_check or not self.pause_event.is_set(): # 정지 상태가 아닐 때만 대기
+        # [INTEGRATION] Tracking metrics to catch hardware physical stalls (e.g., caught cables)
+        last_tracked_tilt = None
+        last_tracked_rot = None
+        stagnant_cycles = 0
+        max_stagnant_allowed = 10 # 10 * 0.5s = 5 seconds of absolute zero movement
+
+        while self.is_running or bypass_check or not self.pause_event.is_set():
             curr_tilt, curr_rot = self.controller.rot_mgr.read_angles(dev_num)
 
             tilt_ok = True
@@ -602,10 +618,54 @@ class AutomationManager:
                 rot_ok = abs(curr_rot - target_rot) < 0.5 if curr_rot is not None else False
 
             if tilt_ok and rot_ok:
-                self.controller._log(f"✅ Device {dev_num} arrived at physical target.")
+                self.controller._log(f"[SUCCESS] Device {dev_num} arrived at physical target smoothly.")
                 break
 
-            time.sleep(0.5) # 하드웨어 부하를 줄이기 위한 폴링 간격
+            # Anti-Jamming Verification: Check if the mechanical drive is stuck due to caught cables
+            if last_tracked_tilt is not None and curr_tilt is not None and target_tilt is not None:
+                if abs(curr_tilt - last_tracked_tilt) < 0.01 and not tilt_ok:
+                    stagnant_cycles += 1
+                else:
+                    stagnant_cycles = 0
+
+            if last_tracked_rot is not None and curr_rot is not None and target_rot is not None:
+                if abs(curr_rot - last_tracked_rot) < 0.01 and not rot_ok:
+                    stagnant_cycles += 1
+
+            # Trigger emergency interlock action if motor torque stalls for more than 5 seconds
+            if stagnant_cycles >= max_stagnant_allowed:
+                self.controller._log(f"[CRITICAL] Motor Jam / Cable Snag Detected on Device {dev_num}! Forcing Emergency Stop.")
+                
+                # Kill hardware movement immediately to prevent torque damage
+                self.controller.rot_mgr.stop_rotation(dev_num)
+                
+                # Pop up immediate critical alert notification window to the active shifter
+                self.controller.master.after(0, lambda d=dev_num: messagebox.showerror(
+                    "HARDWARE EMERGENCY INTERLOCK",
+                    f"🚨 MECHANICAL BLOCKAGE DETECTED!\n\n"
+                    f"Device {d} has stalled for more than 5 seconds.\n"
+                    f"The scan sequence has been forced to ABORT to protect cables and drive motors.\n"
+                    f"Please inspect the hardware assembly immediately."
+                ))
+                
+                if not bypass_check:
+                    self.is_running = False
+                    self.pause_event.clear()
+                break
+
+            # Cache current coordinates for the next differentiation loop cycle
+            last_tracked_tilt = curr_tilt
+            last_tracked_rot = curr_rot
+
+            retry_count += 1
+            if retry_count > max_retries:
+                self.controller._log(f"[CRITICAL] Timeout tracking device {dev_num}. Hardware communication failure suspected.")
+                if not bypass_check:
+                    self.is_running = False
+                    self.pause_event.clear()
+                break
+
+            time.sleep(0.5)
 
     def reset_all_angles(self):
         """Strictly sequential reset: Tilt to 0 -> Confirm -> Rotation to 0 -> Confirm."""

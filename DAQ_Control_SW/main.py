@@ -65,6 +65,10 @@ class App:
         self.master = master
         self.base_dir = base_dir
 
+        # [NEW] Smooth Startup Splash Guard: Hide the un-themed main window immediately to prevent light-gray visual flashing
+        self.master.withdraw()
+        self._show_startup_splash()
+        
         self.terminal_preference = 'gnome-terminal'
         self.start_time = datetime.now()
         self.config_manager = None
@@ -81,12 +85,10 @@ class App:
             self.laser_log_dir = os.path.join(self.base_dir, "LOG", "LASER")
             os.makedirs(self.laser_log_dir, exist_ok=True) 
 
-
         self.laser_port_mapping = {
             "375nm": "1-3.3:1.0", "405nm": "1-3.1:1.0",
             "450nm": "1-3.2:1.0", "473nm": "1-3.4:1.0"
         }
-
 
         # 2. 로직 매니저 생성
         self.access_mgr = ControlAccessManager(self, password="root")
@@ -157,7 +159,43 @@ class App:
         if hasattr(self, 'ui'):
             self.ui.refresh_ui_state()
 
+        if hasattr(self, 'splash') and self.splash.winfo_exists():
+            self.splash.destroy()
+        
+        self.master.update_idletasks()
+        self.master.deiconify() # Gracefully project the optimized dark window layout to shifter
         self.master.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+    # [NEW METHOD ADDITION inside App Class]
+    def _show_startup_splash(self):
+        """Generates a professional dark-themed loading window during initial UI layout parsing."""
+        self.splash = tk.Toplevel(self.master)
+        self.splash.title("System Loading")
+        self.splash.geometry("420x200")
+        self.splash.configure(bg="#1e1e1e")
+        self.splash.overrideredirect(True) # Eliminate system borders for sleek layout execution
+        
+        # Center the initialization loading dialog precisely on target display canvas
+        screen_w = self.splash.winfo_screenwidth()
+        screen_h = self.splash.winfo_screenheight()
+        x = (screen_w // 2) - 210
+        y = (screen_h // 2) - 100
+        self.splash.geometry(f"+{x}+{y}")
+        
+        # UI Text Indicators Asset Map
+        lbl_main = tk.Label(self.splash, text="INTEGRATED DAQ CONTROL PANEL", 
+                            font=("Helvetica", 13, "bold"), bg="#1e1e1e", fg="#007ACC")
+        lbl_main.pack(pady=(40, 8))
+        
+        lbl_sub = tk.Label(self.splash, text="Loading hardware matrices & rendering theme elements...", 
+                           font=("Helvetica", 10), bg="#1e1e1e", fg="#a6a6a6")
+        lbl_sub.pack(pady=5)
+        
+        cv_bar = tk.Canvas(self.splash, width=280, height=3, bg="#2d2d2d", highlightthickness=0)
+        cv_bar.pack(pady=20)
+        cv_bar.create_rectangle(0, 0, 140, 3, fill="#007ACC", width=0)
+        
+        self.splash.update()
 
     def _setup_status_bar(self):
         self.status_bar = ttk.Frame(self.master, relief=tk.SUNKEN, padding="2 5")
@@ -590,9 +628,6 @@ class App:
         else:
             mode = "laser" 
 
-        # =========================================================
-        # [FIXED] 런 번호 대역 할당 로직 우선순위 전면 수정
-        # =========================================================
         start_block = "0"
 
         if is_auto_running:
@@ -743,7 +778,8 @@ class App:
         if not daq_path: return
 
         helper = os.path.join(self.base_dir, 'run_cpp_script_v2.sh')
-        script = os.path.join(daq_path, 'Draw_waveform_v2.C')
+        #script = os.path.join(daq_path, 'Draw_waveform_v2.C')
+        script = os.path.join(daq_path, 'Draw_overshoot_waveform.C')
         config_path = self.config_manager.filepath
         
         run_num = None
@@ -1180,28 +1216,32 @@ class App:
         threading.Thread(target=self._daq_check_loop, daemon=True).start()
 
     def _daq_check_loop(self):
-        """Continuous background loop for DAQ connection checking."""
-        while self._daq_check_running and self.master.winfo_exists():
+        """Continuous background loop for DAQ connection checking with thread-safe compliance."""
+        # Loop strictly boundaries on the control boolean variable safety flags
+        while getattr(self, '_daq_check_running', False):
             is_connected = False
             try:
-                daq_path = self.config_manager.get_config_value('BasePath')
-                if daq_path:
-                    command = [os.path.join(daq_path, 'execute_DAQ_v2'), '-j']
-                    result = subprocess.run(
-                        command, capture_output=True, text=True,
-                        timeout=5, preexec_fn=os.setsid
-                    )
-                    if "Communication error" not in result.stderr:
-                        is_connected = True
+                if self.config_manager:
+                    daq_path = self.config_manager.get_config_value('BasePath')
+                    if daq_path:
+                        command = [os.path.join(daq_path, 'execute_DAQ_v2'), '-j']
+                        result = subprocess.run(
+                            command, capture_output=True, text=True,
+                            timeout=5, preexec_fn=os.setsid
+                        )
+                        if "Communication error" not in result.stderr:
+                            is_connected = True
             except Exception:
                 pass
 
             try:
-                self.master.after(0, lambda c=is_connected: self.ui.update_daq_connection_status(c))
+                # Safely forward connection results back into the main loop via thread-safe after queue
+                if hasattr(self, 'master') and self.master.winfo_exists():
+                    self.master.after(0, lambda c=is_connected: self.ui.update_daq_connection_status(c))
             except Exception:
                 pass
 
-            time.sleep(2.0) 
+            time.sleep(2.0)
 
     def _run_daq_check_in_thread(self):
         is_connected = False
@@ -1333,8 +1373,11 @@ class App:
     def setup_laser_logger(self): self.laser_mgr.setup_laser_logger()
     def load_today_laser_log(self): self.laser_mgr.load_today_laser_log()
     def preload_laser_history(self): self.laser_mgr.preload_laser_history()
-    def _log_laser(self, msg): self.laser_mgr._log_laser(msg)
-    def save_laser_realtime_data(self, wl, temp, pulse): self.laser_mgr.save_laser_realtime_data(wl, temp, pulse)
+    def _log_laser(self, wl, msg): self.laser_mgr._log_laser(wl, msg)
+    def save_laser_realtime_data(self, wl, temp, pulse, ld_on=False, tec_on=False): 
+        self.laser_mgr.save_laser_realtime_data(wl, temp, pulse, ld_on, tec_on)
+
+
     #################### Laser Monitoring ##############################
 
     #################### UPS Monitoring ##############################

@@ -77,6 +77,8 @@ class MonitoringApp(QMainWindow):
         pg.setConfigOption('background', self.styles['background_color']); pg.setConfigOption('foreground', self.styles['font_color_main'])
         self.plot_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
         self._is_closing = False
+        self.temp_colors = ['#ff4c4c', '#ff8533', '#ffb366', '#ff66b2', '#ff3399']  # Warm shades
+        self.humi_colors = ['#33ccff', '#33ffcc', '#3366ff', '#00ecc6', '#50fa7b']  # Cool shades
         
         self.db_manager = DatabaseManager(f"{config['logging_options']['log_file_prefix']}.db", config)
         self.worker_manager = WorkerManager(self.config)
@@ -174,9 +176,6 @@ class MonitoringApp(QMainWindow):
         main_layout = QVBoxLayout(self.monitor_tab)
         font_large = QFont(); font_large.setPointSize(self.styles.get('font_size_large', 14))
 
-        # ==========================================
-        # 1. 상단 대시보드 (상태 및 제어 버튼 전용) 
-        # ==========================================
         top_dashboard_frame = QFrame()
         top_dashboard_frame.setStyleSheet("""
             QFrame { border: 1px solid #555555; border-radius: 8px; background-color: #2b2b2b; margin-bottom: 5px; }
@@ -340,23 +339,30 @@ class MonitoringApp(QMainWindow):
                 p.getViewBox().setMouseMode(pg.ViewBox.RectMode)
         
         self.monitor_curves = {'temp': {}, 'humi': {}, 'volt': {}, 'curr': {}, 'overlay_temp': {}, 'overlay_humi': {}}
+        
         for i, s in enumerate(self.config['arduino_settings']['sensors']):
-            pen = pg.mkPen(color=self.plot_colors[i % len(self.plot_colors)], width=3); self.monitor_curves['temp'][i] = self.monitor_plots['temp'].plot(pen=pen, name=s['name']); self.monitor_curves['humi'][i] = self.monitor_plots['humi'].plot(pen=pen, name=s['name'])
+            t_pen = pg.mkPen(color=self.temp_colors[i % len(self.temp_colors)], width=3)
+            h_pen = pg.mkPen(color=self.humi_colors[i % len(self.humi_colors)], width=3)
+            self.monitor_curves['temp'][i] = self.monitor_plots['temp'].plot(pen=t_pen, name=s['name'])
+            self.monitor_curves['humi'][i] = self.monitor_plots['humi'].plot(pen=h_pen, name=s['name'])
+            
         for i, ch in enumerate(self.config['caen_hv_settings']['channels_to_monitor']):
             pen = pg.mkPen(color=self.plot_colors[i % len(self.plot_colors)], width=3); self.monitor_curves['volt'][ch] = self.monitor_plots['volt'].plot(pen=pen, name=f'Ch{ch}'); self.monitor_curves['curr'][ch] = self.monitor_plots['curr'].plot(pen=pen, name=f'Ch{ch}')
 
         p1 = self.monitor_plots['overlay'].getPlotItem()
         p2 = self.monitor_plots['overlay'].dual_viewbox
+        
         for i_overlay, s_overlay in enumerate(self.config['arduino_settings']['sensors']):
-            pen_t = pg.mkPen(color=self.plot_colors[i_overlay % len(self.plot_colors)], width=2, style=Qt.SolidLine)
+            pen_t = pg.mkPen(color=self.temp_colors[i_overlay % len(self.temp_colors)], width=2, style=Qt.SolidLine)
             self.monitor_curves['overlay_temp'][i_overlay] = p1.plot(pen=pen_t, name=f"{s_overlay['name']} (T)")
             
-            pen_h = pg.mkPen(color=self.plot_colors[i_overlay % len(self.plot_colors)], width=2, style=Qt.DashLine)
+            pen_h = pg.mkPen(color=self.humi_colors[i_overlay % len(self.humi_colors)], width=2, style=Qt.DashLine)
             curve = pg.PlotCurveItem(pen=pen_h, name=f"{s_overlay['name']} (H)")
             self.monitor_curves['overlay_humi'][i_overlay] = curve
             p2.addItem(curve) 
-            p1.legend.addItem(curve, f"{s_overlay['name']} (H)") 
-        
+            p1.legend.addItem(curve, f"{s_overlay['name']} (H)")
+
+
         bottom_layout = QGridLayout(); font_medium = QFont(); font_medium.setPointSize(self.styles['font_size_medium'])
         self.shifter_label = QLabel(self.config['ui_options'].get('shifter_name', '')); self.shifter_label.setFont(font_medium)
         self.datetime_label = QLabel(""); self.datetime_label.setFont(font_medium); self.datetime_label.setAlignment(Qt.AlignRight)
@@ -539,14 +545,22 @@ class MonitoringApp(QMainWindow):
             if isinstance(stat, int) and (stat & (1 << 12) or stat & (1 << 11)):
                 is_interlocked = True
 
-        # [워치독 추가 & 해결 2] 마지막 데이터 수신 후 3.5초가 지나면 무조건 단절로 간주!
+        # [FIX] Watchdog sequence: Catch disconnect state and purge old values immediately
         current_time = time.time()
         if not hasattr(self, 'last_hv_data_time'): self.last_hv_data_time = current_time
+        
         if current_time - self.last_hv_data_time > 3.5:
             self.hv_status_label.setText("HV Status: DISCONNECTED")
             self.hv_status_label.setStyleSheet("color: #ff5555; font-weight: bold;")
             
-        # 연결이 끊겼으면 깜빡임 즉각 정지
+            for ch in self.hv_labels:
+                self.hv_labels[ch]['v'].setText("N/A")
+                if self.is_dual_current:
+                    self.hv_labels[ch]['il'].setText("N/A")
+                    self.hv_labels[ch]['ih'].setText("N/A")
+                else:
+                    self.hv_labels[ch]['i'].setText("N/A")
+
         if "Successful" not in self.hv_status_label.text():
             self.blink_timer.stop()
             self.all_clear_alarm_btn.setStyleSheet("background-color: #44475a; color: white; border-radius: 4px; font-weight: bold; padding: 5px;")
@@ -609,20 +623,23 @@ class MonitoringApp(QMainWindow):
         start_str = self.start_time_edit.dateTime().toString(Qt.ISODate); end_str = self.end_time_edit.dateTime().toString(Qt.ISODate)
         timestamps, data = self.db_manager.fetch_data_range(start_str, end_str)
         
-        # --- [*** 여기가 두 번째 수정 지점 ***] ---
+        title_font_size_str = f"{self.styles.get('font_size_large', 18)}pt"
+        legend_font_size_str = f"{self.styles.get('font_size_legend', 10)}pt"
+        
         for plot in self.analysis_plots.values(): 
             p1 = plot.getPlotItem()
 
-            # 레전드 객체를 파괴하는 대신, 내용만 비웁니다.
+            # [FIX] Close and remove existing legend container safely to prevent detached object errors
             if p1.legend:
-                p1.legend.clear()
-
-            # 플롯의 커브들을 지웁니다.
+                p1.legend.close()
+            
             plot.clear() 
             if hasattr(plot, 'dual_viewbox'):
                 plot.dual_viewbox.clear() 
             
-            # 폰트 등은 그대로 다시 설정해 줄 수 있습니다.
+            # [FIX] Re-add a fresh clean Legend instance after clearing the plot frame
+            p1.addLegend().setLabelTextSize(legend_font_size_str)
+            
             tick_font = QFont(); tick_font.setPointSize(self.styles.get('font_size_medium', 16) - 2)
             label_font = QFont(); label_font.setPointSize(self.styles.get('font_size_medium', 16))
             
@@ -633,11 +650,9 @@ class MonitoringApp(QMainWindow):
             if hasattr(p1, 'getAxis') and p1.getAxis('right'):
                 p1.getAxis('right').setTickFont(tick_font)
                 p1.getAxis('right').label.setFont(label_font)
-        # --- [*** 수정 끝 ***] ---
             
         if not timestamps: return
         selected_cols = [name for name, cb in self.analysis_checkboxes.items() if cb.isChecked()]
-        color_idx = 0
         
         p_th1 = self.analysis_plots['temp_humi_overlay'].getPlotItem()
         p_th2 = self.analysis_plots['temp_humi_overlay'].dual_viewbox
@@ -647,34 +662,57 @@ class MonitoringApp(QMainWindow):
         for name in selected_cols:
             if name not in data or all(v is None for v in data[name]): continue
             values = data[name]
-            pen = pg.mkPen(color=self.plot_colors[color_idx % len(self.plot_colors)], width=3)
             
             plot_name = name.replace('_', ' ') 
             
             if '_V' in name: 
+                ch_idx = 0
+                try:
+                    ch_num = int(name.split('_')[0].replace('Ch', ''))
+                    ch_idx = self.config['caen_hv_settings']['channels_to_monitor'].index(ch_num)
+                except: pass
+                pen = pg.mkPen(color=self.plot_colors[ch_idx % len(self.plot_colors)], width=3)
                 p_hv1.plot(timestamps, values, pen=pen, name=plot_name)
             
             elif '_I_L' in name or '_I_H' in name or name.endswith('_I'):
+                ch_idx = 0
+                try:
+                    ch_num = int(name.split('_')[0].replace('Ch', ''))
+                    ch_idx = self.config['caen_hv_settings']['channels_to_monitor'].index(ch_num)
+                except: pass
+                pen = pg.mkPen(color=self.plot_colors[(ch_idx + 3) % len(self.plot_colors)], width=3, style=Qt.DashLine)
                 curve = pg.PlotCurveItem(pen=pen, name=plot_name)
                 curve.setData(timestamps, values, connect='finite')
                 p_hv2.addItem(curve)
                 if p_hv1.legend: p_hv1.legend.addItem(curve, plot_name)
 
             elif '_T' in name:
+                sensor_idx = 0
+                for idx, s in enumerate(self.config['arduino_settings']['sensors']):
+                    clean_s_name = s['name'].replace(" ", "_").replace("#", "")
+                    if name.startswith(clean_s_name):
+                        sensor_idx = idx
+                        break
+                pen = pg.mkPen(color=self.temp_colors[sensor_idx % len(self.temp_colors)], width=3)
                 p_th1.plot(timestamps, values, pen=pen, name=plot_name)
             
             elif '_H' in name:
+                sensor_idx = 0
+                for idx, s in enumerate(self.config['arduino_settings']['sensors']):
+                    clean_s_name = s['name'].replace(" ", "_").replace("#", "")
+                    if name.startswith(clean_s_name):
+                        sensor_idx = idx
+                        break
+                pen = pg.mkPen(color=self.humi_colors[sensor_idx % len(self.humi_colors)], width=3)
                 curve = pg.PlotCurveItem(pen=pen, name=plot_name)
                 curve.setData(timestamps, values, connect='finite')
                 p_th2.addItem(curve)
                 if p_th1.legend: p_th1.legend.addItem(curve, plot_name)
-            
-            color_idx += 1
-        
-        p_th1.enableAutoRange(axis='y', enable=True)
+
+        # [FIX] Force right Y-axis standalone viewboxes to execute auto-scale update layout routines
         p_th2.enableAutoRange(axis='y', enable=True)
-        p_hv1.enableAutoRange(axis='y', enable=True)
         p_hv2.enableAutoRange(axis='y', enable=True)
+
 
     def export_analysis_to_csv(self):
         path, _ = QFileDialog.getSaveFileName(self, "Save CSV", f"export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv", "CSV Files (*.csv)")

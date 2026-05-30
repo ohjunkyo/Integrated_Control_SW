@@ -256,6 +256,21 @@ class UPSManager:
         times = list(h["time"])
         if not times: return
 
+        # 1. Safely track user zoom/pan interaction state across the navigation stack
+        toolbar = self.app.ui.ups_toolbar
+        user_zoomed = False
+        if toolbar and hasattr(toolbar, '_nav_stack'):
+            depth = toolbar._nav_stack.depth() if hasattr(toolbar._nav_stack, 'depth') else len(getattr(toolbar._nav_stack, '_elements', []))
+            if depth > 1:
+                user_zoomed = True
+
+        # 2. Cache old boundary configuration specs before clearing layouts
+        old_limits = {}
+        axes_list = [self.app.ui.ax_ups_watt, self.app.ui.ax_ups_temp, self.app.ui.ax_ups_vin, self.app.ui.ax_ups_vout]
+        if user_zoomed:
+            for ax in axes_list:
+                old_limits[ax] = (ax.get_xlim(), ax.get_ylim())
+
         step = max(1, len(times) // 500)
         d_times = times[::step]
 
@@ -274,6 +289,13 @@ class UPSManager:
             ax.xaxis.set_major_locator(mdates.AutoDateLocator())
             ax.grid(True, alpha=0.2)
             ax.tick_params(labelsize=8)
+
+        # 3. Strictly restore cached boundary limits to prevent viewport jump back
+        if user_zoomed:
+            for ax in axes_list:
+                if ax in old_limits:
+                    ax.set_xlim(old_limits[ax][0])
+                    ax.set_ylim(old_limits[ax][1])
 
         self.app.ui.fig_ups.autofmt_xdate()
         self.app.ui.canvas_ups.draw()

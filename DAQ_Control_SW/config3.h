@@ -19,21 +19,21 @@ const std::string LogDir = "/home/precalkor/ADC/ADC_test/LOG/DAQ/";
 const int Events = 200000;
 const int TimeWindow = 1024;
 const int PostTrigger = 60;
-const std::string ChannelMask = "00001011";
+const std::string ChannelMask = "00001111";
 
 // --- Sequence Settings --- //
 const int NumSequences = 1;
-const int IntervalTime = 1;
+const int IntervalTime = 0;
 
 // -- Laser (Current, mA) --- //
-const std::string Laser = "162";
+const std::string Laser = "165";
 const std::string Wavelength = "405";
 
 // --- PMT configuration --- //
 // Ch0 - monitor, Ch1 - PMT 1, Ch2 - PMT 2 same as High voltage setting
 const std::string SN1 = "EM2740";
 const std::string direction1 = "A";
-const std::string SN2 = "No";
+const std::string SN2 = "EM5370";
 const std::string direction2 = "B";
 const std::string SN3 = "EL9590";
 const std::string direction3 = "B";
@@ -42,19 +42,19 @@ const std::string direction3 = "B";
 const std::string RotateAngle1 = "0";
 const std::string TiltAngle1 = "0";
 
-const std::string RotateAngle2 = "0";
-const std::string TiltAngle2 = "0";
+const std::string RotateAngle2 = "45";
+const std::string TiltAngle2 = "-45";
 
-const std::string RotateAngle3 = "0";
-const std::string TiltAngle3 = "0";
+const std::string RotateAngle3 = "45";
+const std::string TiltAngle3 = "-45";
 
 // --- High Voltage --- //
 const std::string HV1 = "1670";
-const std::string HV2 = "1840";
-const std::string HV3 = "1840";
+const std::string HV2 = "1800";
+const std::string HV3 = "1770";
 
 // --- NOTE ---
-const std::string NOTE = "160+2";
+const std::string NOTE = "165";
 
 // --- Trigger Channel ---
 const int TriggerCh = 3;
