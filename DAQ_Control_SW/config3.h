@@ -42,11 +42,11 @@ const std::string direction3 = "B";
 const std::string RotateAngle1 = "0";
 const std::string TiltAngle1 = "0";
 
-const std::string RotateAngle2 = "45";
-const std::string TiltAngle2 = "-45";
+const std::string RotateAngle2 = "0";
+const std::string TiltAngle2 = "0";
 
-const std::string RotateAngle3 = "45";
-const std::string TiltAngle3 = "-45";
+const std::string RotateAngle3 = "0";
+const std::string TiltAngle3 = "0";
 
 // --- High Voltage --- //
 const std::string HV1 = "1670";

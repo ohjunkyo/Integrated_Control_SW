@@ -680,7 +680,7 @@ class App:
         if not daq_path: return
 
         helper = os.path.join(self.base_dir, 'run_cpp_script_v2.sh')
-        script = os.path.join(daq_path, 'prod_ntp_v6.C') 
+        script = os.path.join(daq_path, 'prod_ntp_v7.C') 
         config_path = self.config_manager.filepath
         #mode_int = "0" if self.ui.run_mode.get() == "laser" else "1"
 
@@ -724,7 +724,7 @@ class App:
         if not daq_path: return
 
         helper = os.path.join(self.base_dir, 'run_cpp_script_v2.sh')
-        script = os.path.join(daq_path, 'read_ntp_v6.C') 
+        script = os.path.join(daq_path, 'read_ntp_v7.C') 
         config_path = self.config_manager.filepath
 
         runs_to_process = [] 
