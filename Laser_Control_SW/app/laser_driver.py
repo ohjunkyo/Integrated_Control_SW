@@ -16,6 +16,7 @@ import hid
 import os
 import logging
 import math
+import threading
 from datetime import datetime
 from typing import Optional, List, Union
 
@@ -84,6 +85,11 @@ class TamadenshiLaser:
         """Initializes the laser controller class."""
         self.device: Optional[hid.device] = None
         self.status = {}  # Dictionary to store the status read from the device
+        # Serializes every HID write/read transaction. The interlock watchdog thread
+        # and the main GUI polling loop both call update_status() on the same device;
+        # without this lock their write/read pairs interleave and each thread reads the
+        # other's response, causing "Status parse error" and bogus temp/current values.
+        self._io_lock = threading.RLock()
         print(f"Controller initialized (VID: {self.VENDOR_ID:04x}, PID: {self.PRODUCT_ID:04x})")
 
     def connect(self, dev_path: bytes = None) -> (bool, str):
@@ -218,8 +224,9 @@ class TamadenshiLaser:
                 report[i + 2] = byte_val
 
         try:
-            # Write the report to the HID device
-            self.device.write(report)
+            # Write the report to the HID device (serialized against concurrent reads)
+            with self._io_lock:
+                self.device.write(report)
             return True
         except (IOError, ValueError, OSError) as e:
             # This often happens if the device is unplugged
@@ -244,13 +251,17 @@ class TamadenshiLaser:
                 report[i + 2] = byte_val
         
         try:
-            # Step 1: Write the command to the device
-            self.device.write(report)
-            
-            # Step 2: Read the 65-byte response with a 1000ms timeout
-            # Use positional argument '1000' instead of 'timeout=1000'
-            data = self.device.read(self.PACKET_LENGTH, 1000) 
-            
+            # Hold the lock across BOTH write and read so a concurrent transaction
+            # (e.g. from the watchdog thread) cannot slip a write in between and steal
+            # this response.
+            with self._io_lock:
+                # Step 1: Write the command to the device
+                self.device.write(report)
+
+                # Step 2: Read the 65-byte response with a 1000ms timeout
+                # Use positional argument '1000' instead of 'timeout=1000'
+                data = self.device.read(self.PACKET_LENGTH, 1000)
+
             if data:
                 # Return data, excluding the first byte (Report ID)
                 return data[1:] 

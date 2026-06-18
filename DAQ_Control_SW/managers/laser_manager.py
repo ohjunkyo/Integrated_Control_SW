@@ -25,7 +25,8 @@ class LaserManager:
 
         # [CRITICAL FIX] Added missing connection tracking flags
         self.comm_error_flags = {wl: False for wl in self.wavelengths}
-        self.expected_connections = set() 
+        self.expected_connections = set()
+        self._reconnecting = set()  # wavelengths with an in-flight background reconnect
 
         self.plot_history = {}
         for wl in self.wavelengths:
@@ -388,12 +389,16 @@ class LaserManager:
                 def apply_task():
                     try:
                         inst.set_bias_current(bias)
-                        time.sleep(0.2) 
+                        time.sleep(0.2)
                         inst.set_pulse_current(pulse)
-                        time.sleep(0.2) 
-                        self.app._log(f"[INFO] Applied to {wl}: Bias={bias:.2f}mA, Pulse={pulse:.2f}mA")
+                        time.sleep(0.2)
+                        # _log touches the Tk log widget, so it must run on the main thread.
+                        self.app.master.after(0, lambda: self.app._log(
+                            f"[INFO] Applied to {wl}: Bias={bias:.2f}mA, Pulse={pulse:.2f}mA"))
                     except Exception as e:
-                        self.app._log(f"[ERROR] Failed applying currents to {wl}: {e}")
+                        err = str(e)
+                        self.app.master.after(0, lambda m=err: self.app._log(
+                            f"[ERROR] Failed applying currents to {wl}: {m}"))
 
                 threading.Thread(target=apply_task, daemon=True).start()
 
@@ -867,6 +872,7 @@ class LaserManager:
             self.laser_after_id = None
 
         interval = 1000
+        current_time_floored = int(time.time())
         for idx, wl in enumerate(self.wavelengths):
             inst = self.laser_instances.get(wl)
             ui_vars = self.app.ui.laser_tabs_data.get(wl)
@@ -918,19 +924,36 @@ class LaserManager:
                             self.app._log(f"[WARNING] Failed to update plot: {e}")
                             pass
 
-                        # [FIX] Removed duplicate 3-argument call block to prevent TypeError crash
-                        self.save_laser_realtime_data(wl, temp, pulse, ld_on, tec_on)
+                        # [FIX] Removed duplicate 3-argument call block to prevent TypeError crash.
+                        # Downsample disk logging: write only when hardware is active (LD/TEC ON),
+                        # otherwise at most once every 30s. Keeps the daily CSV from exploding.
+                        if ld_on or tec_on or (current_time_floored % 30 == 0):
+                            self.save_laser_realtime_data(wl, temp, pulse, ld_on, tec_on)
                     else:
                         self._handle_comm_failure(wl, idx)
-                        
+
                 except Exception as e:
                     self.app._log(f"[ERROR] {wl} Comm Error: {e}")
                     inst.disconnect()
                     self._handle_comm_failure(wl, idx)
             else:
-                if wl in self.expected_connections:
+                if wl in self.expected_connections and wl not in self._reconnecting:
+                    # USB (re)connection can block for a second or more; doing it inline
+                    # froze the GUI on every 1s poll. Run it off the main thread and guard
+                    # against overlapping attempts for the same wavelength.
+                    self._reconnecting.add(wl)
                     self.app._log(f"[INFO] {wl} Attempting auto-reconnect...")
-                    inst.connect(dev_path=self.laser_port_mapping.get(wl))
+
+                    def reconnect_task(w=wl, i=inst):
+                        try:
+                            i.connect(dev_path=self.laser_port_mapping.get(w))
+                        except Exception as e:
+                            self.app.master.after(0, lambda m=str(e): self.app._log(
+                                f"[WARNING] {w} reconnect failed: {m}"))
+                        finally:
+                            self._reconnecting.discard(w)
+
+                    threading.Thread(target=reconnect_task, daemon=True).start()
 
         if hasattr(self.app, 'master') and self.app.master.winfo_exists():
             if self.laser_session_start and (time.time() - self.laser_session_start < 10):

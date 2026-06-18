@@ -177,7 +177,11 @@ class UPSManager:
                                         self.app.ui.ups_vars["load_level"].set(int(load_p))
                                         self.app.ui.ups_vars["batt_level"].set(batt_pct)
                                         self.app.ui.ups_vars["frequency"].set(f"{freq:.1f} Hz")
-                                        self.app.ui.ups_vars["status_msg"].set(f"Normal ({current_watt:.1f} W) / Temp: {temp_c:.1f}°C")
+                                        # Evaluate power-failure / overload / low-battery / overheat
+                                        # conditions and update status_msg + colors accordingly.
+                                        # (Previously status_msg was hard-set to "Normal", so these
+                                        #  safety alerts never fired.)
+                                        self.check_ups_alerts(current_watt, temp_c, batt_pct, load_p, input_v)
                                     
                                     now_dt = datetime.now()
                                     self.ups_plot_history["time"].append(now_dt)
