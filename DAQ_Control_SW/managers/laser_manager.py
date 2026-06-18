@@ -25,7 +25,8 @@ class LaserManager:
 
         # [CRITICAL FIX] Added missing connection tracking flags
         self.comm_error_flags = {wl: False for wl in self.wavelengths}
-        self.expected_connections = set() 
+        self.expected_connections = set()
+        self._reconnecting = set()  # wavelengths with an in-flight background reconnect
 
         self.plot_history = {}
         for wl in self.wavelengths:
@@ -388,12 +389,16 @@ class LaserManager:
                 def apply_task():
                     try:
                         inst.set_bias_current(bias)
-                        time.sleep(0.2) 
+                        time.sleep(0.2)
                         inst.set_pulse_current(pulse)
-                        time.sleep(0.2) 
-                        self.app._log(f"[INFO] Applied to {wl}: Bias={bias:.2f}mA, Pulse={pulse:.2f}mA")
+                        time.sleep(0.2)
+                        # _log touches the Tk log widget, so it must run on the main thread.
+                        self.app.master.after(0, lambda: self.app._log(
+                            f"[INFO] Applied to {wl}: Bias={bias:.2f}mA, Pulse={pulse:.2f}mA"))
                     except Exception as e:
-                        self.app._log(f"[ERROR] Failed applying currents to {wl}: {e}")
+                        err = str(e)
+                        self.app.master.after(0, lambda m=err: self.app._log(
+                            f"[ERROR] Failed applying currents to {wl}: {m}"))
 
                 threading.Thread(target=apply_task, daemon=True).start()
 
@@ -402,88 +407,6 @@ class LaserManager:
                 self.app.master.after(500, self.update_laser_status_loop)
             except Exception as e:
                 self.app._log(f"[ERROR] Configuration error for {wl}: {e}")
-
-    def update_laser_status_loop(self):
-        """Core loop for status tracking with isolated pipeline redirects and heavy capacity optimization."""
-        if self.laser_after_id:
-            self.app.master.after_cancel(self.laser_after_id)
-            self.laser_after_id = None
-
-        interval = 1000
-        current_time_floored = int(time.time())
-
-        for idx, wl in enumerate(self.wavelengths):
-            inst = self.laser_instances.get(wl)
-            ui_vars = self.app.ui.laser_tabs_data.get(wl)
-            if not inst or not ui_vars: continue
-
-            if inst.is_connected():
-                try:
-                    status_ok = inst.update_status()
-                    if status_ok:
-                        if self.comm_error_flags[wl]:
-                            self.comm_error_flags[wl] = False 
-                            self.app.master.after(10, lambda w=wl, i=inst: self.show_interlock_recovery_dialog(w, i))
-                            continue
-
-                        status = inst.status
-                        ld_on, tec_on = status.get('ld_on', False), status.get('tec_on', False)
-                        temp, pulse = status.get('ld_temp', 0), status.get('pulse', 0)
-                        actual_bias = status.get('bias', 0.0)      
-                        
-                        ld_mark = "●" if ld_on else "○"
-                        tec_mark = "●" if tec_on else "○"
-                        tab_text = f" {wl} [L:{ld_mark} T:{tec_mark}] "
-                        self.app.ui.laser_sub_notebook.tab(idx, text=tab_text, image=self.app.ui.tab_led_green, compound=tk.RIGHT)
-
-                        interlock_alarm = status.get('alarm', False) or status.get('interlock', False)
-                        if interlock_alarm:
-                            ui_vars["ld_status"].set("🔒 INTERLOCK")
-                            if "ld_label_obj" in ui_vars: 
-                                ui_vars["ld_label_obj"].config(foreground="#fd7e14")
-                        else:
-                            ui_vars["ld_status"].set("ON" if ld_on else "OFF")
-                            self.app.ui.update_laser_status_colors(wl, ld_on, tec_on)
-
-                        ui_vars["tec_status"].set("ON" if tec_on else "OFF")
-                        ui_vars["temp"].set(f"{temp:.2f} °C")
-                        ui_vars["pulse_live"].set(f"{pulse:.2f} mA")
-                        ui_vars["bias_live"].set(f"{actual_bias:.2f} mA")
-
-                        # RAM cache arrays update every 1s for immediate smooth GUI line plots
-                        self.plot_history[wl]["temp"].append(temp)
-                        self.plot_history[wl]["pulse"].append(pulse)
-                        self.plot_history[wl]["bias"].append(actual_bias)
-                        self.plot_history[wl]["time"].append(datetime.now())
-                        
-                        try:
-                            current_tab_idx = self.app.ui.laser_sub_notebook.index(self.app.ui.laser_sub_notebook.select())
-                            if idx == current_tab_idx:
-                                self.refresh_laser_realtime_plot(wl)
-                        except Exception as e:
-                            self.app._log(f"[WARNING] Failed to update plot: {e}")
-                            pass
-
-                        # [FIX & OPTIMIZATION] 
-                        # 1. Removed the old duplicate 3-argument call that generated the broken "laser_data_날짜.csv" files.
-                        # 2. Downsample logging to disk: Write only once every 30 seconds, OR immediately if hardware is currently running (LD ON).
-                        if ld_on or tec_on or (current_time_floored % 30 == 0):
-                            self.save_laser_realtime_data(wl, temp, pulse, ld_on, tec_on)
-                    else:
-                        self._handle_comm_failure(wl, idx)
-                except Exception as e:
-                    self.app._log(f"[ERROR] {wl} Comm Error: {e}")
-                    inst.disconnect()
-                    self._handle_comm_failure(wl, idx)
-            else:
-                if wl in self.expected_connections:
-                    self.app._log(f"[INFO] {wl} Attempting auto-reconnect...")
-                    inst.connect(dev_path=self.laser_port_mapping.get(wl))
-
-        if hasattr(self.app, 'master') and self.app.master.winfo_exists():
-            if self.laser_session_start and (time.time() - self.laser_session_start < 10):
-                interval = 1000
-            self.laser_after_id = self.app.master.after(interval, self.update_laser_status_loop)
 
     def _handle_comm_failure(self, wl, idx):
         """Handle UI when communication is lost"""
@@ -574,42 +497,6 @@ class LaserManager:
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to load data: {e}")
 
-    def refresh_laser_realtime_plot(self, wl="405nm"):
-        vars_dict = self.app.ui.laser_tabs_data.get(wl)
-        history = self.plot_history.get(wl)
-        if not vars_dict or not history or "ax_temp" not in vars_dict: return
-
-        times = list(history["time"])
-        if not times: return
-
-        step = max(1, len(times) // 1000)
-
-        d_times, d_temp, d_pulse = times[::step], list(history["temp"])[::step], list(history["pulse"])[::step]
-        bias_history = list(history.get("bias", []))
-        if len(bias_history) < len(times):
-            bias_history = [0.0] * (len(times) - len(bias_history)) + bias_history
-        d_bias = bias_history[::step]
-
-        ax_temp = vars_dict["ax_temp"]
-        ax_temp.clear()
-        ax_temp.plot(d_times, d_temp, 'r-', linewidth=1)
-        ax_temp.set_ylabel("Temp (°C)", color='r')
-        ax_temp.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
-        ax_temp.grid(True, alpha=0.3)
-
-        ax_curr = vars_dict["ax_curr"]
-        ax_curr.clear()
-
-        ax_curr.plot(d_times, d_pulse, 'g-', linewidth=1, label='Pulse')
-        ax_curr.plot(d_times, d_bias, color='purple', linestyle='-', linewidth=1, label='Bias')
-        ax_curr.set_ylabel("Current (mA)", color='g')
-        ax_curr.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
-        ax_curr.grid(True, alpha=0.3)
-        ax_curr.legend(loc='upper left') 
-
-        vars_dict["fig"].autofmt_xdate(rotation=30)
-        vars_dict["canvas"].draw()
-
     def setup_laser_logger(self):
         os.makedirs(self.laser_log_dir, exist_ok=True)
 
@@ -622,59 +509,6 @@ class LaserManager:
             handler.suffix = "_%Y-%m-%d.txt"
             handler.setFormatter(logging.Formatter('%(asctime)s | %(message)s'))
             self.laser_logger.addHandler(handler)
-
-    def load_today_laser_log(self):
-        """프로그램 시작 시 오늘 작성된 텍스트 로그가 있다면 불러와서 UI에 표시"""
-        today_str = datetime.now().strftime('%Y-%m-%d')
-        log_file = os.path.join(self.laser_log_dir, "laser_log_" + today_str + ".txt")
-
-        if os.path.exists(log_file):
-            try:
-                with open(log_file, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                    self.app.ui.laser_log_text.config(state="normal")
-                    self.app.ui.laser_log_text.insert(tk.END, content)
-                    self.app.ui.laser_log_text.config(state="disabled")
-                    self.app.ui.laser_log_text.yview(tk.END)
-            except Exception as e:
-                print(f"Failed to load today's laser log: {e}")
-
-
-    def preload_laser_history(self):
-        """Restore history from self.laser_log_dir for the last 24h"""
-        import pandas as pd
-        from datetime import timedelta
-        now = datetime.now()
-        start_point = (now - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-        dates_to_check = [(now - timedelta(days=1)).strftime('%Y%m%d'), now.strftime('%Y%m%d')]
-
-        for wl in self.wavelengths:
-            self.plot_history[wl]["time"].clear()
-            self.plot_history[wl]["temp"].clear()
-            self.plot_history[wl]["pulse"].clear()
-            total_points = 0
-
-            for date_str in dates_to_check:
-                # [FIX] Use dynamic log directory instead of hardcoded path
-                log_file = os.path.join(self.laser_log_dir, f"laser_data_{wl}_{date_str}.csv")
-                if os.path.exists(log_file):
-                    try:
-                        df = pd.read_csv(log_file)
-                        for _, row in df.iterrows():
-                            try:
-                                ts = datetime.fromisoformat(row['timestamp'])
-                                if ts >= start_point:
-                                    self.plot_history[wl]["time"].append(ts)
-                                    self.plot_history[wl]["temp"].append(float(row['temp_c']))
-                                    self.plot_history[wl]["pulse"].append(float(row['pulse_ma']))
-                                    self.plot_history[wl]["bias"].append(float(row.get('bias_ma', 0.0)))
-                                    total_points += 1
-                            except: continue
-                    except Exception as e:
-                        self.app._log(f"Preload error ({wl}, {date_str}): {e}")
-
-            if total_points > 0:
-                self.refresh_laser_realtime_plot(wl)
 
     def _log_laser(self, wl, msg):
         """Logs session messages into wavelength-isolated text files and distinct UI widgets."""
@@ -867,6 +701,7 @@ class LaserManager:
             self.laser_after_id = None
 
         interval = 1000
+        current_time_floored = int(time.time())
         for idx, wl in enumerate(self.wavelengths):
             inst = self.laser_instances.get(wl)
             ui_vars = self.app.ui.laser_tabs_data.get(wl)
@@ -918,19 +753,36 @@ class LaserManager:
                             self.app._log(f"[WARNING] Failed to update plot: {e}")
                             pass
 
-                        # [FIX] Removed duplicate 3-argument call block to prevent TypeError crash
-                        self.save_laser_realtime_data(wl, temp, pulse, ld_on, tec_on)
+                        # [FIX] Removed duplicate 3-argument call block to prevent TypeError crash.
+                        # Downsample disk logging: write only when hardware is active (LD/TEC ON),
+                        # otherwise at most once every 30s. Keeps the daily CSV from exploding.
+                        if ld_on or tec_on or (current_time_floored % 30 == 0):
+                            self.save_laser_realtime_data(wl, temp, pulse, ld_on, tec_on)
                     else:
                         self._handle_comm_failure(wl, idx)
-                        
+
                 except Exception as e:
                     self.app._log(f"[ERROR] {wl} Comm Error: {e}")
                     inst.disconnect()
                     self._handle_comm_failure(wl, idx)
             else:
-                if wl in self.expected_connections:
+                if wl in self.expected_connections and wl not in self._reconnecting:
+                    # USB (re)connection can block for a second or more; doing it inline
+                    # froze the GUI on every 1s poll. Run it off the main thread and guard
+                    # against overlapping attempts for the same wavelength.
+                    self._reconnecting.add(wl)
                     self.app._log(f"[INFO] {wl} Attempting auto-reconnect...")
-                    inst.connect(dev_path=self.laser_port_mapping.get(wl))
+
+                    def reconnect_task(w=wl, i=inst):
+                        try:
+                            i.connect(dev_path=self.laser_port_mapping.get(w))
+                        except Exception as e:
+                            self.app.master.after(0, lambda m=str(e): self.app._log(
+                                f"[WARNING] {w} reconnect failed: {m}"))
+                        finally:
+                            self._reconnecting.discard(w)
+
+                    threading.Thread(target=reconnect_task, daemon=True).start()
 
         if hasattr(self.app, 'master') and self.app.master.winfo_exists():
             if self.laser_session_start and (time.time() - self.laser_session_start < 10):

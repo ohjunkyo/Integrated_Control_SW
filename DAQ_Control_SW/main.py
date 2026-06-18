@@ -333,7 +333,7 @@ class App:
             if os.path.exists(APP_CONFIG_FILE):
                 with open(APP_CONFIG_FILE, 'r') as f:
                     data = json.load(f)
-                    config_path = data.get("config3h_path") or data.get("config3h_path")
+                    config_path = data.get("config3h_path")
                     
                     self.terminal_preference = data.get("terminal_preference", self.terminal_preference)
                     self.last_connected_wls = data.get("last_connected_wls", [])
