@@ -394,25 +394,32 @@ class AutomationUI:
 
 
     def update_start_button(self, is_running, status_text=None):
-        self.lock_manual_panel(is_running)
-        if is_running:
-            self.btn_start.config(text="⏳ RUNNING...", bg="#6c757d", state=tk.DISABLED)
-            self.btn_stop_run.config(text="⏹ Stop run", bg="#ffc107", state=tk.NORMAL)
-            self.btn_reset.config(state=tk.DISABLED)
-            display_txt = status_text if status_text else "SYSTEM STATUS: SCANNING..."
-            self.scan_status_label.config(text=display_txt, foreground="#dc3545")
+        # This is called both from the GUI thread (button callbacks) and from the
+        # scan worker thread (e.g. AutomationManager._run_thread's finally block).
+        # Touching Tk widgets off the main thread can crash Tcl/Tk, so always apply
+        # the widget changes on the main thread.
+        def _apply():
+            self.lock_manual_panel(is_running)
+            if is_running:
+                self.btn_start.config(text="⏳ RUNNING...", bg="#6c757d", state=tk.DISABLED)
+                self.btn_stop_run.config(text="⏹ Stop run", bg="#ffc107", state=tk.NORMAL)
+                self.btn_reset.config(state=tk.DISABLED)
+                display_txt = status_text if status_text else "SYSTEM STATUS: SCANNING..."
+                self.scan_status_label.config(text=display_txt, foreground="#dc3545")
 
-            if hasattr(self.controller, 'ui') and 'run_daq' in self.controller.ui.buttons:
-                self.controller.ui.buttons['run_daq'].config(state=tk.DISABLED, text="2. Run DAQ (Scanning)")
-        else:
-            self.btn_start.config(text="▶ Start run", bg="#28a745", state=tk.NORMAL)
-            self.btn_stop_run.config(text="⏹ Stop run", bg="#ffc107", state=tk.DISABLED) 
-            self.btn_reset.config(state=tk.NORMAL)
-            self.scan_status_label.config(text="SYSTEM STATUS: IDLE", foreground="gray")
+                if hasattr(self.controller, 'ui') and 'run_daq' in self.controller.ui.buttons:
+                    self.controller.ui.buttons['run_daq'].config(state=tk.DISABLED, text="2. Run DAQ (Scanning)")
+            else:
+                self.btn_start.config(text="▶ Start run", bg="#28a745", state=tk.NORMAL)
+                self.btn_stop_run.config(text="⏹ Stop run", bg="#ffc107", state=tk.DISABLED)
+                self.btn_reset.config(state=tk.NORMAL)
+                self.scan_status_label.config(text="SYSTEM STATUS: IDLE", foreground="gray")
 
-            if hasattr(self.controller, 'ui') and 'run_daq' in self.controller.ui.buttons:
-                if hasattr(self.controller, 'access_mgr') and self.controller.access_mgr.unlocked:
-                    self.controller.ui.buttons['run_daq'].config(state=tk.NORMAL, text="2. Run DAQ")
+                if hasattr(self.controller, 'ui') and 'run_daq' in self.controller.ui.buttons:
+                    if hasattr(self.controller, 'access_mgr') and self.controller.access_mgr.unlocked:
+                        self.controller.ui.buttons['run_daq'].config(state=tk.NORMAL, text="2. Run DAQ")
+
+        self.notebook.after(0, _apply)
 
     def update_sn_display(self, dev_num, tilt, rot):
         sn = None
