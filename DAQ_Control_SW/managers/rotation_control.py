@@ -107,7 +107,13 @@ class RotationManager:
         self.target_angles[dev_num] = {"tilt": tilt, "rot": None}
 
         client, cfg = self._get_config_and_client(dev_num)
-        if not client or not client.connect(): return
+        if not client or not client.connect():
+            # Connection failed: release the lock, otherwise the device stays "moving"
+            # forever and every later command is silently ignored.
+            self.is_moving[dev_num] = False
+            self.target_angles[dev_num] = {"tilt": None, "rot": None}
+            self.controller._log(f"ERROR: Modbus connect failed (Dev {dev_num}). Lock released.")
+            return
 
         try:
             unit = cfg["connection"]["unit"]
@@ -135,13 +141,22 @@ class RotationManager:
             error_msg = f"ERROR: SAFETY INTERLOCK! Cannot rotate. Tilt is {current_tilt:.1f} deg. Must be 0.0 deg."
             self.controller._log(error_msg)
 
+            # Blocked by interlock: release the lock so the device isn't stuck "moving".
+            self.is_moving[dev_num] = False
+            self.target_angles[dev_num] = {"tilt": None, "rot": None}
+
             if not skip_lock:
                 messagebox.showerror("Safety Interlock", f"Cannot rotate Device {dev_num}!\n\nTilt must be 0.0° before rotating.\nCurrent tilt is {current_tilt:.1f}°.")
             return
 
 
         client, cfg = self._get_config_and_client(dev_num)
-        if not client or not client.connect(): return
+        if not client or not client.connect():
+            # Connection failed: release the lock to avoid a permanent "moving" deadlock.
+            self.is_moving[dev_num] = False
+            self.target_angles[dev_num] = {"tilt": None, "rot": None}
+            self.controller._log(f"ERROR: Modbus connect failed (Dev {dev_num}). Lock released.")
+            return
 
         try:
             unit = cfg["connection"]["unit"]

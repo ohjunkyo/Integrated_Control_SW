@@ -2,7 +2,6 @@
 import tkinter as tk
 from tkinter import ttk, Toplevel, simpledialog, messagebox
 
-# [핵심] control_access.py에서 통합 비밀번호를 불러옵니다.
 from managers.control_access import ADMIN_PASSWORD 
 
 class ConfigWindow(Toplevel):

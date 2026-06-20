@@ -36,6 +36,18 @@
         "style": "Normal.TButton"
     },
     {
+        "frame": "scripts",
+        "label": "7. Uniformity (tag, runs)",
+        "command": "run_uniformity",
+        "style": "Normal.TButton"
+    },
+    {
+        "frame": "scripts",
+        "label": "8. Overlay Uniformity",
+        "command": "run_overlay",
+        "style": "Normal.TButton"
+    },
+    {
         "frame": "view",
         "label": "Image Viewer (Ctrl + I)",
         "command": "open_image_viewer",

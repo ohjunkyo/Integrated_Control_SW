@@ -6,6 +6,7 @@ import time
 import math
 import sys
 import os
+import signal
 import subprocess
 import threading
 import json
@@ -154,7 +155,7 @@ class App:
         self.update_laser_status_loop()
 
         if hasattr(self, 'auto_ui') and hasattr(self.auto_ui, 'update_sn_display'):
-            self.rot_mgr.start_monitoring(self.auto_ui.update_sn_display)
+            self.rot_mgr.start_monitoring(self._on_live_angles)
 
         if hasattr(self, 'ui'):
             self.ui.refresh_ui_state()
@@ -216,6 +217,19 @@ class App:
             return len(pids) > 1
         except Exception:
             return False
+
+    def _on_live_angles(self, dev_num, tilt, rot):
+        """모터 모니터링 스레드 콜백. 라이브 각도를 (1) Manual Control Panel 상태 라벨과
+        (2) PMT Setup & Helper 다이어그램 양쪽에 전달한다."""
+        try:
+            self.auto_ui.update_sn_display(dev_num, tilt, rot)
+        except Exception:
+            pass
+        if hasattr(self, 'ui') and hasattr(self.ui, 'update_helper_live'):
+            try:
+                self.ui.update_helper_live(dev_num, tilt, rot)
+            except Exception:
+                pass
 
     def request_control_unlock(self):
         """비밀번호 확인 후 제어권 활성화 및 자동화 UI 연동"""
@@ -333,7 +347,7 @@ class App:
             if os.path.exists(APP_CONFIG_FILE):
                 with open(APP_CONFIG_FILE, 'r') as f:
                     data = json.load(f)
-                    config_path = data.get("config3h_path") or data.get("config3h_path")
+                    config_path = data.get("config3h_path")
                     
                     self.terminal_preference = data.get("terminal_preference", self.terminal_preference)
                     self.last_connected_wls = data.get("last_connected_wls", [])
@@ -449,8 +463,7 @@ class App:
         except Exception as e:
             self.ui.update_log_view(f"Error reading log file: {e}")
 
-    def _execute_in_new_terminal(self, command, auto_close=False):
-        """저장된 설정에 따라 올바른 터미널에서 명령을 실행합니다."""
+    def _execute_in_new_terminal(self, command, auto_close=False, env=None):
         command_str_for_log = ' '.join(command)
         self._log(f"[INFO] Executing command via '{self.terminal_preference}': {command_str_for_log}")
 
@@ -462,15 +475,15 @@ class App:
                 else:
                     term_command_str = f"{' '.join(command)}; echo; read -p 'Execution finished. Press Enter to close this terminal...'"
                     term_command = ['xterm', '-hold', '-e', 'bash', '-c', term_command_str]
-                subprocess.Popen(term_command)
-            else: # 기본값은 gnome-terminal
+                subprocess.Popen(term_command, env=env)
+            else: 
                 if auto_close:
                     term_command_str = f"{' '.join(command)}"
                 else:
                     term_command_str = f"{' '.join(command)}; echo; read -p 'Execution finished. Press Enter to close this terminal...'"
-                
+
                 term_command = ['gnome-terminal', '--', 'bash', '-c', term_command_str]
-                subprocess.Popen(term_command)
+                subprocess.Popen(term_command, env=env)
 
         except FileNotFoundError:
             error_msg = f"'{self.terminal_preference}' not found. Please install it or select another terminal from the File menu."
@@ -479,6 +492,190 @@ class App:
         except Exception as e:
             self._log(f"ERROR: Failed to open terminal: {e}")
             messagebox.showerror("Error", f"Failed to open terminal: {e}")
+
+    def _ask_run_settings(self, title, fields):
+        """Show a non-persistent settings dialog before launching a ROOT macro.
+
+        fields: list of (key, label, default, hint) tuples.
+        Returns dict {key: str_value} on OK, or None if the user cancelled.
+        Settings are NEVER saved — dialog always opens with the supplied defaults.
+        """
+        import tkinter as tk
+        from tkinter import ttk
+
+        result = {}
+        cancelled = [False]
+
+        dlg = tk.Toplevel(self.master)
+        dlg.title(title)
+        dlg.resizable(False, False)
+        dlg.grab_set()
+
+        body = ttk.Frame(dlg, padding=16)
+        body.pack(fill=tk.BOTH, expand=True)
+
+        vars_ = {}
+        for i, (key, label, default, hint) in enumerate(fields):
+            ttk.Label(body, text=label, font=("Helvetica", 10, "bold"),
+                      anchor="e").grid(row=i, column=0, sticky="e", padx=(0, 8), pady=5)
+            v = tk.StringVar(value=str(default))
+            ttk.Entry(body, textvariable=v, width=12, justify="center").grid(
+                row=i, column=1, sticky="w", pady=5)
+            if hint:
+                ttk.Label(body, text=hint, foreground="#777",
+                          font=("Helvetica", 9)).grid(
+                    row=i, column=2, sticky="w", padx=(8, 0), pady=5)
+            vars_[key] = v
+
+        ttk.Label(body, text="↩ Always resets to default on next run",
+                  foreground="#6c757d", font=("Helvetica", 9, "italic")).grid(
+            row=len(fields), column=0, columnspan=3, pady=(10, 2))
+
+        btn_row = ttk.Frame(dlg, padding=(16, 0, 16, 12))
+        btn_row.pack(fill=tk.X)
+
+        def on_ok():
+            for k, v in vars_.items():
+                result[k] = v.get()
+            dlg.destroy()
+
+        def on_cancel():
+            cancelled[0] = True
+            dlg.destroy()
+
+        tk.Button(btn_row, text="▶ Run", bg="#28a745", fg="white",
+                  font=("Helvetica", 10, "bold"), relief="flat", padx=14,
+                  command=on_ok).pack(side=tk.RIGHT, padx=(4, 0))
+        tk.Button(btn_row, text="Cancel", bg="#6c757d", fg="white",
+                  font=("Helvetica", 10, "bold"), relief="flat", padx=14,
+                  command=on_cancel).pack(side=tk.RIGHT)
+
+        dlg.protocol("WM_DELETE_WINDOW", on_cancel)
+        dlg.wait_window()
+        return None if cancelled[0] else result
+
+    def _run_job_in_console(self, command, job_name="Job", env=None, slot="analysis"):
+        """배치형 외부 작업(DAQ/Produce/Analysis 등)을 별도 터미널 대신 UI Console
+        탭에서 실행하고 stdout/stderr 를 실시간으로 스트리밍한다.
+
+        - command : 인자 리스트. 단일 문자열 요소면 그대로 shell 로 실행하고,
+                    여러 요소면 공백으로 join 하여 실행한다(_execute_in_new_terminal 과 동일 규칙).
+        - slot    : "daq"  → DAQ 수집 스트림 슬롯
+                    "analysis" → Produce/Analysis/Contour 슬롯
+          슬롯별로 프로세스를 따로 관리하므로 DAQ 수집 중에도 분석을 동시에 돌릴 수 있다.
+          단, '같은 슬롯' 안에서는 한 번에 하나만 허용한다(파일/하드웨어 충돌 방지).
+        ROOT 인터랙티브 매크로(run_waveform 등 stdin 필요)는 이 경로를 쓰지 말 것.
+        """
+        import threading
+
+        if not hasattr(self, '_console_procs'):
+            self._console_procs = {}
+
+        # 같은 슬롯에 이미 실행 중인 작업이 있으면 거부한다(다른 슬롯은 영향 없음).
+        existing = self._console_procs.get(slot)
+        if existing is not None and existing.poll() is None:
+            busy_name = "DAQ stream" if slot == "daq" else "An analysis job"
+            messagebox.showwarning("Console Busy",
+                                   f"{busy_name} is already running in this slot.\n"
+                                   "Please wait for it to finish or press Stop.")
+            return
+
+        # 명령을 bash -c 로 감싼다(파이프/&& 등 셸 문법 허용 + 기존 동작과 호환).
+        cmd_str = command[0] if len(command) == 1 else " ".join(command)
+        argv = ['bash', '-c', cmd_str]
+
+        # Console 탭 + 해당 슬롯 서브탭을 전면에 띄운다.
+        self.ui.focus_console(slot)
+
+        self.ui.console_set_status(f"▶ Running: {job_name}", slot=slot, state="running")
+        self.ui.console_write(
+            f"\n===== {job_name} started @ {datetime.now().strftime('%H:%M:%S')} =====\n",
+            "info", slot=slot)
+        self._log(f"[INFO] Console job '{job_name}' [{slot}]: {cmd_str}")
+
+        try:
+            proc = subprocess.Popen(
+                argv, env=env,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1, start_new_session=True)
+        except Exception as e:
+            self.ui.console_write(f"[ERROR] Failed to start job: {e}\n", "err", slot=slot)
+            self.ui.console_set_status("✗ Failed to start", slot=slot, state="failed")
+            return
+
+        self._console_procs[slot] = proc
+
+        # Per-slot output buffer: reader thread appends here; a periodic 120ms
+        # timer on the main thread drains it in one batch → prevents Tk event
+        # queue flooding that caused UI freezes on high-throughput output.
+        if not hasattr(self, '_console_buffer'):
+            self._console_buffer = {}
+        self._console_buffer[slot] = []
+
+        _MAX_LINES_PER_TICK = 250  # cap per flush to keep UI responsive
+
+        def flush_buffer():
+            buf = self._console_buffer.get(slot)
+            if buf:
+                if len(buf) > _MAX_LINES_PER_TICK:
+                    # Take first N lines; leave the rest for next tick
+                    lines = buf[:_MAX_LINES_PER_TICK]
+                    del buf[:_MAX_LINES_PER_TICK]
+                    self.ui.console_write("".join(lines), slot=slot)
+                    # Still busy — reschedule immediately to drain remaining
+                    self.master.after(0, flush_buffer)
+                    return
+                else:
+                    self.ui.console_write("".join(buf), slot=slot)
+                    buf.clear()
+            # Reschedule while process is alive
+            if self._console_procs.get(slot) is proc and proc.poll() is None:
+                self.master.after(120, flush_buffer)
+
+        def reader():
+            """Read stdout in background; batch lines into buffer for main-thread flush."""
+            try:
+                for line in proc.stdout:
+                    buf = self._console_buffer.get(slot)
+                    if buf is not None:
+                        buf.append(line)
+            except Exception:
+                pass
+            finally:
+                code = proc.wait()
+                # Final flush then status update
+                def done():
+                    buf = self._console_buffer.get(slot, [])
+                    if buf:
+                        self.ui.console_write("".join(buf), slot=slot)
+                        buf.clear()
+                    if code == 0:
+                        self.ui.console_write(
+                            f"===== {job_name} finished (exit 0) =====\n\n", "ok", slot=slot)
+                        self.ui.console_set_status("✓ Done", slot=slot, state="done")
+                    else:
+                        self.ui.console_write(
+                            f"===== {job_name} FAILED (exit {code}) =====\n\n", "err", slot=slot)
+                        self.ui.console_set_status(
+                            f"✗ Failed (exit {code})", slot=slot, state="failed")
+                self.master.after(0, done)
+
+        threading.Thread(target=reader, daemon=True).start()
+        self.master.after(120, flush_buffer)
+
+    def stop_console_job(self, slot="analysis"):
+        """해당 슬롯에서 실행 중인 콘솔 작업을 프로세스 그룹째 종료한다(Stop 버튼)."""
+        procs = getattr(self, '_console_procs', {})
+        proc = procs.get(slot)
+        if proc is None or proc.poll() is not None:
+            self.ui.console_set_status("● Idle", slot=slot, state="idle")
+            return
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            self.ui.console_write("\n[STOP] Sent SIGTERM to running job.\n", "err", slot=slot)
+            self.ui.console_set_status("⏹ Stopped by user", slot=slot, state="stopped")
+        except Exception as e:
+            self.ui.console_write(f"\n[STOP] Failed to terminate: {e}\n", "err", slot=slot)
 
     def handle_button_click(self, command_id):
         if not self.config_manager:
@@ -606,15 +803,21 @@ class App:
                                  f"파일 권한(chmod +x)을 확인해 보세요.")
 
     def run_daq(self, tilt=None, r2=None, r3=None):
-        category = self.ui.run_mode.get() 
+        if not getattr(getattr(self, 'access_mgr', None), 'unlocked', True):
+            messagebox.showwarning(
+                "🔒 System Locked",
+                "Controls are locked.\n\nPlease click 'Unlock Controls' (top banner) before running DAQ.")
+            return
+
+        category = self.ui.run_mode.get()
         is_auto_running = hasattr(self, 'auto_mgr') and self.auto_mgr.is_running
         is_dummy = hasattr(self, 'auto_ui') and self.auto_ui.dummy_var.get()
-        
+
         if not is_auto_running:
             try:
                 check_running = subprocess.run(['pgrep', '-f', 'execute_DAQ'], capture_output=True)
                 if check_running.returncode == 0:
-                    messagebox.showwarning("DAQ Already Running", 
+                    messagebox.showwarning("DAQ Already Running",
                                            "An instance of 'execute_DAQ' is already running.\nPlease close the current terminal first.")
                     return
             except Exception as e:
@@ -622,16 +825,15 @@ class App:
 
         daq_path = self._get_daq_path()
         if not daq_path: return
-        
+
         if category == "manual" and hasattr(self.ui, 'manual_type_var'):
-            mode = self.ui.manual_type_var.get() 
+            mode = self.ui.manual_type_var.get()
         else:
-            mode = "laser" 
+            mode = "laser"
 
         start_block = "0"
 
         if is_auto_running:
-            # 1. 자동 스캔이 도는 중이면 사용자가 탭을 바꿔도 무시하고 자동 스캔 대역 강제 유지
             if is_dummy:
                 start_block = "900"
             else:
@@ -640,7 +842,6 @@ class App:
                 else:
                     start_block = "0"
         else:
-            # 2. 자동 스캔 중이 아닐 때(버튼을 직접 누를 때)만 현재 화면(탭) 상태 참조
             if is_dummy:
                 start_block = "900"
             elif category == "manual":
@@ -650,13 +851,12 @@ class App:
                     start_block = str(self.auto_mgr.current_scan_block)
                 else:
                     start_block = "0"
-        # =========================================================
 
-        script_path = os.path.join(daq_path, 'script_v6.sh')
+        script_path = os.path.join(daq_path, 'script_v7.sh')
         config_path = self.config_manager.filepath
-        
+
         command = [script_path, mode, config_path]
-        
+
         if tilt is not None and r2 is not None and r3 is not None:
             command.extend([str(r2), str(tilt), str(r3), str(tilt)])
             self._log(f"[INFO] Injecting live angles to DAQ -> R2:{r2}, T2:{tilt}, R3:{r3}, T3:{tilt}")
@@ -665,14 +865,29 @@ class App:
 
         command.append(start_block)
 
-        if is_auto_running:
-            cmd_str = " ".join(command)
-            tmux_cmd = ['tmux', 'send-keys', '-t', 'GeneralScan', cmd_str, 'C-m']
-            subprocess.run(tmux_cmd)
-            self._log(f"[INFO] Command sent to unified terminal (tmux): T:{tilt}")
+        current_env = os.environ.copy()
+        if hasattr(self.ui, 'file_format'):
+            current_env["FILE_FORMAT"] = self.ui.file_format.get()
         else:
-            self._execute_in_new_terminal(command, auto_close=False)
+            current_env["FILE_FORMAT"] = "root"  
 
+        if is_auto_running:
+            # Use the date fixed at scan start (set by AutomationManager.start_general_scan),
+            # NOT datetime.now(). Otherwise a scan that crosses midnight would switch to the
+            # new day's date mid-run, and the run numbering would reset back to the 0-block.
+            fixed_date = os.environ.get("SCAN_START_DATE") or datetime.now().strftime("%Y%m%d")
+            cmd_str = " ".join(command)
+            tmux_cmd = ['tmux', 'send-keys', '-t', 'GeneralScan',
+                        f'export SCAN_START_DATE={fixed_date}', 'C-m',
+                        f'export FILE_FORMAT={current_env["FILE_FORMAT"]}', 'C-m', 
+                        cmd_str, 'C-m']
+            subprocess.run(tmux_cmd)
+            self._log(f"[INFO] Auto Mode - Fixed Date Injected: {fixed_date}")
+        else:
+            if category == "manual":
+                current_env["SCAN_START_DATE"] = ""
+            # 별도 터미널 대신 UI Console 탭에서 실행(출력 실시간 스트리밍, 잔여 터미널 없음).
+            self._run_job_in_console(command, job_name="DAQ", env=current_env, slot="daq")
 
     def run_produce(self):
         selected_files = self.ui.get_selected_file_paths()
@@ -716,7 +931,7 @@ class App:
             all_commands_list.append(" ".join(command_parts))
 
         final_command_string = " && ".join(all_commands_list)
-        self._execute_in_new_terminal([final_command_string])
+        self._run_job_in_console([final_command_string], job_name="Produce")
 
     def run_analysis(self):
         selected_files = self.ui.get_selected_file_paths()
@@ -764,60 +979,51 @@ class App:
             all_commands_list.append(" ".join(command_parts))
 
         final_command_string = " && ".join(all_commands_list)
-        self._execute_in_new_terminal([final_command_string])
+        self._run_job_in_console([final_command_string], job_name="Analysis")
 
     def run_waveform(self):
-        """
-        Waveform inspection:
-        - 0개 선택: 텍스트 박스의 Run Number 사용
-        - 1개 선택: 선택한 파일의 경로와 Run Number 사용 (Produce 방식)
-        - 2개 이상: 경고 메시지 출력
+        """Open the embedded Waveform Inspection panel.
+
+        Priority:
+          1. File selected in Data Files tab  → load it directly.
+          2. No file selected but run number given → search raw data folder.
+          3. Neither → prompt user.
+        All axis/threshold settings are controlled inside the panel (no dialog).
         """
         selected_files = self.ui.get_selected_file_paths()
-        daq_path = self._get_daq_path()
-        if not daq_path: return
-
-        helper = os.path.join(self.base_dir, 'run_cpp_script_v2.sh')
-        #script = os.path.join(daq_path, 'Draw_waveform_v2.C')
-        script = os.path.join(daq_path, 'Draw_overshoot_waveform.C')
-        config_path = self.config_manager.filepath
-        
-        run_num = None
-        f_path = "" # 선택된 파일 경로 초기화
 
         if len(selected_files) > 1:
-            messagebox.showwarning("Multiple Files Selected", 
-                                   "Please select only one file for Waveform Inspection.")
+            messagebox.showwarning("Multiple Files Selected",
+                                   "Select only one file for Waveform Inspection.")
             return
-        
-        elif len(selected_files) == 1:
-            # Case: 파일이 하나 선택된 경우
-            f_path = selected_files[0]
-            f_name = os.path.basename(f_path)
-            #pattern = re.compile(r'_([0-9]+)\.root$')
-            pattern = re.compile(r'(\d+)(?=[^\d]*\.root$)')
-            match = pattern.search(f_name)
-            
-            if match:
-                run_num = str(int(match.group(1)))
-            else:
-                self._log(f"WARNING: Could not extract run number from {f_name}.")
-                messagebox.showwarning("Error", f"Could not extract run number from selected file:\n{f_name}")
-                return
-        
-        else:
-            # Case: 선택된 파일이 없는 경우 (기존 방식)
-            run_num = self.ui.get_run_num()
-            if not run_num: return
 
-        if run_num:
-            # Produce/Analysis와 동일하게 파일 경로를 따옴표로 감싸 인자로 추가
-            f_path_arg = f"\\\"{f_path}\\\"" if f_path else "\"\""
-            
-            # 인자 순서: run_num, 'interactive', f_path_arg
-            command_parts = [helper, script, config_path, run_num, 'interactive', f_path_arg]
-            final_command_string = " ".join(command_parts)
-            self._execute_in_new_terminal([final_command_string])
+        f_path = ""
+        if len(selected_files) == 1:
+            f_path = selected_files[0]
+        else:
+            # Try to locate the raw file from the run number
+            run_num = self.ui.get_run_num()
+            if run_num and self.config_manager:
+                raw_base = self.config_manager.get_config_value("RawDataPath") or ""
+                for subdir in ("Laser", "Dark", ""):
+                    folder = os.path.join(raw_base, subdir) if subdir else raw_base
+                    if not os.path.isdir(folder):
+                        continue
+                    for fname in os.listdir(folder):
+                        if fname.lower().endswith(".root"):
+                            m = re.search(r'(\d+)(?=[^\d]*\.root$)', fname)
+                            if m and str(int(m.group(1))) == str(int(run_num)):
+                                f_path = os.path.join(folder, fname)
+                                break
+                    if f_path:
+                        break
+
+        # Focus the Waveform tab; load the file if found
+        self.ui.focus_waveform_tab(f_path if f_path else None)
+        if not f_path:
+            messagebox.showinfo("Waveform Inspection",
+                                "No file found. Use '📂 Open file' or '⟳ Use selected file'"
+                                " in the Waveform tab to load a RAW .root file.")
 
     def run_contour(self):
         """
@@ -860,17 +1066,198 @@ class App:
             messagebox.showwarning("No Runs", "No valid run numbers found to process.")
             return
             
+        # Ask for axis settings (not persisted — always resets to defaults)
+        settings = self._ask_run_settings(
+            "Waveform Contour Settings",
+            [
+                ("y_lo", "Y-axis  –mV (below ped):", "3.0", "mV below pedestal"),
+                ("y_hi", "Y-axis  +mV (above ped):", "3.0", "mV above pedestal"),
+                ("x_start", "X-axis start:",         "",     "sample # (blank = full range)"),
+                ("x_end",   "X-axis end  :",         "",     "sample # (blank = full range)"),
+            ])
+        if settings is None:
+            return  # user cancelled
+
+        y_lo = settings["y_lo"].strip() or "3.0"
+        y_hi = settings["y_hi"].strip() or "3.0"
+        x_s  = settings["x_start"].strip() or "-1"
+        x_e  = settings["x_end"].strip()   or "-1"
+
         all_commands_list = []
         for run_num, f_path in runs_to_process:
-            # 파일 경로가 있으면 인자로 추가 (따옴표 이스케이프 처리)
             f_path_arg = f"\\\"{f_path}\\\"" if f_path else "\"\""
-            
-            # [중요] helper, script, config, run_num 뒤에 '파일 경로' 인자를 추가해서 보냄
-            command_parts = [helper, script, config_path, run_num, f_path_arg]
+            command_parts = [helper, script, config_path, run_num, f_path_arg, y_lo, y_hi, x_s, x_e]
             all_commands_list.append(" ".join(command_parts))
 
         final_command_string = " && ".join(all_commands_list)
-        self._execute_in_new_terminal([final_command_string])
+        self._run_job_in_console([final_command_string], job_name="Contour", slot="contour")
+
+    def run_uniformity(self):
+        """Draw_Uniformity_Norm_v7(tag, run_start, run_end): builds per-PMT uniformity summary
+        PNGs (Data/image/Uniformity/) from the result files whose name contains <tag>."""
+        daq_path = self._get_daq_path()
+        if not daq_path:
+            return
+        script = os.path.join(daq_path, 'Draw_Uniformity_Norm_v7.C')
+        if not os.path.exists(script):
+            messagebox.showerror("Error", f"Macro not found:\n{script}")
+            return
+
+        dlg = tk.Toplevel(self.master)
+        dlg.title("Uniformity Analysis")
+        dlg.transient(self.master)
+        dlg.grab_set()
+        dlg.resizable(False, False)
+
+        ttk.Label(dlg, text="Draw_Uniformity_Norm_v7(tag, run_start, run_end)",
+                  font=("Helvetica", 10, "bold")).grid(row=0, column=0, columnspan=2, padx=12, pady=(12, 2))
+        ttk.Label(dlg, justify="left", foreground="#666666",
+                  text=("Reads Data/FinalResult/ result files whose name contains <tag>,\n"
+                        "for run numbers in [start, end]. Saves PNGs to Data/image/Uniformity/.\n"
+                        "PMT serials / HV / angles are read automatically from each file.")
+                  ).grid(row=1, column=0, columnspan=2, padx=12, pady=(0, 8))
+
+        today = datetime.now().strftime("%Y%m%d")
+        tag_var = tk.StringVar(value=today)
+        start_var = tk.StringVar(value="0")
+        end_var = tk.StringVar(value="99")
+
+        # Date tags available in FinalResult/ (so the user can pick instead of typing)
+        avail_tags = []
+        try:
+            rp = self.config_manager.get_config_value("FinalResultPath")
+            if rp and os.path.isdir(rp):
+                seen = set()
+                for fn in os.listdir(rp):
+                    m = re.search(r'_(\d{8})_', fn)
+                    if m:
+                        seen.add(m.group(1))
+                avail_tags = sorted(seen, reverse=True)
+        except Exception:
+            pass
+
+        ttk.Label(dlg, text="Date tag   (e.g. " + today + ")").grid(row=2, column=0, sticky="w", padx=12, pady=3)
+        ttk.Combobox(dlg, textvariable=tag_var, values=avail_tags, width=16).grid(row=2, column=1, padx=12, pady=3)
+        ttk.Label(dlg, text="Run start  (e.g. 0)").grid(row=3, column=0, sticky="w", padx=12, pady=3)
+        ttk.Entry(dlg, textvariable=start_var, width=18).grid(row=3, column=1, padx=12, pady=3)
+        ttk.Label(dlg, text="Run end    (e.g. 99)").grid(row=4, column=0, sticky="w", padx=12, pady=3)
+        ttk.Entry(dlg, textvariable=end_var, width=18).grid(row=4, column=1, padx=12, pady=3)
+
+        def _go():
+            tag = tag_var.get().strip()
+            try:
+                rs, re_ = int(start_var.get()), int(end_var.get())
+            except ValueError:
+                messagebox.showerror("Invalid input", "Run start/end must be integers.", parent=dlg)
+                return
+            if not tag:
+                messagebox.showerror("Invalid input", "Date tag is required.", parent=dlg)
+                return
+            dlg.destroy()
+            helper = os.path.join(self.base_dir, 'run_cpp_script_v2.sh')
+            config_path = self.config_manager.filepath
+            tag_arg = f'\\\"{tag}\\\"'
+            cmd = " ".join([helper, script, config_path, tag_arg, str(rs), str(re_)])
+            self._execute_in_new_terminal([cmd])
+            self._log(f"[INFO] Uniformity analysis: tag={tag}, runs {rs}-{re_}")
+            messagebox.showinfo("Uniformity Analysis",
+                                f"Running for tag={tag}, runs {rs}-{re_}.\n\n"
+                                "PNGs will appear in Data/image/Uniformity/.\n"
+                                "Use the Image Viewer (then Refresh) once the terminal finishes.")
+            self.ui.open_image_viewer()
+
+        btns = ttk.Frame(dlg)
+        btns.grid(row=5, column=0, columnspan=2, pady=10)
+        ttk.Button(btns, text="Run", command=_go).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btns, text="Cancel", command=dlg.destroy).pack(side=tk.LEFT, padx=5)
+
+    def run_overlay(self):
+        """Pick which Uniformity datasets to overlay. Writes Data/UNIFORMITY/overlay_tags.txt
+        (read by Draw_Overlay_Uniformity_v7.C) and runs the macro."""
+        daq_path = self._get_daq_path()
+        if not daq_path:
+            return
+        script = os.path.join(daq_path, 'Draw_Overlay_Uniformity_v7.C')
+        if not os.path.exists(script):
+            messagebox.showerror("Error", f"Macro not found:\n{script}")
+            return
+
+        uni_dir = os.path.join(daq_path, 'Data', 'UNIFORMITY')
+        prefix, suffix = 'Graphs_Uniformity_', '.root'
+        graphs = sorted(glob.glob(os.path.join(uni_dir, f'{prefix}*{suffix}')))
+        tags = [os.path.basename(g)[len(prefix):-len(suffix)] for g in graphs]
+        if not tags:
+            messagebox.showwarning("No datasets",
+                                   f"No {prefix}*{suffix} found in:\n{uni_dir}\n\n"
+                                   "Run '7. Uniformity' first to create the per-dataset graph files.")
+            return
+
+        dlg = tk.Toplevel(self.master)
+        dlg.title("Overlay Uniformity")
+        dlg.transient(self.master)
+        dlg.grab_set()
+        ttk.Label(dlg, text="Select datasets to overlay  (Ctrl / Shift for multiple):",
+                  font=("Helvetica", 10, "bold")).pack(padx=10, pady=(10, 2))
+        ttk.Label(dlg, text=f"Reads {uni_dir}/{prefix}<tag>{suffix}",
+                  foreground="#666666").pack(padx=10, pady=(0, 6))
+
+        frame = ttk.Frame(dlg)
+        frame.pack(fill=tk.BOTH, expand=True, padx=10)
+        sb = ttk.Scrollbar(frame, orient="vertical")
+        lb = tk.Listbox(frame, selectmode=tk.EXTENDED, width=46,
+                        height=min(16, max(4, len(tags))), yscrollcommand=sb.set)
+        sb.config(command=lb.yview)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        for tg in tags:
+            lb.insert(tk.END, tg)
+
+        # Pre-select whatever is already in overlay_tags.txt
+        cfg_path = os.path.join(uni_dir, 'overlay_tags.txt')
+        preset = set()
+        if os.path.exists(cfg_path):
+            try:
+                with open(cfg_path) as f:
+                    for ln in f:
+                        ln = ln.strip()
+                        if ln and not ln.startswith('#'):
+                            preset.add(ln.split(',')[0].strip())
+            except Exception:
+                pass
+        for i, tg in enumerate(tags):
+            if tg in preset:
+                lb.selection_set(i)
+
+        def _go():
+            sel = [tags[i] for i in lb.curselection()]
+            if not sel:
+                messagebox.showwarning("No selection", "Select at least one dataset.", parent=dlg)
+                return
+            try:
+                os.makedirs(uni_dir, exist_ok=True)
+                with open(cfg_path, 'w') as f:
+                    f.write("# Overlay tag list (edited from the GUI). One 'tag' or 'tag,Label' per line.\n")
+                    for tg in sel:
+                        f.write(tg + "\n")
+            except Exception as e:
+                messagebox.showerror("Error", f"Could not write overlay_tags.txt:\n{e}", parent=dlg)
+                return
+            dlg.destroy()
+            helper = os.path.join(self.base_dir, 'run_cpp_script_v2.sh')
+            config_path = self.config_manager.filepath
+            cmd = " ".join([helper, script, config_path])
+            self._execute_in_new_terminal([cmd])
+            self._log(f"[INFO] Overlay Uniformity: {len(sel)} datasets -> {sel}")
+            messagebox.showinfo("Overlay Uniformity",
+                                f"Overlaying {len(sel)} dataset(s).\n\n"
+                                "PNGs will appear in Data/image/Uniformity/.\n"
+                                "Open the Image Viewer (Refresh) once the terminal finishes.")
+            self.ui.open_image_viewer()
+
+        btns = ttk.Frame(dlg)
+        btns.pack(pady=10)
+        ttk.Button(btns, text="Overlay", command=_go).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btns, text="Cancel", command=dlg.destroy).pack(side=tk.LEFT, padx=5)
 
     def run_transfer(self):
         daq_path = self._get_daq_path()
@@ -892,7 +1279,6 @@ class App:
         thread.start()
 
     def _perform_rsync_thread(self, file_paths, dest_dir):
-        """rsync를 사용하여 백그라운드에서 파일을 이동시키는 함수"""
         moved_count = 0
         failed_files = []
         total_files = len(file_paths)
@@ -1050,7 +1436,8 @@ class App:
                 for dir_path in dirs_to_check:
                     if os.path.isdir(dir_path):
                         for f in os.listdir(dir_path):
-                            if f.lower().endswith('.root'):
+                            #if f.lower().endswith('.root'):
+                            if f.lower().endswith('.root') or f.lower().endswith('.csv'):
                                 full_path = os.path.join(dir_path, f)
                                 mtime = os.path.getmtime(full_path)
                                 mtime_str = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')
@@ -1066,37 +1453,34 @@ class App:
         file_list.sort(key=lambda x: x["mtime_float"], reverse=True)
         return file_list
 
-    def open_root_file_browser(self, file_path):
-        try:
-            command = ['root', '-l', file_path]
+    def open_data_file_viewer(self, file_path):
+        if file_path.lower().endswith('.csv'):
+            try:
+                self._log(f"[INFO] Opening CSV file via Text Editor: {file_path}")
+                subprocess.Popen(['gedit', file_path])
+            except FileNotFoundError:
+                messagebox.showerror("Error", "'gedit' command not found. Please install gedit or change editor command.")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to open file:\n{e}")
+            return
 
-            if self.terminal_preference == 'xterm':
-                term_command = ['xterm', '-e'] + command
-            else: # gnome-terminal
-                term_command = ['gnome-terminal', '--'] + command
-
-            subprocess.Popen(term_command)
-
-        except FileNotFoundError:
-            messagebox.showerror("Error", f"'root' or '{self.terminal_preference}' command not found.")
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to open ROOT file:\n{e}")
+        # ROOT file: open an INTERACTIVE ROOT session (with a TBrowser) inside a terminal.
+        # A bare subprocess.Popen(['root','-l',file]) has no tty, so ROOT reads EOF and exits
+        # immediately — nothing visible. Routing it through a terminal restores the ability
+        # to inspect the file structure (TBrowser / .ls / tree->Print()).
+        self._log(f"[INFO] Opening ROOT file in a terminal: {file_path}")
+        root_cmd = f'root -l "{file_path}" -e "new TBrowser"'
+        self._execute_in_new_terminal([root_cmd], auto_close=False)
 
     def get_latest_run_number(self):
         if not self.config_manager: return (1, "Config not loaded.")
         try:
             cfg = self.config_manager.get_all_variables()
-
-            category = self.ui.run_mode.get()
-            if category == "manual" and hasattr(self.ui, 'manual_type_var'):
-                mode = self.ui.manual_type_var.get()
-            else:
-                mode = "laser"
+            category = self.ui.run_mode.get() # 'manual' 또는 'general' 등
 
             is_dummy = hasattr(self, 'auto_ui') and getattr(self.auto_ui.dummy_var, 'get', lambda: False)()
             is_auto_running = hasattr(self, 'auto_mgr') and getattr(self.auto_mgr, 'is_running', False)
-            
-            # [FIXED] UI 표시용 번호도 자동 스캔 유무를 최우선으로 판단
+
             if is_auto_running:
                 if is_dummy:
                     start_block = 900
@@ -1116,71 +1500,57 @@ class App:
                     else:
                         start_block = 0
 
-            serials = [cfg.get("SN1", ""), cfg.get("SN2", ""), cfg.get("SN3", "")]
-            directions = [cfg.get("direction1", ""), cfg.get("direction2", ""), cfg.get("direction3", "")]
-            hvs = [cfg.get("HV1", ""), cfg.get("HV2", ""), cfg.get("HV3", "")]
-            rotateAngles = [cfg.get("RotateAngle1", ""), cfg.get("RotateAngle2", ""),""]
-            tiltAngles = [cfg.get("TiltAngle1", ""), cfg.get("TiltAngle2", ""), ""]
+            upper_bound = start_block + 99
 
-            core_parts = []
-            for i in range(len(serials)):
-                if serials[i]:
-                    def format_angle_py(prefix, angle_str):
-                        if not angle_str: return f"{prefix}00" 
-                        try:
-                            angle_val = int(angle_str)
-                            sign = 'M' if angle_val < 0 else 'P'
-                            if angle_val == 0: return f"{prefix}00"
-                            return f"{prefix}{sign}{abs(angle_val)}"
-                        except (ValueError, TypeError):
-                            return f"{prefix}ERR"
-
-                    rot_part = format_angle_py("R", rotateAngles[i])
-                    tilt_part = format_angle_py("T", tiltAngles[i])
-
-                    core_parts.append(f"{serials[i]}{directions[i]}_hv{hvs[i]}_{rot_part}_{tilt_part}")
-
-            filename_core = "_".join(core_parts)
-            note_suffix = f"_{cfg.get('NOTE', '')}" if cfg.get('NOTE') else ""
-            
+            mode = self.ui.run_mode.get()
             if mode == "dark":
-                mode_tag = f"_dark{note_suffix}"
                 path_to_scan = os.path.join(cfg.get("RawDataPath", ""), "Dark")
-            else: 
-                laser = cfg.get("Laser", "")
-                mode_tag = f"_laser{laser}{note_suffix}"
+            else:
                 path_to_scan = os.path.join(cfg.get("RawDataPath", ""), "Laser")
 
             if not os.path.isdir(path_to_scan):
                 return (start_block, f"Data path not found: {path_to_scan}")
 
-            search_pattern = os.path.join(path_to_scan, f"{filename_core}{mode_tag}.*.root")
-            matching_files = glob.glob(search_pattern)
+            scan_date = os.environ.get("SCAN_START_DATE", datetime.now().strftime("%Y%m%d"))
+            if not scan_date:
+                scan_date = datetime.now().strftime("%Y%m%d")
+                
+            base_prefix = f"precal_raw_kor_run_{scan_date}"
 
-            upper_bound = start_block + 99
+            search_pattern_root = os.path.join(path_to_scan, f"{base_prefix}_*.root")
+            search_pattern_csv  = os.path.join(path_to_scan, f"{base_prefix}_*.csv")
+
+            matching_files = glob.glob(search_pattern_root) + glob.glob(search_pattern_csv)
+            self._log(f"[INFO] Run checking: Found {len(matching_files)} files matching prefix '{base_prefix}'")
+
             run_numbers = []
-            #pattern = re.compile(r'_([0-9]+)\.root$')
-            pattern = re.compile(r'(\d+)(?=[^\d]*\.root$)')
+            pattern = re.compile(r'[._]([0-9]+)\.(root|csv)$')
+            #pattern = re.compile(r'_([0-9]+)\.(root|csv)$')
+
+            if 'upper_bound' not in locals():
+                upper_bound = start_block + 99
+
             for f_path in matching_files:
                 f_name = os.path.basename(f_path)
                 match = pattern.search(f_name)
                 if match:
-                    num = int(match.group(1))
-                    if start_block <= num <= upper_bound:
-                        run_numbers.append(num)
+                    run_num = int(match.group(1))
+                    if start_block <= run_num <= upper_bound:
+                        run_numbers.append(run_num)
 
             if not run_numbers:
-                message = f"Next is #{start_block:03d} (Block {start_block})."
+                message = f"No runs for this block. Next is #{start_block}."
                 return (start_block, message)
             else:
                 latest_run = max(run_numbers)
                 next_run = latest_run + 1
-                message = f"Latest in block {start_block} is #{latest_run:03d}. Next is #{next_run:03d}."
+                message = f"{len(run_numbers)} run(s) found in block {start_block}. Latest is #{latest_run}. Next is #{next_run}."
                 return (next_run, message)
 
         except Exception as e:
-            self._log(f"[ERROR] Error checking run numbers: {e}")
-            return (0, "Error checking for previous runs.")
+            error_msg = f"Error checking run numbers: {e}"
+            self._log(f"ERROR: {error_msg}")
+            return (800, f"Error checking for previous runs: {e}")
 
 
     def update_latest_run_number(self):
@@ -1450,6 +1820,15 @@ class App:
         self._log("Shutting down... Releasing hardware resources.")
         self._log("=== Application Closing Process ===")
 
+        # 콘솔에서 실행 중인 배치 작업(슬롯별)이 있으면 프로세스 그룹째 종료해 좀비를 막는다.
+        for slot, cproc in getattr(self, '_console_procs', {}).items():
+            if cproc is not None and cproc.poll() is None:
+                try:
+                    os.killpg(os.getpgid(cproc.pid), signal.SIGTERM)
+                    self._log(f"[INFO] Terminated running console job [{slot}] on exit.")
+                except Exception as e:
+                    self._log(f"[WARNING] Failed to terminate console job [{slot}]: {e}")
+
         shutdown_win = tk.Toplevel(self.master)
         shutdown_win.title("Shutting Down")
         shutdown_win.geometry("380x150")
@@ -1520,8 +1899,44 @@ class App:
         self.master.after(100, step1_motors)
 
 
-if __name__ == "__main__":
+def launch():
+    """애플리케이션 진입점.
+
+    main.py(프로덕션)와 TEST MODE shim 인 main_test.py 가 공통으로 호출한다.
+    실제 시뮬레이션 모드는 별도 파일이 아니라 in-app 'TEST RUN (Simulation Mode)'
+    체크박스(auto_ui.dummy_var)로 동작하므로, 두 진입점은 동일한 App 을 실행한다.
+    """
     base_directory = os.path.dirname(os.path.abspath(__file__))
+
+    # 시작 시, 크래시로 남은 '좀비' 런타임 플래그를 안전하게 청소한다.
+    # 단, DAQ/분석 프로세스가 실제로 살아있으면 라이브 런 보호를 위해 건너뛴다.
+    try:
+        import glob
+
+        daq_active = subprocess.run(['pgrep', '-x', 'execute_DAQ_v2'], capture_output=True).returncode == 0
+        ana_active = subprocess.run(['pgrep', '-f', 'run_cpp_script_v2.sh'], capture_output=True).returncode == 0
+        tmux_active = subprocess.run(['pgrep', '-f', 'Ana_Seq'], capture_output=True).returncode == 0
+
+        if daq_active or ana_active or tmux_active:
+            print("[WARNING] Active core processes detected in memory. Startup flag flushing aborted to protect live runs.")
+        else:
+            leftover_flags = glob.glob("/tmp/daq_flags/*.flag")
+            if leftover_flags:
+                for flag_file in leftover_flags:
+                    try:
+                        os.remove(flag_file)
+                    except Exception:
+                        pass
+                print(f"[SUCCESS] Safely purged {len(leftover_flags)} dead zombie runtime flags. System is clean.")
+            else:
+                print("[INFO] No leftover runtime flags found. System pipeline is pristine.")
+    except Exception as e:
+        print(f"[ERROR] Safeguard initialization flag interlock error: {e}")
+
     root = tk.Tk()
     app = App(root, base_directory)
     root.mainloop()
+
+
+if __name__ == "__main__":
+    launch()

@@ -1,4 +1,5 @@
 # managers/ui_automation.py
+import os
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
 from datetime import datetime, timezone, timedelta  
@@ -25,12 +26,11 @@ class AutomationUI:
         main_container = ttk.Frame(self.tab, padding=10)
         main_container.pack(fill=tk.BOTH, expand=True)
 
-        main_container.rowconfigure(0, weight=4) 
-        main_container.rowconfigure(1, weight=6) 
+        main_container.rowconfigure(0, weight=1)
         main_container.columnconfigure(0, weight=1)
 
         self.upper_notebook = ttk.Notebook(main_container)
-        self.upper_notebook.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
+        self.upper_notebook.grid(row=0, column=0, sticky="nsew")
 
         # --- 1. Quick Setup 탭 ---
         info_tab = ttk.Frame(self.upper_notebook, padding=15)
@@ -80,11 +80,12 @@ class AutomationUI:
         dash_tab = ttk.Frame(self.upper_notebook, padding=10)
         self.upper_notebook.add(dash_tab, text=" 🎛️ Control Panel (Master) ")
 
-        dash_tab.columnconfigure(0, weight=6) 
-        dash_tab.columnconfigure(1, weight=4) 
-        dash_tab.rowconfigure(0, weight=1)
+        dash_tab.columnconfigure(0, weight=6)
+        dash_tab.columnconfigure(1, weight=4)
+        dash_tab.rowconfigure(0, weight=0)   # controls row — minimal height
+        dash_tab.rowconfigure(1, weight=1)   # matrix row — takes remaining space
 
-        left_ctrl = ttk.LabelFrame(dash_tab, text=" ⚙️ Operation Controls ", padding=15)
+        left_ctrl = ttk.LabelFrame(dash_tab, text=" ⚙️ Operation Controls ", padding=8)
         left_ctrl.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
 
         self.scan_status_label = ttk.Label(left_ctrl, text="SYSTEM STATUS: IDLE",
@@ -96,58 +97,82 @@ class AutomationUI:
         
         self.dummy_chk = tk.Checkbutton(left_ctrl, text="🧪 TEST RUN (Simulation Mode)",
                                 variable=self.dummy_var, font=("Helvetica", 10), fg="#007ACC")
-        self.dummy_chk.grid(row=0, column=0, columnspan=3, padx=8, pady=(5, 15), sticky="w")
+        self.dummy_chk.grid(row=0, column=0, columnspan=3, padx=8, pady=(2, 4), sticky="w")
 
-        self.btn_unlock = tk.Button(left_ctrl, text="🔓 Unlock", bg="#f0ad4e", font=("Helvetica", 12, "bold"), 
-                                    height=2, command=self.controller.request_control_unlock)
-        self.btn_unlock.grid(row=1, column=0, padx=8, pady=8, sticky="nsew")
+        # [중복 제거] 기존엔 여기에도 Unlock 버튼이 있었으나, 이제 잠금/해제는
+        # DAQ 탭 상단의 안전 배너(_create_lock_banner)가 단일 소스로 담당한다.
+        # 남은 공간은 Start/Stop 이 채우도록 재배치한다.
+        # ── 그룹 1: 주 제어 (Start / Pause) + Reset ─────────────────────────
+        primary = ttk.LabelFrame(left_ctrl, text=" ▶ Run Control ", padding=8)
+        primary.grid(row=1, column=0, columnspan=3, sticky="nsew", padx=4, pady=(0, 6))
+        primary.columnconfigure(0, weight=3)
+        primary.columnconfigure(1, weight=3)
+        primary.columnconfigure(2, weight=2)
 
-        self.btn_start = tk.Button(left_ctrl, text="▶ Start run", bg="#28a745", fg="white", 
-                                   font=("Helvetica", 11, "bold"), command=self.controller.auto_mgr.start_general_scan)
-        self.btn_start.grid(row=1, column=1, padx=8, pady=8, sticky="nsew")
+        self.btn_start = tk.Button(primary, text="▶ Start run", bg="#28a745", fg="white",
+                                   font=("Helvetica", 12, "bold"), height=1,
+                                   command=self.controller.auto_mgr.start_general_scan)
+        self.btn_start.grid(row=0, column=0, padx=4, pady=3, sticky="nsew")
 
-        self.btn_reset = tk.Button(left_ctrl, text="🔄 Reset\nangle", bg="#6c757d", fg="white", 
-                                   font=("Helvetica", 10, "bold"), command=self.confirm_and_reset_angles)
-        self.btn_reset.grid(row=1, column=2, rowspan=2, padx=8, pady=8, sticky="nsew")
-
-        self.btn_stop_run = tk.Button(left_ctrl, text="⏹ Stop run", bg="#ffc107", 
-                                      font=("Helvetica", 11, "bold"), 
+        # Pause/Continue 토글(진행상황 보존). 속성명은 호환을 위해 btn_stop_run 유지.
+        self.btn_stop_run = tk.Button(primary, text="⏸ Pause", bg="#ffc107",
+                                      font=("Helvetica", 12, "bold"), height=1,
                                       command=self.controller.auto_mgr.handle_stop_continue)
-        self.btn_stop_run.grid(row=2, column=1, padx=8, pady=8, sticky="nsew")
+        self.btn_stop_run.grid(row=0, column=1, padx=4, pady=3, sticky="nsew")
 
-        self.eta_label = ttk.Label(left_ctrl, text="ETA: --:--:--", font=("Helvetica", 13, "bold"), 
+        self.btn_reset = tk.Button(primary, text="🔄 Reset angle", bg="#6c757d", fg="white",
+                                   font=("Helvetica", 10, "bold"),
+                                   command=self.confirm_and_reset_angles)
+        self.btn_reset.grid(row=0, column=2, padx=4, pady=3, sticky="nsew")
+
+        # ── ETA (강조) ──────────────────────────────────────────────────────
+        self.eta_label = ttk.Label(left_ctrl, text="ETA: --:--:--",
+                                   font=("Helvetica", 15, "bold"),
                                    foreground="#007ACC", anchor="center")
-        self.eta_label.grid(row=3, column=0, columnspan=3, pady=10, sticky="nsew")
+        self.eta_label.grid(row=2, column=0, columnspan=3, pady=(4, 6), sticky="nsew")
 
-        abort_frame = ttk.Frame(left_ctrl)
-        abort_frame.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(10, 0))
-        
         am = self.controller.auto_mgr
         param_text = f"Scan Params: Tilt {am.tilt_step}° | Rot {am.rot_step}° | Rest {am.rest_time}s"
-        self.params_label = ttk.Label(abort_frame, text=param_text, font=("Helvetica", 10, "bold"), foreground="#007ACC")
-        self.params_label.pack(side=tk.LEFT) 
+        self.params_label = ttk.Label(left_ctrl, text=param_text,
+                                      font=("Helvetica", 10, "bold"), foreground="#6c757d",
+                                      anchor="center")
+        self.params_label.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(0, 4))
 
-        self.btn_scan_settings = tk.Button(abort_frame, text="⚙️ Params", command=self.open_scan_params, 
-                                          bg="#f0ad4e", fg="black", state=tk.DISABLED)
-        self.btn_scan_settings.pack(side=tk.RIGHT)
+        ttk.Separator(left_ctrl, orient="horizontal").grid(
+            row=4, column=0, columnspan=3, sticky="ew", pady=4)
 
-        self.btn_emg_stop = tk.Button(abort_frame, text="🚨 Abort Scan & Stop Motors", bg="#dc3545", 
-                                      fg="white", font=("Helvetica", 13, "bold"), height=2, padx=15, 
-                                      command=self.controller.auto_mgr.emergency_stop)
-        self.btn_emg_stop.pack(side=tk.RIGHT, padx=(10, 0))
+        # ── 그룹 2: 위험 구역 (Abort) + 안내/Params ─────────────────────────
+        danger = ttk.LabelFrame(left_ctrl, text=" 🛑 Danger Zone ", padding=8)
+        danger.grid(row=5, column=0, columnspan=3, sticky="nsew", padx=4, pady=(2, 0))
+        danger.columnconfigure(0, weight=1)
 
-        right_status = ttk.LabelFrame(dash_tab, text=" 🛰️ Manual Control Panel ", padding=15)
+        self.btn_emg_stop = tk.Button(danger, text="⚠️ Re-Run / Abort Scan", bg="#dc3545",
+                                      fg="white", font=("Helvetica", 12, "bold"), height=1,
+                                      command=self.confirm_abort)
+        self.btn_emg_stop.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+
+        side_btns = ttk.Frame(danger)
+        side_btns.grid(row=0, column=1, sticky="ns")
+        tk.Button(side_btns, text="ⓘ Stop / Abort Guide", command=self.show_stop_sequences_info,
+                  bg="#e9ecef", fg="#333", font=("Helvetica", 9, "bold"),
+                  relief="flat").pack(fill=tk.X, pady=(0, 4))
+        self.btn_scan_settings = tk.Button(side_btns, text="⚙️ Params", command=self.open_scan_params,
+                                           bg="#f0ad4e", fg="black",
+                                           font=("Helvetica", 9, "bold"), state=tk.DISABLED)
+        self.btn_scan_settings.pack(fill=tk.X)
+
+        right_status = ttk.LabelFrame(dash_tab, text=" 🛰️ Manual Control Panel ", padding=8)
         right_status.grid(row=0, column=1, sticky="nsew")
 
         self.manual_control_buttons = []
 
         for idx, sn in enumerate([self.sn2_val, self.sn3_val]):
             dev_frame = ttk.Frame(right_status)
-            dev_frame.pack(fill=tk.X, pady=(0, 40 if idx==0 else 0)) 
-            
-            lbl = ttk.Label(dev_frame, text=f"{sn} | Status -> Tilt: 0.0°, Rot: 0.0°", 
-                font=("Helvetica", 16, "bold"), foreground="#007ACC")
-            lbl.pack(anchor="w", pady=(0, 10))
+            dev_frame.pack(fill=tk.X, pady=(0, 10 if idx==0 else 0))
+
+            lbl = ttk.Label(dev_frame, text=f"{sn} | Status -> Tilt: 0.0°, Rot: 0.0°",
+                font=("Helvetica", 13, "bold"), foreground="#007ACC")
+            lbl.pack(anchor="w", pady=(0, 4))
             if not hasattr(self, 'sn_labels'): self.sn_labels = {}
             self.sn_labels[sn] = lbl
             
@@ -156,16 +181,16 @@ class AutomationUI:
             
             t_v = tk.DoubleVar(value=0.0); r_v = tk.DoubleVar(value=0.0)
             
-            ttk.Label(input_f, text="Tilt:", font=("Helvetica", 11, "bold")).pack(side=tk.LEFT, padx=(0, 5))
-            ttk.Entry(input_f, textvariable=t_v, width=10, font=("Helvetica", 16, "bold"), justify="center").pack(side=tk.LEFT, padx=(0, 15))
-            
-            ttk.Label(input_f, text="Rot:", font=("Helvetica", 11, "bold")).pack(side=tk.LEFT, padx=(0, 5))
-            ttk.Entry(input_f, textvariable=r_v, width=10, font=("Helvetica", 16, "bold"), justify="center").pack(side=tk.LEFT)
+            ttk.Label(input_f, text="Tilt:", font=("Helvetica", 10, "bold")).pack(side=tk.LEFT, padx=(0, 4))
+            ttk.Entry(input_f, textvariable=t_v, width=8, font=("Helvetica", 12, "bold"), justify="center").pack(side=tk.LEFT, padx=(0, 10))
+
+            ttk.Label(input_f, text="Rot:", font=("Helvetica", 10, "bold")).pack(side=tk.LEFT, padx=(0, 4))
+            ttk.Entry(input_f, textvariable=r_v, width=8, font=("Helvetica", 12, "bold"), justify="center").pack(side=tk.LEFT)
             
             self.manual_vars[sn] = (t_v, r_v)
             
             btn_f = ttk.Frame(dev_frame)
-            btn_f.pack(fill=tk.X, pady=(12, 0))
+            btn_f.pack(fill=tk.X, pady=(5, 0))
 
             btn_get = tk.Button(btn_f, text="🔄 Get Current", 
                                 command=lambda s=sn: self.sync_current_to_inputs(s),
@@ -186,6 +211,39 @@ class AutomationUI:
 
             tk.Button(btn_f, text="⏹ Stop", bg="#ffc107", font=("Helvetica", 10, "bold"), width=10,
                       command=lambda d=idx+2: self.controller.rot_mgr.stop_rotation(d)).pack(side=tk.LEFT, padx=5)
+
+        # ── Scan Progress Matrix (dash_tab row=1, spans both columns) ──────
+        matrix_outer = ttk.LabelFrame(dash_tab, text=" 📊 Scan Progress Matrix ", padding=5)
+        matrix_outer.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(8, 0))
+        matrix_outer.columnconfigure(0, weight=1)
+        matrix_outer.rowconfigure(0, weight=1)
+
+        self.matrix_canvas = tk.Canvas(matrix_outer, highlightthickness=0)
+        self.matrix_scrollbar = ttk.Scrollbar(matrix_outer, orient="vertical",
+                                              command=self.matrix_canvas.yview)
+        self.matrix_scroll_frame = ttk.Frame(self.matrix_canvas)
+
+        self.matrix_scroll_frame.bind(
+            "<Configure>",
+            lambda e: self.matrix_canvas.configure(scrollregion=self.matrix_canvas.bbox("all"))
+        )
+
+        self.matrix_window_id = self.matrix_canvas.create_window(
+            (0, 0), window=self.matrix_scroll_frame, anchor="nw")
+        self.matrix_canvas.bind(
+            "<Configure>",
+            lambda e: self.matrix_canvas.itemconfig(self.matrix_window_id, width=e.width)
+        )
+        self.matrix_canvas.configure(yscrollcommand=self.matrix_scrollbar.set)
+
+        self.matrix_canvas.grid(row=0, column=0, sticky="nsew")
+        self.matrix_scrollbar.grid(row=0, column=1, sticky="ns")
+
+        for sn in [self.sn2_val, self.sn3_val]:
+            f = ttk.LabelFrame(self.matrix_scroll_frame,
+                               text=f" {sn} Scan Progress Matrix ", padding=10)
+            f.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=5)
+            self._build_horizontal_table(f, sn)
 
         # --- 2. Schedule Managers 탭 ---
         schedule_tab = ttk.Frame(self.upper_notebook, padding=10)
@@ -211,42 +269,11 @@ class AutomationUI:
         self.upper_notebook.add(history_tab, text=" 📊 Scan History ")
         self._build_history_tab(history_tab)
 
-        matrix_container = ttk.Frame(main_container)
-        matrix_container.grid(row=1, column=0, sticky="nsew")
-        matrix_container.columnconfigure(0, weight=1)
-        matrix_container.rowconfigure(0, weight=1)
-
-        self.matrix_canvas = tk.Canvas(matrix_container, highlightthickness=0)
-        self.matrix_scrollbar = ttk.Scrollbar(matrix_container, orient="vertical", command=self.matrix_canvas.yview)
-        
-        self.matrix_scroll_frame = ttk.Frame(self.matrix_canvas)
-
-        self.matrix_scroll_frame.bind(
-            "<Configure>",
-            lambda e: self.matrix_canvas.configure(scrollregion=self.matrix_canvas.bbox("all"))
-        )
-
-        self.matrix_window_id = self.matrix_canvas.create_window((0, 0), window=self.matrix_scroll_frame, anchor="nw")
-        
-        self.matrix_canvas.bind(
-            '<Configure>', 
-            lambda e: self.matrix_canvas.itemconfig(self.matrix_window_id, width=e.width)
-        )
-
-        self.matrix_canvas.configure(yscrollcommand=self.matrix_scrollbar.set)
-
-        self.matrix_canvas.grid(row=0, column=0, sticky="nsew", pady=(10, 0))
-        self.matrix_scrollbar.grid(row=0, column=1, sticky="ns", pady=(10, 0))
-
-        for sn in [self.sn2_val, self.sn3_val]:
-            f = ttk.LabelFrame(self.matrix_scroll_frame, text=f" {sn} Scan Progress Matrix ", padding=10)
-            f.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=5)
-            self._build_horizontal_table(f, sn)
 
     def _build_horizontal_table(self, parent, sn):
         angles = list(range(-55, 56, 5))
-        h_font = ("Helvetica", 11, "bold") 
-        d_font = ("Helvetica", 10, "bold") 
+        h_font = ("Helvetica", 13, "bold")
+        d_font = ("Helvetica", 12, "bold")
         
         parent.columnconfigure(0, weight=0, minsize=110) 
         for col in range(1, len(angles) + 1): 
@@ -261,8 +288,8 @@ class AutomationUI:
             ttk.Label(parent, text=f"{axis}-Axis", font=h_font, anchor="center").grid(row=r_idx+1, column=0, sticky="nsew", padx=5)
             
             for i, tilt in enumerate(angles):
-                c = tk.Label(parent, text="-", bg="#e9ecef", relief="groove", font=d_font, width=8)
-                c.grid(row=r_idx+1, column=i+1, sticky="nsew", padx=2, pady=3, ipady=6)
+                c = tk.Label(parent, text="-", bg="#e9ecef", relief="groove", font=d_font, width=6)
+                c.grid(row=r_idx+1, column=i+1, sticky="nsew", padx=2, pady=5, ipady=16)
                 self.cells[(sn, tilt, axis)] = c
 
 
@@ -371,15 +398,74 @@ class AutomationUI:
 
     def update_stop_button(self, is_running):
         if is_running:
-            self.btn_stop_run.config(text="⏹ Stop run", bg="#ffc107")
+            self.btn_stop_run.config(text="⏸ Pause", bg="#ffc107", fg="black")
         else:
             self.btn_stop_run.config(text="⏯ Continue", bg="#17a2b8", fg="white")
 
-    def update_unlock_ui(self, is_unlocked):
-        if is_unlocked:
-            self.btn_unlock.config(text="🔓 Lock", bg="#28a745", fg="white")
+    def confirm_abort(self):
+        """Three-way dialog: [Yes]=abort+fresh start, [No]=abort+keep resume, [Cancel]=do nothing."""
+        am = self.controller.auto_mgr
+        msg = (
+            "⚠️ Abort & Stop Motors — shutdown sequence:\n"
+            "   1. Immediately halt scan loop\n"
+            "   2. Stop motors (SN2 · SN3)\n"
+            "   3. Force-kill DAQ process (execute_DAQ_v2)\n"
+            "   4. Reset UI\n\n"
+            "What should happen to the recovery checkpoint?\n\n"
+            "  [Yes]     Abort + DELETE checkpoint  →  next Start begins fresh from -55°\n"
+            "  [No]      Abort + KEEP checkpoint    →  next Start can resume from last point\n"
+            "  [Cancel]  Do nothing — return to scan\n\n"
+            "※ The last step's data may be incomplete regardless of choice."
+        )
+        res = messagebox.askyesnocancel("Re-Run / Abort Scan", msg, icon="warning")
+        if res is None:
+            return
+        am.emergency_stop()
+        if res is True:
+            try:
+                if os.path.exists(am.state_file):
+                    os.remove(am.state_file)
+            except Exception as e:
+                self.controller._log(f"[WARNING] Failed to clear recovery state: {e}")
+            am.resume_data = None
+            self.add_auto_log("🗑️ Recovery checkpoint deleted — next Start will begin fresh from -55°.")
         else:
-            self.btn_unlock.config(text="🔒 Unlock", bg="#f0ad4e", fg="black")
+            self.add_auto_log("💾 Recovery checkpoint kept — next Start will offer resume.")
+
+    def show_stop_sequences_info(self):
+        """Info dialog explaining Pause vs Abort sequences."""
+        msg = (
+            "■ ⏸ Pause / ⏯ Continue\n"
+            "   - Waits for the current step to finish, then holds at the next checkpoint.\n"
+            "   - Motors and DAQ are NOT killed; all progress is preserved.\n"
+            "   - Press Continue to resume from exactly where it paused.\n\n"
+            "■ ⚠️ Re-Run / Abort Scan\n"
+            "   1. Halt scan loop immediately\n"
+            "   2. Stop motors (SN2 · SN3)\n"
+            "   3. Force-kill DAQ process\n"
+            "   4. Reset UI\n"
+            "   - A dialog will ask: [Yes] delete checkpoint (fresh start from -55°)\n"
+            "     / [No] keep checkpoint (resume available at next Start)\n"
+            "     / [Cancel] abort nothing.\n\n"
+            "■ 🆕 Starting completely fresh\n"
+            "   - In the Abort dialog choose [Yes] (deletes checkpoint), OR\n"
+            "   - When 'Recovery Found' appears at Start, click [No] to discard it.\n\n"
+            "■ 🔄 Reset angle\n"
+            "   - Independently moves motors back to 0° (Tilt first, then Rot).\n\n"
+            "Summary: use Pause to pause and resume; use Abort to stop completely."
+        )
+        messagebox.showinfo("Stop / Abort Guide", msg)
+
+    def update_unlock_ui(self, is_unlocked):
+        # Control Panel 의 Unlock 버튼은 제거되었고, 잠금 표시는 상단 안전 배너가
+        # 담당한다. 하위 호환을 위해 메서드는 남기되, btn_unlock 이 있을 때만 갱신한다.
+        btn = getattr(self, 'btn_unlock', None)
+        if btn is None:
+            return
+        if is_unlocked:
+            btn.config(text="🔓 Lock", bg="#28a745", fg="white")
+        else:
+            btn.config(text="🔒 Unlock", bg="#f0ad4e", fg="black")
 
     def lock_manual_panel(self, is_locked):
         """Secures the manual panel configuration items preventing runtime collision interferences."""
@@ -394,25 +480,32 @@ class AutomationUI:
 
 
     def update_start_button(self, is_running, status_text=None):
-        self.lock_manual_panel(is_running)
-        if is_running:
-            self.btn_start.config(text="⏳ RUNNING...", bg="#6c757d", state=tk.DISABLED)
-            self.btn_stop_run.config(text="⏹ Stop run", bg="#ffc107", state=tk.NORMAL)
-            self.btn_reset.config(state=tk.DISABLED)
-            display_txt = status_text if status_text else "SYSTEM STATUS: SCANNING..."
-            self.scan_status_label.config(text=display_txt, foreground="#dc3545")
+        # This is called both from the GUI thread (button callbacks) and from the
+        # scan worker thread (e.g. AutomationManager._run_thread's finally block).
+        # Touching Tk widgets off the main thread can crash Tcl/Tk, so always apply
+        # the widget changes on the main thread.
+        def _apply():
+            self.lock_manual_panel(is_running)
+            if is_running:
+                self.btn_start.config(text="⏳ RUNNING...", bg="#6c757d", state=tk.DISABLED)
+                self.btn_stop_run.config(text="⏸ Pause", bg="#ffc107", fg="black", state=tk.NORMAL)
+                self.btn_reset.config(state=tk.DISABLED)
+                display_txt = status_text if status_text else "SYSTEM STATUS: SCANNING..."
+                self.scan_status_label.config(text=display_txt, foreground="#dc3545")
 
-            if hasattr(self.controller, 'ui') and 'run_daq' in self.controller.ui.buttons:
-                self.controller.ui.buttons['run_daq'].config(state=tk.DISABLED, text="2. Run DAQ (Scanning)")
-        else:
-            self.btn_start.config(text="▶ Start run", bg="#28a745", state=tk.NORMAL)
-            self.btn_stop_run.config(text="⏹ Stop run", bg="#ffc107", state=tk.DISABLED) 
-            self.btn_reset.config(state=tk.NORMAL)
-            self.scan_status_label.config(text="SYSTEM STATUS: IDLE", foreground="gray")
+                if hasattr(self.controller, 'ui') and 'run_daq' in self.controller.ui.buttons:
+                    self.controller.ui.buttons['run_daq'].config(state=tk.DISABLED, text="2. Run DAQ (Scanning)")
+            else:
+                self.btn_start.config(text="▶ Start run", bg="#28a745", state=tk.NORMAL)
+                self.btn_stop_run.config(text="⏸ Pause", bg="#ffc107", fg="black", state=tk.DISABLED)
+                self.btn_reset.config(state=tk.NORMAL)
+                self.scan_status_label.config(text="SYSTEM STATUS: IDLE", foreground="gray")
 
-            if hasattr(self.controller, 'ui') and 'run_daq' in self.controller.ui.buttons:
-                if hasattr(self.controller, 'access_mgr') and self.controller.access_mgr.unlocked:
-                    self.controller.ui.buttons['run_daq'].config(state=tk.NORMAL, text="2. Run DAQ")
+                if hasattr(self.controller, 'ui') and 'run_daq' in self.controller.ui.buttons:
+                    if hasattr(self.controller, 'access_mgr') and self.controller.access_mgr.unlocked:
+                        self.controller.ui.buttons['run_daq'].config(state=tk.NORMAL, text="2. Run DAQ")
+
+        self.notebook.after(0, _apply)
 
     def update_sn_display(self, dev_num, tilt, rot):
         sn = None
@@ -544,23 +637,24 @@ class AutomationUI:
 
     def update_eta_realtime(self):
         auto_mgr = getattr(self.controller, 'auto_mgr', None)
-        
+
         if not auto_mgr or not auto_mgr.is_running:
-            return 
-            
-        if auto_mgr.pause_event.is_set() and self.remaining_eta_seconds > 0:
-            self.remaining_eta_seconds -= 1
-            
-            m, s = divmod(self.remaining_eta_seconds, 60)
+            return
+
+        # 일시정지(pause_event 가 clear) 상태면 ETA 를 멈춰서 표시한다.
+        paused = not auto_mgr.pause_event.is_set()
+
+        res = auto_mgr.get_eta_seconds() if hasattr(auto_mgr, 'get_eta_seconds') else None
+        if res:
+            eta, current, total = res
+            m, s = divmod(int(eta), 60)
             h, m = divmod(m, 60)
-            
-            if self.total_est_size_mb >= 1024:
-                size_str = f"{self.total_est_size_mb / 1024.0:.1f} GB"
+            ts = f"{h:02d}:{m:02d}:{s:02d}"
+            if paused:
+                self.eta_label.config(text=f"⏸ Paused  |  ETA {ts}  ({current}/{total})")
             else:
-                size_str = f"{self.total_est_size_mb:.0f} MB"
-            
-            self.eta_label.config(text=f"Storage Warning: ~ {size_str} | ETA: {int(h):02d}:{int(m):02d}:{int(s):02d}")
-            
+                self.eta_label.config(text=f"ETA {ts}   ({current}/{total} steps)")
+
         self.notebook.after(1000, self.update_eta_realtime)
 
     def add_auto_log(self, message):

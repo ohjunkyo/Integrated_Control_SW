@@ -18,3 +18,9 @@ DAQ_Control_SW/LOG/
 main_v*.py
 ui_manager_original.py
 __pycache__/
+
+# Python virtual environment
+venv/
+
+# Claude Code internal files
+.claude/

@@ -20,9 +20,9 @@ class AutomationManager:
 
         ######### Plz don't modified #########3
         self.tilt_step = 5.0
-        self.rot_step = 90.0
+        self.rot_step = 45.0
         self.safe_move_step = 15.0  
-        self.rest_time = 3.0
+        self.rest_time = 5.0
 
         self.scan_range = {"start": -55, "end": 55} 
 
@@ -317,6 +317,13 @@ class AutomationManager:
         total_steps = points_per_axis * 2
         current_step = 0
 
+        # [ETA] 실측 기반 ETA용 타이밍 기록 초기화.
+        #   고정 220초 추정 대신, 실제로 완료된 스텝들의 평균 소요시간으로 남은 시간을 계산한다.
+        self.scan_t0 = time.time()
+        self.scan_total_steps = total_steps
+        self.scan_done_steps = 0
+        self.scan_last_done_t = self.scan_t0
+
         start_axis = "X"
         start_tilt = self.scan_range["start"]
         skip_until_match = False
@@ -511,19 +518,32 @@ class AutomationManager:
 
 
     def _update_progress_ui(self, current, total):
-        progress = (current / total) * 100
-        remaining_points = total - current
-        
-        # [INFO] DAQ Time (approx 200s) + Pre/Post Wait (10s) + Motor Move (10s) = 220 seconds
-        step_time = 220 if not self.controller.auto_ui.dummy_var.get() else 1
-        eta_seconds = remaining_points * step_time
-        
-        time_str = time.strftime('%H:%M:%S', time.gmtime(eta_seconds))
-        
-        if hasattr(self.controller, 'master') and self.controller.master.winfo_exists():
-            self.controller.master.after(0, lambda: self.controller.auto_ui.eta_label.config(
-                text=f"ETA: {time_str} ({current} / {total})"
-            ))
+        # [ETA] 실제로 한 스텝이 끝날 때마다 '이번 세션' 완료 수와 시각을 기록한다.
+        # 화면 라벨 갱신은 ui_automation.update_eta_realtime 가 1초마다 단독으로 담당한다
+        # (여기서 직접 라벨을 쓰면 두 곳이 충돌해 깜빡인다).
+        self.scan_done_steps = getattr(self, 'scan_done_steps', 0) + 1
+        self.scan_last_done_t = time.time()
+        self.scan_total_steps = total
+        self.scan_current_step = current
+
+    def get_eta_seconds(self):
+        """완료된 스텝들의 실측 평균으로 남은 시간을 추정한다.
+        반환: (eta_seconds, current_step, total_steps). 아직 데이터가 없으면 nominal 추정."""
+        total = getattr(self, 'scan_total_steps', 0)
+        current = getattr(self, 'scan_current_step', 0)
+        if total <= 0:
+            return None
+        remaining = max(0, total - current)
+        done = getattr(self, 'scan_done_steps', 0)
+        t0 = getattr(self, 'scan_t0', None)
+        if done <= 0 or t0 is None:
+            # 첫 스텝 완료 전: 대략값(실측 전이라 어쩔 수 없음).
+            nominal = 1 if self.controller.auto_ui.dummy_var.get() else 220
+            return (remaining * nominal, current, total)
+        avg = (self.scan_last_done_t - t0) / done          # 세션 실측 평균/스텝
+        into_current = time.time() - self.scan_last_done_t  # 현재 스텝 경과분 차감
+        eta = max(0.0, avg * remaining - into_current)
+        return (eta, current, total)
 
     def _show_scan_summary(self, start, end, shifter):
         self.save_scan_history(start, end, shifter, is_success=True) # 성공 시 저장

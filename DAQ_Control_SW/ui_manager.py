@@ -27,6 +27,7 @@ class UIManager:
     def __init__(self, master, controller):
         self.master = master
         self.controller = controller
+        self.file_format = tk.StringVar(value="root")
 
         if hasattr(self.controller, 'access_mgr'):
             self.unlock_btn = tk.Button(master, text="🔒 Unlock Controls",
@@ -166,6 +167,7 @@ class UIManager:
         self.main_notebook.add(self.laser_main_frame, text=" Laser Control ")
 
         self._create_status_dashboard(self.daq_main_frame)
+        self._create_lock_banner(self.daq_main_frame)
 
         paned_window = ttk.PanedWindow(self.daq_main_frame, orient=tk.HORIZONTAL)
         paned_window.pack(fill=tk.BOTH, expand=True)
@@ -177,11 +179,16 @@ class UIManager:
         left_vbar = ttk.Scrollbar(left_scroll_container, orient="vertical", command=left_canvas.yview)
         
         left_pane = ttk.Frame(left_canvas, padding="10")
-        
-        left_canvas.create_window((0, 0), window=left_pane, anchor="nw", width=450)
+
+        # Keep the embedded window id so we can stretch it to the canvas width.
+        left_window_id = left_canvas.create_window((0, 0), window=left_pane, anchor="nw", width=450)
         left_canvas.configure(yscrollcommand=left_vbar.set)
 
+        # scrollregion follows the inner content height
         left_pane.bind("<Configure>", lambda e: left_canvas.configure(scrollregion=left_canvas.bbox("all")))
+        # ...and the inner frame width follows the canvas width, so dragging the PanedWindow
+        # sash actually reflows the controls instead of leaving blank space or clipping them.
+        left_canvas.bind("<Configure>", lambda e: left_canvas.itemconfig(left_window_id, width=e.width))
 
         left_canvas.pack(side="left", fill="both", expand=True)
         left_vbar.pack(side="right", fill="y")
@@ -215,12 +222,24 @@ class UIManager:
         self.notebook.add(config_tab, text="PMT Setup & Helper")
         self._create_status_frame(config_tab)
 
-        # Tab 2: Data Files (Treeview 자체 스크롤바 사용)
+        # Tab 2: Console — DAQ/Produce/Analysis 작업 출력을 별도 터미널 대신
+        # UI 안에서 실시간으로 보여준다(터미널 잔여물 제거).
+        # 가장 자주 보게 되는 탭이므로 Helper 바로 옆(눈에 띄는 위치)에 둔다.
+        self.console_tab = ttk.Frame(self.notebook, padding=10)
+        self.notebook.add(self.console_tab, text="📟 Output")
+        self._create_console_viewer(self.console_tab)
+
+        # Tab 3: Waveform Inspection (embedded, replaces external ROOT terminal)
+        self.waveform_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.waveform_tab, text="🔬 Waveform")
+        self._create_waveform_viewer(self.waveform_tab)
+
+        # Tab 4: Data Files (Treeview 자체 스크롤바 사용)
         data_tab = ttk.Frame(self.notebook, padding=10)
         self.notebook.add(data_tab, text="Data Files")
         self._create_data_viewer(data_tab)
 
-        # Tab 3: Log (ScrolledText 자체 스크롤바 사용)
+        # Tab 5: Log (ScrolledText 자체 스크롤바 사용)
         log_tab = ttk.Frame(self.notebook, padding=10)
         self.notebook.add(log_tab, text="Log")
         self._create_log_viewer(log_tab)
@@ -236,7 +255,23 @@ class UIManager:
         self.main_notebook.add(self.ups_main_frame, text=" UPS Status ")
         self._create_ups_monitoring_tab(self.ups_main_frame)
 
-        # 5: Emergency Contact
+        # 5: Integrated Log Center (read-only viewer over all scattered logs)
+        try:
+            self.log_center_frame = ttk.Frame(self.main_notebook)
+            self.main_notebook.add(self.log_center_frame, text=" 📑 Logs ")
+            self._create_log_center_tab(self.log_center_frame)
+        except Exception as e:
+            print(f"[WARNING] Log Center tab init failed (non-fatal): {e}")
+
+        # 6: Quick Start guide (English)
+        try:
+            self.quick_start_frame = ttk.Frame(self.main_notebook)
+            self.main_notebook.add(self.quick_start_frame, text=" 📖 Quick Start ")
+            self._create_quick_start_tab(self.quick_start_frame)
+        except Exception as e:
+            print(f"[WARNING] Quick Start tab init failed (non-fatal): {e}")
+
+        # 7: Emergency Contact
         self.contact_frame = ttk.Frame(self.main_notebook)
         self.main_notebook.add(self.contact_frame, text=" ☎️ Emergency ")
         self._create_contact_tab(self.contact_frame)
@@ -278,11 +313,48 @@ class UIManager:
                         foreground=c["fg"])
         style.map("Treeview", background=[('selected', '#4b4b4b')])
 
+        # Entry/Combobox/Spinbox: the 'clam' theme keeps fieldbackground white, so in dark
+        # mode the (now white) text became invisible on the still-white field. Style the
+        # field background + text colour explicitly.
+        for w in ("TEntry", "TCombobox", "TSpinbox"):
+            style.configure(w, fieldbackground=c["text_bg"], foreground=c["text_fg"],
+                            background=c["frame_bg"], insertcolor=c["fg"])
+            style.map(w,
+                      fieldbackground=[("readonly", c["text_bg"]), ("disabled", c["bg"])],
+                      foreground=[("readonly", c["text_fg"]), ("disabled", "#777777")])
+        # Combobox drop-down list popup (a separate Tk Listbox)
+        self.master.option_add("*TCombobox*Listbox.background", c["text_bg"])
+        self.master.option_add("*TCombobox*Listbox.foreground", c["text_fg"])
+        style.configure("TCheckbutton", background=c["bg"], foreground=c["fg"])
+        style.configure("TRadiobutton", background=c["bg"], foreground=c["fg"])
+
         self.master.config(bg=c["bg"])
-        self.log_text.config(bg=c["text_bg"], fg=c["text_fg"], insertbackground=c["fg"])
-        #self.config_text.config(bg=c["text_bg"], fg=c["text_fg"], insertbackground=c["fg"])
-        if hasattr(self, 'laser_log_text'):
-            self.laser_log_text.config(bg=c["text_bg"], fg=c["text_fg"])
+
+        # tk.Text / ScrolledText widgets are NOT ttk, so they must be recoloured by hand;
+        # otherwise their white background (or white text) stays mismatched and the content
+        # becomes unreadable in dark mode.
+        for w in (getattr(self, 'log_text', None), getattr(self, 'config_text', None),
+                  getattr(self, 'laser_log_text', None)):
+            if w is not None:
+                try:
+                    w.config(bg=c["text_bg"], fg=c["text_fg"], insertbackground=c["fg"])
+                except Exception:
+                    pass
+        # Per-wavelength laser session log windows
+        if hasattr(self, 'laser_tabs_data'):
+            for vd in self.laser_tabs_data.values():
+                wdg = vd.get("log_text_obj") if isinstance(vd, dict) else None
+                if wdg is not None:
+                    try:
+                        wdg.config(bg=c["text_bg"], fg=c["text_fg"], insertbackground=c["fg"])
+                    except Exception:
+                        pass
+        # Integrated Log Center text windows
+        for wdg in getattr(self, 'log_center_texts', []):
+            try:
+                wdg.config(bg=c["text_bg"], fg=c["text_fg"], insertbackground=c["fg"])
+            except Exception:
+                pass
 
         accent_color = c["accent"]
         for lbl in self.ups_value_labels:
@@ -299,6 +371,360 @@ class UIManager:
         self._update_pmt_status_and_helper() 
 
         self.controller.update_plots_theme(self.is_dark_mode)
+
+    # ==================================================================
+    #  Integrated Log Center  (read-only viewer over the scattered logs)
+    # ==================================================================
+    def _theme_text_colors(self):
+        c = self.colors["dark" if self.is_dark_mode else "light"]
+        return c["text_bg"], c["text_fg"], c["fg"]
+
+    def _create_log_center_tab(self, parent):
+        """A single place to browse Laser / DAQ / HV / UPS / App logs.
+
+        It only READS from the existing log locations (no files are moved), so the live
+        writers keep working untouched. The 'Gather' button can copy everything into one
+        folder for archiving.
+        """
+        import os
+        self.log_center_texts = []
+
+        # Resolve log roots defensively (fall back to known defaults).
+        base = self.controller.base_dir
+        parent_dir = os.path.dirname(base)
+        laser_dir = getattr(self.controller, "laser_log_dir", "/home/precalkor/ADC/ADC_test/LOG/LASER")
+        adc_log_root = os.path.dirname(laser_dir.rstrip("/")) or "/home/precalkor/ADC/ADC_test/LOG"
+
+        self._log_sources = {
+            "DAQ":   (os.path.join(adc_log_root, "DAQ"), "TakingLog_*.txt"),
+            "Laser": (laser_dir,                         "laser_data_*.csv"),
+            "UPS":   (os.path.join(base, "LOG", "UPS"),  "ups_*.csv"),
+            "App":   (os.path.join(base, "logs"),        "log_*.txt"),
+        }
+        self._hv_db_path = os.path.join(parent_dir, "HV_Control_SW", "monitoring_log.db")
+        self.log_center_widgets = {}
+
+        top = ttk.Frame(parent)
+        top.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(top, text="📑 Integrated Log Center", font=("Helvetica", 12, "bold")).pack(side=tk.LEFT, padx=5)
+        ttk.Button(top, text="📦 Gather all logs → one folder", command=self._gather_all_logs).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(top, text="🔄 Refresh all", command=self._refresh_all_log_subtabs).pack(side=tk.RIGHT, padx=5)
+
+        nb = ttk.Notebook(parent)
+        nb.pack(fill=tk.BOTH, expand=True)
+        for name in ("DAQ", "Laser", "UPS", "App"):
+            self._build_file_log_subtab(nb, name)
+        self._build_hv_log_subtab(nb)
+
+    def _build_file_log_subtab(self, nb, name):
+        bg, fg, ins = self._theme_text_colors()
+        frame = ttk.Frame(nb, padding=6)
+        nb.add(frame, text=f" {name} ")
+
+        ctrl = ttk.Frame(frame)
+        ctrl.pack(fill=tk.X)
+        ttk.Label(ctrl, text="File:").pack(side=tk.LEFT)
+        combo = ttk.Combobox(ctrl, state="readonly", width=42)
+        combo.pack(side=tk.LEFT, padx=5)
+        ttk.Button(ctrl, text="🔄", width=3, command=lambda n=name: self._refresh_log_subtab(n)).pack(side=tk.LEFT)
+        combo.bind("<<ComboboxSelected>>", lambda e, n=name: self._load_log_file(n))
+
+        txt = scrolledtext.ScrolledText(frame, wrap=tk.NONE, state="disabled",
+                                        bg=bg, fg=fg, insertbackground=ins, font=("Menlo", 9))
+        txt.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
+        self.log_center_texts.append(txt)
+        self.log_center_widgets[name] = {"combo": combo, "text": txt}
+        self._refresh_log_subtab(name)
+
+    def _refresh_log_subtab(self, name):
+        import os, glob
+        w = self.log_center_widgets.get(name)
+        if not w:
+            return
+        dir_path, pattern = self._log_sources[name]
+        files = sorted(glob.glob(os.path.join(dir_path, pattern)), key=os.path.getmtime, reverse=True)
+        names = [os.path.basename(f) for f in files]
+        w["combo"]["values"] = names
+        if names:
+            w["combo"].current(0)
+            self._load_log_file(name)
+        else:
+            self._set_text(w["text"], f"(No log files found in {dir_path})")
+
+    def _refresh_all_log_subtabs(self):
+        for name in self.log_center_widgets:
+            self._refresh_log_subtab(name)
+        if hasattr(self, "_hv_log_widgets"):
+            self._load_hv_log()
+
+    def _load_log_file(self, name):
+        import os
+        w = self.log_center_widgets.get(name)
+        if not w:
+            return
+        sel = w["combo"].get()
+        if not sel:
+            return
+        dir_path, _ = self._log_sources[name]
+        path = os.path.join(dir_path, sel)
+        try:
+            # Daily laser CSVs can be huge; only show the tail to keep the UI responsive.
+            MAX_BYTES = 2 * 1024 * 1024
+            size = os.path.getsize(path)
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                if size > MAX_BYTES:
+                    f.seek(size - MAX_BYTES)
+                    tail = f.read()
+                    content = (f"[... file is {size/1024/1024:.1f} MB — showing the last "
+                               f"{MAX_BYTES//1024//1024} MB only ...]\n" + tail[tail.find("\n") + 1:])
+                else:
+                    content = f.read()
+        except Exception as e:
+            content = f"[ERROR] Could not read {path}\n{e}"
+        self._set_text(w["text"], content)
+
+    def _build_hv_log_subtab(self, nb):
+        bg, fg, ins = self._theme_text_colors()
+        frame = ttk.Frame(nb, padding=6)
+        nb.add(frame, text=" HV ")
+
+        ctrl = ttk.Frame(frame)
+        ctrl.pack(fill=tk.X)
+        ttk.Label(ctrl, text="Channel:").pack(side=tk.LEFT)
+        ch = ttk.Combobox(ctrl, state="readonly", width=8, values=["Ch0", "Ch1", "Ch2", "Ch3"])
+        ch.current(0)
+        ch.pack(side=tk.LEFT, padx=5)
+        ttk.Label(ctrl, text="Last N:").pack(side=tk.LEFT)
+        rows = ttk.Combobox(ctrl, state="readonly", width=8, values=["100", "500", "2000"])
+        rows.current(0)
+        rows.pack(side=tk.LEFT, padx=5)
+        ttk.Button(ctrl, text="🔄 Load", command=self._load_hv_log).pack(side=tk.LEFT, padx=5)
+        ch.bind("<<ComboboxSelected>>", lambda e: self._load_hv_log())
+        rows.bind("<<ComboboxSelected>>", lambda e: self._load_hv_log())
+
+        txt = scrolledtext.ScrolledText(frame, wrap=tk.NONE, state="disabled",
+                                        bg=bg, fg=fg, insertbackground=ins, font=("Menlo", 9))
+        txt.pack(fill=tk.BOTH, expand=True, pady=(6, 0))
+        self.log_center_texts.append(txt)
+        self._hv_log_widgets = {"ch": ch, "rows": rows, "text": txt}
+        self._load_hv_log()
+
+    def _load_hv_log(self):
+        import os, sqlite3
+        w = getattr(self, "_hv_log_widgets", None)
+        if not w:
+            return
+        if not os.path.exists(self._hv_db_path):
+            self._set_text(w["text"], f"(HV DB not found: {self._hv_db_path})")
+            return
+        chan = w["ch"].get()           # "Ch0".."Ch3"
+        try:
+            n = int(w["rows"].get())
+        except Exception:
+            n = 100
+        cols = ["timestamp", f"{chan}_V", f"{chan}_I_L", f"{chan}_I_H",
+                "Dark_Box_1_T", "Dark_Box_1_H"]
+        try:
+            con = sqlite3.connect(f"file:{self._hv_db_path}?mode=ro", uri=True)
+            cur = con.cursor()
+            q = f"SELECT {','.join(cols)} FROM monitoring_data ORDER BY rowid DESC LIMIT ?"
+            recs = cur.execute(q, (n,)).fetchall()
+            con.close()
+        except Exception as e:
+            self._set_text(w["text"], f"[ERROR] HV DB query failed:\n{e}")
+            return
+        header = f"{'timestamp':<28}{chan+'_V':>12}{chan+'_I_L':>12}{chan+'_I_H':>12}{'Box1_T':>10}{'Box1_H':>10}"
+        lines = [header, "-" * len(header)]
+        for r in recs:
+            ts = str(r[0])
+            def f(v):
+                return f"{v:.2f}" if isinstance(v, (int, float)) else str(v)
+            lines.append(f"{ts:<28}{f(r[1]):>12}{f(r[2]):>12}{f(r[3]):>12}{f(r[4]):>10}{f(r[5]):>10}")
+        self._set_text(w["text"], "\n".join(lines))
+
+    def _set_text(self, widget, content):
+        try:
+            widget.config(state="normal")
+            widget.delete("1.0", tk.END)
+            widget.insert(tk.END, content)
+            widget.config(state="disabled")
+        except Exception:
+            pass
+
+    def _gather_all_logs(self):
+        """Copy (not move) every log file into one archive folder for easy management."""
+        import os, glob, shutil
+        dest_root = os.path.join(os.path.dirname(self._log_sources["Laser"][0].rstrip("/")), "_UNIFIED")
+        copied = 0
+        try:
+            for name, (dir_path, pattern) in self._log_sources.items():
+                out_dir = os.path.join(dest_root, name)
+                os.makedirs(out_dir, exist_ok=True)
+                for src in glob.glob(os.path.join(dir_path, pattern)):
+                    try:
+                        shutil.copy2(src, os.path.join(out_dir, os.path.basename(src)))
+                        copied += 1
+                    except Exception:
+                        pass
+            # HV DB
+            if os.path.exists(self._hv_db_path):
+                os.makedirs(os.path.join(dest_root, "HV"), exist_ok=True)
+                shutil.copy2(self._hv_db_path, os.path.join(dest_root, "HV", os.path.basename(self._hv_db_path)))
+                copied += 1
+            messagebox.showinfo("Logs Gathered",
+                                f"Copied {copied} log file(s) into:\n{dest_root}\n\n(Originals were left untouched.)")
+        except Exception as e:
+            messagebox.showerror("Gather Failed", f"Could not gather logs:\n{e}")
+
+    def _create_quick_start_tab(self, parent):
+        """A read-only, English quick-start guide for operators."""
+        bg, fg, ins = self._theme_text_colors()
+        txt = scrolledtext.ScrolledText(parent, wrap=tk.WORD, state="disabled",
+                                        bg=bg, fg=fg, insertbackground=ins, font=("Menlo", 10))
+        txt.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+        if not hasattr(self, "log_center_texts"):
+            self.log_center_texts = []
+        self.log_center_texts.append(txt)
+
+        guide = (
+"============================================================\n"
+" PMT PRE-CALIBRATION  —  QUICK START GUIDE\n"
+"============================================================\n"
+"GOAL\n"
+"  Pre-calibrate PMTs mounted on a motorised rotation stage.\n"
+"  A pulsed laser illuminates each PMT at many tilt/rotation\n"
+"  angles; DAQ records the response for uniformity / QE analysis.\n"
+"\n"
+"  Data flow:  DAQ (raw)  ─▶  Produce (prd)  ─▶  Analysis (result)\n"
+"                          ─▶  Uniformity / Overlay (PNG summary)\n"
+"\n"
+"  Top status bar: 🟢 = connected / healthy   🔴 = disconnected\n"
+"  Output tab (📟 Output): streams all job stdout in real time.\n"
+"\n"
+"------------------------------------------------------------\n"
+" BEFORE YOU START\n"
+"------------------------------------------------------------\n"
+"  1. General Scan > 'Quick Setup' tab:\n"
+"       Set shifter name, expert, note, laser wavelength,\n"
+"       PMT serials (SN1/2/3), cable direction, rotation offset,\n"
+"       and HV for each PMT. Click 💾 Save Settings.\n"
+"  2. Laser Control tab  (e.g. 405 nm sub-tab):\n"
+"       Connect → TEC ON → set Pulse current → Apply Currents\n"
+"       Trigger must be set to External.\n"
+"       ⚠  Only ONE wavelength LD may be ON at a time.\n"
+"  3. Verify the top status dots: DAQ System 🟢, HV System 🟢,\n"
+"       Laser Controller 🟢, OMRON UPS 🟢.\n"
+"  4. Click the green '🔓 CONTROLS ACTIVE' banner to unlock\n"
+"       motor control (password required once per session).\n"
+"\n"
+"------------------------------------------------------------\n"
+" 1) GENERAL SCAN   (automated, full tilt sweep)  [recommended]\n"
+"------------------------------------------------------------\n"
+"  Tab: DAQ System → General Scan → Control Panel (Master)\n"
+"\n"
+"  1. (Optional) Tick '🧪 TEST RUN' for a dry run without real DAQ.\n"
+"  2. Click '▶ Start run'.\n"
+"     The system loops automatically for each tilt angle:\n"
+"       Move TILT → wait → Run DAQ → Produce → Analysis → Contour\n"
+"       → next angle … until the full sweep is done.\n"
+"  3. Monitor progress in the Scan Matrix (below the buttons)\n"
+"     and in 📟 Output → DAQ Stream.\n"
+"  4. Run numbers auto-increment and are locked to the scan-start\n"
+"     date (no midnight reset).\n"
+"\n"
+"  Pause / Resume:\n"
+"    ⏸ Pause  — waits for the current step, then holds.\n"
+"    ⏯ Continue — resumes from that checkpoint.\n"
+"\n"
+"  Stop completely:\n"
+"    ⚠ Re-Run / Abort Scan  (Danger Zone)\n"
+"      [Yes]    → abort + delete checkpoint → next Start is FRESH\n"
+"      [No]     → abort + keep checkpoint  → next Start can RESUME\n"
+"      [Cancel] → do nothing\n"
+"\n"
+"  When finished: results are in Data/FinalResult/.\n"
+"    '7. Uniformity' → enter date tag + run range → build PNG summary\n"
+"    '8. Overlay'    → compare multiple datasets\n"
+"    Image Viewer (Ctrl+I) → browse generated plots\n"
+"\n"
+"------------------------------------------------------------\n"
+" 2) MANUAL SCAN   (single runs, no rotation automation)\n"
+"------------------------------------------------------------\n"
+"  Tab: DAQ System (left 'Execute Scripts' panel)\n"
+"\n"
+"  1. Unlock Controls (lock banner at top) if moving motors.\n"
+"  2. Select mode: Laser (external trigger) or Dark (self trigger).\n"
+"  3. Run number is auto-suggested (next free #); edit if needed.\n"
+"  4. '2. Run DAQ (Only Click)' → records one raw .root file.\n"
+"  5. '3. Produce (Ctrl+P)'     → creates the prd file.\n"
+"  6. '4. Analysis (Ctrl+A)'    → creates the result file.\n"
+"       ⚠  Analysis needs the prd file — always Produce first.\n"
+"  7. '5. Waveform Inspection'  → opens an interactive waveform\n"
+"       viewer in a new terminal. A settings dialog lets you set:\n"
+"         • Y-axis ±mV around pedestal  (default: 5 mV)\n"
+"         • pC threshold for 's' jump   (default: −0.5 pC)\n"
+"         • X-axis sample range          (default: full)\n"
+"       In the terminal: n=next, s=jump to threshold, #=go to entry\n"
+"  8. '6. Waveform (2D Contour)' → builds a 2D time-vs-voltage\n"
+"       contour plot. Settings dialog:\n"
+"         • Y-axis ±mV around pedestal  (default: 3 mV)\n"
+"         • X-axis sample range          (default: full)\n"
+"       Output saved to Data/image/Contour/.\n"
+"  Tip: select a file in 'Data Files' tab to target that exact\n"
+"       run; if nothing is selected, the Run-number box is used.\n"
+"       Multiple files can be selected for batch Produce/Analysis.\n"
+"\n"
+"------------------------------------------------------------\n"
+" 3) IF SOMETHING GOES WRONG\n"
+"------------------------------------------------------------\n"
+"  DAQ hangs / Output tab stuck:\n"
+"     Scan watchdog auto-kills a frozen DAQ.\n"
+"     Manual kill:  pkill -9 execute_DAQ_v2\n"
+"     Then click ⚠ Re-Run / Abort Scan to reset the UI.\n"
+"\n"
+"  Analysis gives empty or tiny result file:\n"
+"     You need the prd file → run Produce first.\n"
+"     Auto-pipeline passes the prd path automatically.\n"
+"\n"
+"  Laser INTERLOCK / comms error:\n"
+"     Check the interlock magnets are attached to the enclosure.\n"
+"     The LD is forced OFF on error; reconnect from the\n"
+"     wavelength tab (the app also auto-reconnects in background).\n"
+"\n"
+"  Motor 'already moving' / unresponsive:\n"
+"     Click Abort. Lock auto-releases on failed connection.\n"
+"     Rotation is blocked when TILT ≠ 0 (safety interlock).\n"
+"\n"
+"  Recovery / Resume after abort:\n"
+"     If checkpoint was kept: click Start run → 'Resume' dialog.\n"
+"     If checkpoint was deleted (or you chose fresh start):\n"
+"     click Start run → scan begins from -55°.\n"
+"\n"
+"  Emergency:\n"
+"     'Emergency' tab → contacts and HV shutdown.\n"
+"     Turn LD OFF and stop motors before cutting power.\n"
+"\n"
+"------------------------------------------------------------\n"
+" KEY SHORTCUTS  (when DAQ System tab is focused)\n"
+"------------------------------------------------------------\n"
+"  Ctrl+P  Produce       Ctrl+A  Analysis\n"
+"  Ctrl+S  Waveform      Ctrl+I  Image Viewer\n"
+"\n"
+"------------------------------------------------------------\n"
+" NOTES\n"
+"------------------------------------------------------------\n"
+"  * Recommended laser: 405 nm.  Also tested: 375 / 450 / 473 nm.\n"
+"  * Only ONE LD ON at a time (enforced by the app).\n"
+"  * 📟 Output tab turns 🟢 while a job is running; sub-tabs\n"
+"    show ✅ Done or ❌ Failed after completion.\n"
+"  * 'Logs' tab shows Laser / DAQ / HV / UPS logs in one place.\n"
+"  * PMT Setup & Helper tab shows real-time TOP VIEW and\n"
+"    RIGHT SIDE VIEW diagrams of each PMT's tilt/rotation angle.\n"
+"============================================================\n"
+        )
+        txt.config(state="normal")
+        txt.insert(tk.END, guide)
+        txt.config(state="disabled")
 
     def _create_connection_status_frame(self, parent):
         frame = ttk.LabelFrame(parent, text="Connection Status", padding="10")
@@ -373,37 +799,67 @@ class UIManager:
             'A': 180, 'B': 225, 'C': 270, 'D': 315 
         }
 
+        # 실시간 재드로우를 위한 helper diagram 레지스트리.
+        # pmt_index(1~3) -> {canvas, cable_type, pos_map, dev_num, info_lbl, sn, hv}
+        # SN2=dev2, SN3=dev3 은 모터가 있어 라이브 각도로 갱신되고, SN1(모니터)은 정적.
+        self.helper_diagrams = {}
+
         for i in range(1, 4):
             row, col = divmod(i-1, 2)
             cell = ttk.Frame(self.pmt_status_frame, padding=5, relief="groove")
             cell.grid(row=row, column=col, sticky="nsew", padx=3, pady=3)
 
             sn = cfg.get(f'SN{i}', "N/A")
-            
+
             # [타입] 케이블이 연결된 핀 (A~H)
-            cable_type = cfg.get(f'direction{i}', "A").strip().upper() 
-            
+            cable_type = cfg.get(f'direction{i}', "A").strip().upper()
+
             hv = cfg.get(f'HV{i}', "0")
             try:
                 rot_val = int(cfg.get(f'RotateAngle{i}', "0"))
             except:
                 rot_val = 0
-            tilt = cfg.get(f'TiltAngle{i}', "0")
+            try:
+                tilt_val = float(cfg.get(f'TiltAngle{i}', "0"))
+            except (TypeError, ValueError):
+                tilt_val = 0.0
             is_active = sn != "N/A" and sn.strip() != ""
 
-            self._create_status_indicator(cell, f"SN{i}", is_active, side=tk.TOP)
-            
-            # [수정] 회전값과 케이블 타입(A~H)을 모두 전달
-            self._create_helper_diagram(cell, rot_val, cable_type, POS_MAP_ANGLES)
-            
-            info_text = (f"{sn} - {cable_type}\n"
-                         f"HV: {hv} V\n"
-                         f"Rotation: {rot_val}° / Tilt: {tilt}°")
-            
+            # SN 노란 버튼 대신, 공간을 거의 안 먹는 '클릭 가능한 제목줄'로 대체한다.
+            # (클릭 시 PMT 설정창 열기 기능은 그대로 유지)
             txt_color = "white" if self.is_dark_mode else "black"
-            lbl = ttk.Label(cell, text=info_text, font=("Helvetica", 12, "bold"), 
-                            foreground=txt_color, justify=tk.CENTER)
-            lbl.pack(pady=5)
+            sn_color = "#d39e00" if is_active else "#adb5bd"
+            header = ttk.Frame(cell)
+            header.pack(fill=tk.X, pady=(0, 2))
+            sn_title = tk.Label(header, text=f"SN{i}", font=("Helvetica", 14, "bold"),
+                                fg=sn_color, cursor="hand2",
+                                bg=("#2d2d2d" if self.is_dark_mode else "#f0f0f0"))
+            sn_title.pack(side=tk.LEFT)
+            hint = tk.Label(header, text="  ⚙ click to edit", font=("Helvetica", 9),
+                            fg="#888", cursor="hand2",
+                            bg=("#2d2d2d" if self.is_dark_mode else "#f0f0f0"))
+            hint.pack(side=tk.LEFT)
+            for w in (sn_title, hint):
+                w.bind("<Button-1>",
+                       lambda e, n=f"SN{i}": self.controller.open_pmt_config_window(n))
+
+            # 정보 텍스트는 헤더 오른쪽에 둬서 가로/세로 공간을 아낀다.
+            info_text = (f"{sn} - {cable_type}   |   HV: {hv} V   |   "
+                         f"Rotation: {rot_val}° / Tilt: {tilt_val:.0f}°")
+            info_lbl = ttk.Label(header, text=info_text, font=("Helvetica", 10, "bold"),
+                                 foreground=txt_color)
+            info_lbl.pack(side=tk.RIGHT)
+
+            # 회전/틸트/케이블 타입을 전달하고, 재드로우용으로 pmt_index 도 넘긴다.
+            # TOP VIEW + RIGHT SIDE VIEW 두 캔버스를 만들어 body 프레임에 담는다.
+            self._create_helper_diagram(cell, i, rot_val, tilt_val, cable_type, POS_MAP_ANGLES)
+
+            # 라이브 업데이트가 'Rotation/Tilt' 값을 갱신할 수 있도록 메타데이터 저장.
+            if i in self.helper_diagrams:
+                self.helper_diagrams[i]["info_lbl"] = info_lbl
+                self.helper_diagrams[i]["sn"] = sn
+                self.helper_diagrams[i]["cable_type"] = cable_type
+                self.helper_diagrams[i]["hv"] = hv
 
         storage_cell = ttk.LabelFrame(self.pmt_status_frame, text=" Storage Capacity ", padding=10)
         storage_cell.grid(row=1, column=1, sticky="nsew", padx=3, pady=3)
@@ -428,11 +884,10 @@ class UIManager:
         self.status_indicators[name] = {"canvas": canvas, "oval_id": oval_id}
 
     def _create_grid_storage_widget(self, parent):
-        """2x2 그리드 마지막 칸 전용 용량 위젯"""
         accent = self.colors["dark" if self.is_dark_mode else "light"]["accent"]
         
         title_font = ("Helvetica", 11)
-        val_font = ("Helvetica", 16, "bold") # 크고 굵게
+        val_font = ("Helvetica", 16, "bold") 
 
         ttk.Label(parent, text="DAQ Storage (Local):", font=title_font).pack(pady=(15, 0))
         
@@ -448,98 +903,297 @@ class UIManager:
                                            foreground=accent, font=val_font)
         self.data_size_label2.pack(pady=5)
 
-    def _create_helper_diagram(self, parent, rotation_angle, cable_type, pos_map_angles):
-        """
-        rotation_angle: 물리적 회전 각도 (0도 = 케이블 9시)
-        cable_type: 케이블이 연결된 핀 ID ('A'~'H')
+    def _create_helper_diagram(self, parent, pmt_index, rotation_angle, tilt_angle,
+                               cable_type, pos_map_angles):
+        """PMT 설치 가이드 다이어그램(TOP VIEW)을 만든다.
+
+        - rotation_angle : Scan Axis 둘레의 회전각(0° = 케이블 9시 방향). 핀맵 전체가 회전.
+        - tilt_angle     : Scan Axis(수직 고정축) 기준 기울기. TOP VIEW 에서는 디스크가
+                           가로로 단축(foreshortening = cos(tilt))되어 타원으로 보인다.
+        실시간 갱신을 위해 캔버스/메타데이터를 self.helper_diagrams[pmt_index] 에 저장하고,
+        실제 그리기는 _render_helper_diagram() 이 담당한다(라이브 각도로 재호출 가능).
         """
         bg_color = "#2d2d2d" if self.is_dark_mode else "white"
+
+        # 두 캔버스(TOP VIEW + RIGHT SIDE VIEW)를 가로로 담을 body 프레임.
+        body = ttk.Frame(parent)
+        body.pack(fill=tk.BOTH, expand=True)
+
+        # TOP VIEW (확대: 잘림 방지) — 클릭 시 PMT 설정창 열기
+        canvas = tk.Canvas(body, width=300, height=250, bg=bg_color, highlightthickness=0,
+                           cursor="hand2")
+        canvas.pack(side=tk.LEFT, padx=(4, 2))
+
+        # RIGHT SIDE VIEW (20인치 PMT 기울기 + 레이저 포인터)
+        side_canvas = tk.Canvas(body, width=170, height=250, bg=bg_color, highlightthickness=0,
+                                cursor="hand2")
+        side_canvas.pack(side=tk.LEFT, padx=(2, 4))
+
+        for c in (canvas, side_canvas):
+            c.bind("<Button-1>",
+                   lambda e, n=f"SN{pmt_index}": self.controller.open_pmt_config_window(n))
+
+        dev_num = pmt_index if pmt_index in (2, 3) else None  # SN2->dev2, SN3->dev3, SN1=모니터
+        self.helper_diagrams[pmt_index] = {
+            "canvas": canvas,
+            "side_canvas": side_canvas,
+            "body": body,
+            "cable_type": cable_type,
+            "pos_map": pos_map_angles,
+            "dev_num": dev_num,
+            "rotation": rotation_angle,
+            "tilt": tilt_angle,
+        }
+        self._render_helper_diagram(pmt_index, rotation_angle, tilt_angle)
+
+    def _render_helper_diagram(self, pmt_index, rotation_angle, tilt_angle):
+        """helper diagram 을 주어진 회전/틸트 각도로 (재)그린다. 캔버스를 비우고 다시 그림."""
+        entry = self.helper_diagrams.get(pmt_index)
+        if not entry:
+            return
+        canvas = entry["canvas"]
+        try:
+            if not canvas.winfo_exists():
+                return
+        except tk.TclError:
+            return
+
+        cable_type = entry["cable_type"]
+        pos_map_angles = entry["pos_map"]
+        entry["rotation"] = rotation_angle
+        entry["tilt"] = tilt_angle
+
+        canvas.delete("all")
+
         txt_fill = 'white' if self.is_dark_mode else 'black'
-        
-        canvas = tk.Canvas(parent, width=280, height=200, bg=bg_color, highlightthickness=0) 
-        canvas.pack(side=tk.LEFT, padx=10, expand=True)
+        C_X, C_Y, R = 150, 125, 82
 
-        C_X, C_Y, R = 140, 100, 65 
-        
-        # 1. Scan Axis (고정된 기계 좌표계 - 파란색)
-        scan_axis_bg = "#3d3d3d" if self.is_dark_mode else "#e7f5ff"
-        canvas.create_rectangle(C_X - 8, C_Y - R - 20, C_X + 8, C_Y + R + 20, 
-                                fill=scan_axis_bg, outline="")
-        
-        canvas.create_line(C_X, C_Y - R + 5, C_X, C_Y - R - 15, arrow=tk.LAST, fill="#1971c2", width=3)
-        canvas.create_line(C_X, C_Y + R - 5, C_X, C_Y + R + 15, arrow=tk.LAST, fill="#1971c2", width=3)
-        canvas.create_text(C_X, C_Y - R - 25, text="Scan Axis", font=("Helvetica", 10, "bold"), fill="#1971c2")
-
-        canvas.create_oval(C_X - R, C_Y - R, C_X + R, C_Y + R, outline='gray', width=2)
+        fx = math.cos(math.radians(tilt_angle))
+        if abs(fx) < 0.12:
+            fx = 0.12 if fx >= 0 else -0.12
 
         def get_pos(angle_deg, radius):
             rad = math.radians(angle_deg)
-            return C_X + radius * math.cos(rad), C_Y - radius * math.sin(rad)
+            x = C_X + radius * math.cos(rad)
+            y = C_Y - radius * math.sin(rad)
+            return C_X + (x - C_X) * fx, y
 
-        # -------------------------------------------------------------
-        # 1. 케이블 화살표 (물리적 위치)
-        # -------------------------------------------------------------
-        # 기준: 0도일 때 무조건 9시(180도)
+        # ── Pin map offset ────────────────────────────────────────────────
         physical_cable_angle = 180 + rotation_angle
-        
-        cx1, cy1 = get_pos(physical_cable_angle, R - 5)
-        cx2, cy2 = get_pos(physical_cable_angle, R + 30)
-        
-        canvas.create_line(cx1, cy1, cx2, cy2, arrow=tk.LAST, fill='red', width=3)
-        
-        # 텍스트 위치 및 앵커
-        ctx, cty = get_pos(physical_cable_angle, R + 42)
-        norm_angle = physical_cable_angle % 360
-        anchor = "center"
-        if 45 < norm_angle < 135: anchor = "s"    
-        elif 135 <= norm_angle < 225: anchor = "e" 
-        elif 225 <= norm_angle < 315: anchor = "n" 
-        else: anchor = "w"                         
-        
-        canvas.create_text(ctx, cty, text="Cable", font=("Helvetica", 10, "bold"), fill="red", anchor=anchor)
-
-        # -------------------------------------------------------------
-        # 2. 내부 핀맵 (A~H, DY1/2) 회전 계산
-        # -------------------------------------------------------------
-        # 논리:
-        # - 물리적 케이블 위치(physical_cable_angle)에 'cable_type'에 해당하는 핀이 와야 함.
-        # - 예: C타입이면, C핀이 케이블 위치에 오도록 전체 핀맵을 돌려야 함.
-        
-        # 해당 타입 핀의 표준 각도 (A기준)
         std_type_angle = pos_map_angles.get(cable_type, 180)
-        
-        # 보정값 = 물리적 케이블 각도 - 표준 핀 각도
-        # 예: Rot=0(케이블 180도)에 C타입(표준 270도)을 맞추려면? -> -90도 회전 필요
         pin_offset = physical_cable_angle - std_type_angle
 
-        label_font = ("Helvetica", 12, "bold")
-        axis_label_font = ("Helvetica", 11, "bold")
+        # ── 1. Scan Axis band (blue, fixed) ───────────────────────────────
+        scan_axis_bg = "#3d3d3d" if self.is_dark_mode else "#ddeeff"
+        canvas.create_rectangle(C_X - 8, C_Y - R - 20, C_X + 8, C_Y + R + 20,
+                                fill=scan_axis_bg, outline="")
+
+        # ── 2. +Y axis band (A-pin direction, green) ─────────────────────
+        a_std = pos_map_angles.get('A', 180)
+        a_ang = a_std + pin_offset
+        ax1, ay1 = get_pos(a_ang,       R)
+        ax2, ay2 = get_pos(a_ang + 180, R)
+        canvas.create_line(ax1, ay1, ax2, ay2, fill="#b2f2bb", width=10, capstyle="round")
+
+        # ── 3. +X axis band (G-pin direction, orange) ────────────────────
+        g_std = pos_map_angles.get('G', 90)
+        g_ang = g_std + pin_offset
+        gx1, gy1 = get_pos(g_ang,       R)
+        gx2, gy2 = get_pos(g_ang + 180, R)
+        canvas.create_line(gx1, gy1, gx2, gy2, fill="#ffd8a8", width=10, capstyle="round")
+
+        # ── 4. PMT disc ───────────────────────────────────────────────────
+        canvas.create_oval(C_X - R * abs(fx), C_Y - R, C_X + R * abs(fx), C_Y + R,
+                           outline='gray', width=2)
+
+        # ── 5. Scan Axis arrows & label ───────────────────────────────────
+        canvas.create_line(C_X, C_Y - R + 5, C_X, C_Y - R - 15, arrow=tk.LAST, fill="#1971c2", width=3)
+        canvas.create_line(C_X, C_Y + R - 5, C_X, C_Y + R + 15, arrow=tk.LAST, fill="#1971c2", width=3)
+        sa_label = "Scan Axis"
+        sa_color = "#1971c2"
+        # Green check when tilt ≈ 0 (laser on scan axis)
+        if abs(tilt_angle) < 1.5:
+            sa_label = "Scan Axis  ✓"
+            sa_color = "#2f9e44"
+        canvas.create_text(C_X, C_Y - R - 25, text=sa_label,
+                           font=("Helvetica", 10, "bold"), fill=sa_color)
+
+        # ── 6. Live angle text ────────────────────────────────────────────
+        canvas.create_text(6, 8, anchor="nw",
+                           text=f"Rot {rotation_angle:.0f}°  Tilt {tilt_angle:.0f}°",
+                           font=("Helvetica", 9, "bold"), fill=txt_fill)
+
+        # ── 7. Cable arrow ────────────────────────────────────────────────
+        cx1, cy1 = get_pos(physical_cable_angle, R - 5)
+        cx2, cy2 = get_pos(physical_cable_angle, R + 30)
+        canvas.create_line(cx1, cy1, cx2, cy2, arrow=tk.LAST, fill='red', width=3)
+        ctx, cty = get_pos(physical_cable_angle, R + 42)
+        norm_angle = physical_cable_angle % 360
+        if 45 < norm_angle < 135: anchor = "s"
+        elif 135 <= norm_angle < 225: anchor = "e"
+        elif 225 <= norm_angle < 315: anchor = "n"
+        else: anchor = "w"
+        canvas.create_text(ctx, cty, text="Cable", font=("Helvetica", 10, "bold"),
+                           fill="red", anchor=anchor)
+
+        # ── 8. Pin labels ─────────────────────────────────────────────────
+        label_font     = ("Helvetica", 12, "bold")
+        axis_lbl_font  = ("Helvetica", 11, "bold")
 
         for char, std_angle in pos_map_angles.items():
-            # 각 핀의 최종 각도 = 표준각도 + 보정값
             final_pin_angle = std_angle + pin_offset
-            
             lx, ly = get_pos(final_pin_angle, R - 15)
-            
             color = 'red' if char == cable_type else txt_fill
             canvas.create_text(lx, ly, text=char, font=label_font, fill=color)
 
-            # PMT 자체 좌표계 (+X, +Y) 표시 (Hamamatsu: A=+Y, G=+X)
-            if char == 'A': 
-                ax, ay = get_pos(final_pin_angle, R + 12)
-                canvas.create_text(ax, ay, text="+Y", font=axis_label_font, fill="#c92a2a")
-            elif char == 'G': 
-                gx, gy = get_pos(final_pin_angle, R + 12)
-                canvas.create_text(gx, gy, text="+X", font=axis_label_font, fill="#1971c2")
+            if char == 'A':
+                ay_lx, ay_ly = get_pos(final_pin_angle, R + 14)
+                canvas.create_text(ay_lx, ay_ly, text="+Y",
+                                   font=axis_lbl_font, fill="#2f9e44")
+            elif char == 'G':
+                ax_lx, ax_ly = get_pos(final_pin_angle, R + 14)
+                canvas.create_text(ax_lx, ax_ly, text="+X",
+                                   font=axis_lbl_font, fill="#e67700")
 
-        # DY1 / DY2 (표준 위치: G-C 라인 = 90도/270도)
+        # ── 9. DY1 / DY2 ──────────────────────────────────────────────────
         dy_r = 15
-        dy1_x, dy1_y = get_pos(90 + pin_offset, dy_r)  # G쪽
-        dy2_x, dy2_y = get_pos(270 + pin_offset, dy_r) # C쪽
-        
-        canvas.create_oval(C_X-2, C_Y-2, C_X+2, C_Y+2, fill="gray", outline="")
+        dy1_x, dy1_y = get_pos(90  + pin_offset, dy_r)
+        dy2_x, dy2_y = get_pos(270 + pin_offset, dy_r)
+        canvas.create_oval(C_X - 2, C_Y - 2, C_X + 2, C_Y + 2, fill="gray", outline="")
         canvas.create_text(dy1_x, dy1_y, text="DY1", font=("Helvetica", 9, "bold"), fill=txt_fill)
         canvas.create_text(dy2_x, dy2_y, text="DY2", font=("Helvetica", 9, "bold"), fill=txt_fill)
+
+        canvas.create_text(C_X, 244, text="TOP VIEW", font=("Helvetica", 9, "bold"), fill="#888")
+
+        # RIGHT SIDE VIEW
+        self._render_side_view(pmt_index, tilt_angle, pin_offset, pos_map_angles)
+
+    def _render_side_view(self, pmt_index, tilt_angle, pin_offset=0, pos_map_angles=None):
+        """RIGHT SIDE VIEW: 20인치 PMT 를 옆에서 본 그림. tilt_angle 만큼 PMT 전체가
+        기울고, 센터 위에 세운 막대기(rod) 끝을 레이저 포인터(빨간 빔)가 가리킨다.
+        고정 수직 점선(기준축) 대비 막대기가 기울어 tilt 를 직관적으로 보여준다."""
+        entry = self.helper_diagrams.get(pmt_index)
+        if not entry:
+            return
+        canvas = entry.get("side_canvas")
+        if canvas is None:
+            return
+        try:
+            if not canvas.winfo_exists():
+                return
+        except tk.TclError:
+            return
+
+        canvas.delete("all")
+        txt_fill = 'white' if self.is_dark_mode else 'black'
+
+        W, H = 170, 250
+        cx, cy = 85, 150          # 반원(돔) 지름의 중심
+        Rb = 56                   # 20인치 PMT 반지름
+
+        canvas.create_text(W / 2, 244, text="RIGHT SIDE VIEW",
+                           font=("Helvetica", 9, "bold"), fill="#888")
+
+        # 설정 tilt(kr) → PMT 표면 위치각(Hamamatsu) 변환.
+        # 출처: Draw_Uniformity_Norm_v7.C 의 ConvertKRtoHamamatsu().
+        #   ham = -0.0049*kr^2 + 1.7515*kr - 0.0402   (deg)
+        # 반원(PMT)을 이 각도만큼 '기울이고', 레이저는 수직 고정으로 둔다.
+        # 예) tilt 55° → 약 81.5° → 반원이 크게 기울어 레이저가 거의 가장자리에 닿는다.
+        kr = abs(tilt_angle)
+        pos_deg = -0.0049 * kr * kr + 1.7515 * kr - 0.0402
+        pos_deg = max(0.0, min(90.0, pos_deg))      # 반원(0~90°) 범위로 클램프
+        sign = -1.0 if tilt_angle < 0 else 1.0
+        th = math.radians(sign * pos_deg)           # 반원이 기우는 각도
+
+        # 돔 로컬좌표(lx: 지름방향, ly: 높이 위쪽 +) → 화면. th 만큼 회전.
+        upx, upy = math.sin(th), -math.cos(th)      # 꼭대기 방향
+        rxh, ryh = math.cos(th), math.sin(th)       # 지름 방향
+
+        def to_screen(lx, ly):
+            return (cx + lx * rxh + ly * upx, cy + lx * ryh + ly * upy)
+
+        canvas.create_text(6, 8, anchor="nw",
+                           text=f"Tilt {tilt_angle:.0f}°  →  Pos {sign*pos_deg:.0f}°",
+                           font=("Helvetica", 9, "bold"), fill=txt_fill)
+
+        # 고정 수직 기준선(점선) — 반원이 기운 정도 비교용.
+        canvas.create_line(cx, cy, cx, cy - Rb - 35, fill="#bbb", dash=(3, 3))
+
+        # 기울어진 반원(PMT).
+        bulb_fill = "#274b6d" if self.is_dark_mode else "#d0e7fb"
+        pts = []
+        spot = None
+        for a in range(0, 181, 5):
+            rad = math.radians(a)
+            sx, sy = to_screen(Rb * math.cos(rad), Rb * math.sin(rad))
+            pts.extend([sx, sy])
+            # 수직 고정 레이저(x=cx)가 닿는 표면 스폿: x 가 cx 에 가장 가까운 윗점.
+            if spot is None or (abs(sx - cx) < abs(spot[0] - cx) - 0.001):
+                spot = (sx, sy)
+        canvas.create_polygon(*pts, fill=bulb_fill, outline="#5a7fa5", width=2)
+
+        # ── Cable direction labels at the two ends of the visible arc ──────
+        # LEFT end of diameter (a=180) → physical top-view angle 90°  (North)
+        # RIGHT end of diameter (a=0)  → physical top-view angle 270° (South)
+        if pos_map_angles:
+            def _nearest_pin(target_physical):
+                target_std = target_physical - pin_offset
+                best, best_d = '?', 999
+                for ch, sa in pos_map_angles.items():
+                    d = abs(((sa - target_std) + 180) % 360 - 180)
+                    if d < best_d:
+                        best_d, best = d, ch
+                return best
+            pin_left  = _nearest_pin(90)   # left end  = North in top-view
+            pin_right = _nearest_pin(270)  # right end = South in top-view
+            lx_l, ly_l = to_screen(-Rb, 0)   # a=180 → left end
+            lx_r, ly_r = to_screen( Rb, 0)   # a=0   → right end
+            canvas.create_text(lx_l - 10, ly_l, text=pin_left,
+                               font=("Helvetica", 10, "bold"), fill="#e67700", anchor="e")
+            canvas.create_text(lx_r + 10, ly_r, text=pin_right,
+                               font=("Helvetica", 10, "bold"), fill="#e67700", anchor="w")
+
+        # 수직 고정 레이저 빔: 위에서 똑바로 내려와 기울어진 반원 표면을 때린다.
+        spot_x, spot_y = spot
+        canvas.create_line(cx, cy - Rb - 42, cx, spot_y, fill="red", width=3, arrow=tk.LAST)
+        canvas.create_text(cx, cy - Rb - 50, text="Laser",
+                           font=("Helvetica", 9, "bold"), fill="red")
+        canvas.create_oval(spot_x - 5, spot_y - 5, spot_x + 5, spot_y + 5,
+                           fill="#ff5555", outline="red")
+
+        # 중심점
+        canvas.create_oval(cx - 2, cy - 2, cx + 2, cy + 2, fill=txt_fill, outline="")
+
+    def update_helper_live(self, dev_num, tilt, rot):
+        """모터 모니터링 스레드(start_monitoring 콜백)에서 호출. dev_num(2/3)의 라이브
+        각도로 해당 PMT helper diagram 을 실시간 재드로우한다. SN1(모니터)은 모터가
+        없어 대상에서 제외된다. 백그라운드 스레드이므로 master.after 로 메인에 넘긴다."""
+        if tilt is None or rot is None:
+            return
+        if not hasattr(self, 'helper_diagrams'):
+            return
+        pmt_index = dev_num  # SN2=dev2, SN3=dev3
+        entry = self.helper_diagrams.get(pmt_index)
+        if not entry or entry.get("dev_num") != dev_num:
+            return
+
+        def _apply():
+            self._render_helper_diagram(pmt_index, rot, tilt)
+            lbl = entry.get("info_lbl")
+            if lbl is not None:
+                try:
+                    sn = entry.get("sn", "")
+                    ct = entry.get("cable_type", "")
+                    hv = entry.get("hv", "0")
+                    lbl.config(text=(f"{sn} - {ct}   |   HV: {hv} V   |   "
+                                     f"Rotation: {rot:.0f}° / Tilt: {tilt:.0f}°"))
+                except tk.TclError:
+                    pass
+
+        try:
+            self.master.after(0, _apply)
+        except tk.TclError:
+            pass
 
 
     def _create_helper_text(self, parent, pmt_index, sn, direction, x_map, y_map):
@@ -604,36 +1258,27 @@ class UIManager:
         label_main = ttk.Label(text_frame, text=msg, font=("Helvetica", 10), anchor="w", justify=tk.LEFT)
         label_main.pack(side=tk.TOP, anchor="w", fill='x')
 
-        # *** [수정 1] ***: 나중에 참조할 수 있도록 변수(label_corr)를 None으로 초기화
         label_corr = None 
         if x_tilt_msg or y_tilt_msg:
             correction_msg = f"{x_tilt_msg}\n{y_tilt_msg}"
-            # *** [수정 2] ***: 생성된 라벨을 'label_corr' 변수에 할당
             label_corr = ttk.Label(text_frame, text=correction_msg, foreground="#c92a2a", font=("Helvetica", 10, "bold"), anchor="w", justify=tk.LEFT)
             label_corr.pack(side=tk.TOP, anchor="w", fill='x', pady=(2,0))
 
         if not (sn and direction):
             label_main.config(foreground="gray")
 
-        # --- [*** 여기가 추가된 수정 사항입니다 ***] ---
         def configure_wraplength(event):
-            # 부모 프레임(text_frame)의 너비를 기준으로 래핑 길이를 설정합니다.
-            width = event.width - 10 # 약간의 여백(padding)을 줍니다.
+            width = event.width - 10 
             if width > 0:
                 label_main.config(wraplength=width)
-                # 'label_corr'가 생성된 경우에만 래핑을 설정합니다.
                 if label_corr: 
                     label_corr.config(wraplength=width)
-
-        # text_frame의 크기가 변경될 때마다(예: 창 크기 조절) configure_wraplength 함수를 호출합니다.
         text_frame.bind("<Configure>", configure_wraplength)
 
-    # ui_manager_test.py 내부 _create_run_control_frame 수정 (4칸 띄어쓰기)
     def _create_run_control_frame(self, parent):
         frame = ttk.LabelFrame(parent, text=" 📊 Run Mode & Parameters ", padding="10")
         frame.pack(fill=tk.X, pady=5, padx=5)
 
-        # [NEW] 메인 모드 선택 (1번: General / 2번: Manual)
         ttk.Label(frame, text="1. Operation Category:", font=("Helvetica", 10, "bold")).pack(anchor=tk.W)
         
         rb_auto = ttk.Radiobutton(frame, text=" General Scan (Auto Control)", 
@@ -648,10 +1293,8 @@ class UIManager:
 
         ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=10)
 
-        # [NEW] 2번 수동 모드 내 세부 선택 (Manual일 때만 활성화)
         ttk.Label(frame, text="2. Manual Sub-selection:", font=("Helvetica", 10)).pack(anchor=tk.W)
         
-        # 수동 모드 변수 (기존 self.manual_mode_var 활용)
         self.manual_type_var = tk.StringVar(value="laser")
         
         self.rb_laser = ttk.Radiobutton(frame, text=" Laser & External trigger (0)", 
@@ -663,8 +1306,14 @@ class UIManager:
                                        variable=self.manual_type_var, value="dark",
                                        command=self.controller.handle_mode_change)
         self.rb_dark.pack(anchor=tk.W, padx=25)
+        ######## updated 6.10 
+        ttk.Label(frame, text="Output Format:").pack(anchor=tk.W, pady=(10, 0))
+        fmt_root_radio = ttk.Radiobutton(frame, text="ROOT (.root)", variable=self.file_format, value="root", command=self.controller.update_latest_run_number)
+        fmt_csv_radio = ttk.Radiobutton(frame, text="CSV (.csv) (Analysis Not Supported)", variable=self.file_format, value="csv", command=self.controller.update_latest_run_number)
+        fmt_root_radio.pack(anchor=tk.W)
+        fmt_csv_radio.pack(anchor=tk.W)
+        ######## updated 6.10 ^^ 
 
-        # Run Number 입력창 (기존 유지)
         ttk.Label(frame, text="Run number (Produce & Analysis):").pack(anchor=tk.W, pady=(15, 0))
         run_entry = ttk.Entry(frame, textvariable=self.run_number_var)
         run_entry.pack(fill=tk.X)
@@ -846,23 +1495,369 @@ class UIManager:
         self.log_text.config(state="disabled")
         self.log_text.yview_moveto(1)
 
+    # ------------------------------------------------------------------
+    # Waveform Inspection — embedded panel
+    # ------------------------------------------------------------------
+    def _create_waveform_viewer(self, parent):
+        """Create the embedded Waveform Inspection panel."""
+        try:
+            from managers.waveform_viewer import WaveformViewerPanel
+            parent.columnconfigure(0, weight=1)
+            parent.rowconfigure(0, weight=1)
+            inner = ttk.Frame(parent)
+            inner.grid(row=0, column=0, sticky="nsew")
+            inner.columnconfigure(0, weight=1)
+            inner.rowconfigure(2, weight=1)
+            self.waveform_panel = WaveformViewerPanel(inner, self.controller)
+        except Exception as exc:
+            ttk.Label(parent, text=f"Waveform panel failed to load:\n{exc}",
+                      foreground="red", font=("Helvetica", 11)).pack(padx=20, pady=20)
+            self.waveform_panel = None
+
+    def focus_waveform_tab(self, file_path: str = None):
+        """Switch to the Waveform tab; optionally load a file immediately."""
+        try:
+            self.notebook.select(self.waveform_tab)
+        except Exception:
+            pass
+        if file_path and self.waveform_panel:
+            self.waveform_panel.open_path(file_path)
+
+    # Console (in-UI job output) — gnome-terminal 대체
+    # ------------------------------------------------------------------
+    def _create_console_viewer(self, parent):
+        """DAQ/Produce/Analysis 등 외부 작업의 stdout/stderr 를 UI 안에서 실시간 표시.
+
+        기존엔 작업마다 gnome-terminal 창이 떠서 끝나도 'Press Enter' 상태로
+        남아 있었는데, 이 콘솔이 그 역할을 대신한다. 상단 바에 상태/정지/지우기/
+        자동스크롤 컨트롤을 두고, 본문은 ScrolledText 로 출력을 누적한다.
+        """
+        # 리눅스에 항상 존재하는 모노스페이스 폰트를 우선 사용한다(Menlo 는 macOS 전용).
+        mono = self._pick_mono_font()
+
+        # 슬롯 분리: DAQ 스트림과 분석(Produce/Analysis/Contour) 출력을 각각 다른
+        # 프로세스 + 다른 출력창으로 둔다. 그래서 DAQ 수집 중에도 끝난 run 을
+        # 동시에 분석할 수 있다(서로 'Console Busy' 로 막지 않는다).
+        self.console_panes = {}
+
+        sub_nb = ttk.Notebook(parent)
+        sub_nb.pack(fill=tk.BOTH, expand=True)
+        self.console_subnb = sub_nb
+
+        daq_frame = ttk.Frame(sub_nb)
+        sub_nb.add(daq_frame, text="⚫ DAQ Stream")
+        self._build_console_pane(daq_frame, "daq", mono)
+
+        ana_frame = ttk.Frame(sub_nb)
+        sub_nb.add(ana_frame, text="⚫ Analysis / Produce")
+        self._build_console_pane(ana_frame, "analysis", mono)
+
+        contour_frame = ttk.Frame(sub_nb)
+        sub_nb.add(contour_frame, text="⚫ Contour")
+        self._build_console_pane(contour_frame, "contour", mono)
+
+    # 터미널 ANSI SGR → Tk 텍스트 색상 매핑 (어두운 콘솔에서 읽기 좋은 톤)
+    ANSI_RE = re.compile(r'\x1b\[([0-9;]*)m')
+    ANSI_FG = {30: "#5c6370", 31: "#e06c75", 32: "#98c379", 33: "#e5c07b",
+               34: "#61afef", 35: "#c678dd", 36: "#56b6c2", 37: "#abb2bf"}
+    ANSI_FG_BRIGHT = {30: "#7f848e", 31: "#f48771", 32: "#73c991", 33: "#ffd479",
+                      34: "#82aaff", 35: "#d886f0", 36: "#67d4e0", 37: "#ffffff"}
+
+    def _ansi_apply(self, pane, codes_str):
+        """SGR 코드 문자열(예: '1;35')로 pane 의 색 상태를 갱신하고 태그명을 돌려준다."""
+        codes = [int(c) for c in codes_str.split(';') if c != ''] or [0]
+        bold = pane.get("ansi_bold", False)
+        fg = pane.get("ansi_fg", None)
+        for c in codes:
+            if c == 0:
+                bold = False; fg = None
+            elif c == 1:
+                bold = True
+            elif c == 22:
+                bold = False
+            elif 30 <= c <= 37:
+                fg = c
+            elif 90 <= c <= 97:
+                fg = c - 60; bold = True
+            elif c == 39:
+                fg = None
+        pane["ansi_bold"] = bold
+        pane["ansi_fg"] = fg
+        if fg is None:
+            tag = None
+        else:
+            tag = f"ansib{fg}" if bold else f"ansi{fg}"
+        pane["ansi_tag"] = tag
+        return tag
+
+    def _build_console_pane(self, parent, slot, mono):
+        """슬롯(daq/analysis) 하나에 대한 헤더바 + 출력 ScrolledText 를 만든다."""
+        bar = tk.Frame(parent, bg="#2d2d2d")
+        bar.pack(fill=tk.X)
+
+        status_var = tk.StringVar(value="● Idle")
+        status_lbl = tk.Label(bar, textvariable=status_var,
+                              font=(mono, 12, "bold"), bg="#2d2d2d", fg="#808080",
+                              anchor="w", padx=10, pady=6)
+        status_lbl.pack(side=tk.LEFT)
+
+        tk.Button(bar, text="⏹ Stop",
+                  command=lambda s=slot: self.controller.stop_console_job(s),
+                  bg="#a33", fg="white", relief="flat", padx=10,
+                  activebackground="#c44").pack(side=tk.RIGHT, padx=(4, 10), pady=4)
+        tk.Button(bar, text="🧹 Clear",
+                  command=lambda s=slot: self.clear_console(s),
+                  bg="#444", fg="white", relief="flat", padx=10,
+                  activebackground="#555").pack(side=tk.RIGHT, padx=4, pady=4)
+        autoscroll = tk.BooleanVar(value=True)
+        tk.Checkbutton(bar, text="Auto-scroll", variable=autoscroll,
+                       bg="#2d2d2d", fg="#d4d4d4", selectcolor="#2d2d2d",
+                       activebackground="#2d2d2d", activeforeground="white",
+                       relief="flat").pack(side=tk.RIGHT, padx=8)
+
+        text = scrolledtext.ScrolledText(
+            parent, wrap=tk.NONE, state="disabled",
+            bg="#1e1e1e", fg="#d4d4d4", insertbackground="#d4d4d4",
+            padx=10, pady=8, relief="flat", borderwidth=0,
+            font=(mono, 11))
+        text.pack(fill=tk.BOTH, expand=True)
+        text.tag_config("info", foreground="#4fc1ff")
+        text.tag_config("ok", foreground="#73c991")
+        text.tag_config("err", foreground="#f48771")
+
+        # ANSI(터미널) 색상 태그 — 스크립트가 내보내는 \x1b[..m 코드를 실제 색으로 칠한다.
+        for code, color in self.ANSI_FG.items():
+            text.tag_config(f"ansi{code}", foreground=color)
+        for code, color in self.ANSI_FG_BRIGHT.items():
+            text.tag_config(f"ansib{code}", foreground=color)
+
+        self.console_panes[slot] = {
+            "frame": parent, "text": text,
+            "status_var": status_var, "status_lbl": status_lbl,
+            "autoscroll": autoscroll,
+            "ansi_tag": None, "ansi_bold": False, "ansi_fg": None}
+
+    def _pick_mono_font(self):
+        """현재 시스템에 실제로 설치된 모노스페이스 폰트를 골라 반환한다."""
+        try:
+            available = set(font.families())
+        except Exception:
+            available = set()
+        for name in ("DejaVu Sans Mono", "Liberation Mono", "Ubuntu Mono",
+                     "Noto Sans Mono", "Menlo", "Consolas", "Courier New"):
+            if name in available:
+                return name
+        return "TkFixedFont"
+
+    def focus_console(self, slot):
+        """Console 탭을 띄우고, 해당 슬롯(daq/analysis) 서브탭을 앞으로 가져온다."""
+        try:
+            self.notebook.select(self.console_tab)
+            pane = self.console_panes.get(slot)
+            if pane:
+                self.console_subnb.select(pane["frame"])
+        except Exception:
+            pass
+
+    def clear_console(self, slot="analysis"):
+        """해당 슬롯 콘솔 내용을 비운다."""
+        pane = self.console_panes.get(slot)
+        if not pane:
+            return
+        pane["text"].config(state="normal")
+        pane["text"].delete('1.0', tk.END)
+        pane["text"].config(state="disabled")
+        pane["ansi_tag"] = None
+        pane["ansi_bold"] = False
+        pane["ansi_fg"] = None
+
+    _CONSOLE_MAX_LINES = 3000  # trim oldest when exceeded
+
+    def _write_segment(self, widget, text, tag, pane):
+        """Insert text into widget, applying ANSI colours if no explicit tag."""
+        if tag:
+            widget.insert(tk.END, self.ANSI_RE.sub('', text), tag)
+        else:
+            cur = pane.get("ansi_tag")
+            pos = 0
+            for m in self.ANSI_RE.finditer(text):
+                seg = text[pos:m.start()]
+                if seg:
+                    widget.insert(tk.END, seg, cur if cur else ())
+                cur = self._ansi_apply(pane, m.group(1))
+                pos = m.end()
+            tail = text[pos:]
+            if tail:
+                widget.insert(tk.END, tail, cur if cur else ())
+
+    def console_write(self, text, tag=None, slot="analysis"):
+        """Write to console. Must be called from the main thread (master.after)."""
+        pane = self.console_panes.get(slot)
+        if not pane:
+            return
+        widget = pane["text"]
+        widget.config(state="normal")
+
+        if '\r' in text:
+            # Handle carriage-return: \r means "overwrite current line"
+            # Split on \r and \n, processing each token
+            tokens = re.split(r'(\r|\n)', text)
+            for token in tokens:
+                if token == '\r':
+                    # Delete from start of widget's last line to end-of-content
+                    try:
+                        ls = widget.index("end-1c linestart")
+                        le = widget.index("end-1c")
+                        if ls != le:
+                            widget.delete(ls, "end-1c")
+                    except Exception:
+                        pass
+                elif token == '\n':
+                    widget.insert(tk.END, '\n', tag or ())
+                elif token:
+                    self._write_segment(widget, token, tag, pane)
+        else:
+            self._write_segment(widget, text, tag, pane)
+
+        # Trim oldest lines to keep widget fast
+        line_count = int(widget.index(tk.END).split('.')[0]) - 1
+        if line_count > self._CONSOLE_MAX_LINES:
+            trim = line_count - self._CONSOLE_MAX_LINES
+            widget.delete("1.0", f"{trim + 1}.0")
+        widget.config(state="disabled")
+        if pane["autoscroll"].get():
+            widget.yview_moveto(1)
+
+    # State → (label text, label color, sub-tab prefix, outer-tab indicator)
+    _SLOT_STATES = {
+        "running": ("▶ Running", "#73c991", "🟢", True),
+        "done":    ("✓ Done",    "#4fc1ff", "✅", False),
+        "failed":  ("✗ Failed",  "#f48771", "❌", False),
+        "stopped": ("⏹ Stopped", "#e5c07b", "⚫", False),
+        "idle":    ("● Idle",    "#808080", "⚫", False),
+    }
+    _SLOT_LABELS = {
+        "daq":      "DAQ Stream",
+        "analysis": "Analysis / Produce",
+        "contour":  "Contour",
+    }
+
+    def console_set_status(self, text, slot="analysis", state="idle"):
+        """Update status label color + sub-tab label + outer tab indicator."""
+        pane = self.console_panes.get(slot)
+        if not pane:
+            return
+        _, color, dot, _ = self._SLOT_STATES.get(state, self._SLOT_STATES["idle"])
+        pane["status_var"].set(text)
+        pane["status_lbl"].config(fg=color)
+        # Update sub-tab label
+        try:
+            label = f"{dot} {self._SLOT_LABELS.get(slot, slot)}"
+            self.console_subnb.tab(pane["frame"], text=label)
+        except Exception:
+            pass
+        # Update outer "Output" tab — green dot if any slot is running
+        self._refresh_output_tab_label()
+
+    def _refresh_output_tab_label(self):
+        """Set outer tab to 🟢 Output if any slot is actively running, else 📟 Output."""
+        running = any(
+            self._SLOT_STATES.get(
+                getattr(p.get("status_lbl"), "_state", "idle"), self._SLOT_STATES["idle"]
+            )[3]
+            for p in self.console_panes.values()
+        )
+        # Check via status label text instead
+        running = any(
+            "▶" in p["status_var"].get()
+            for p in self.console_panes.values()
+        )
+        try:
+            self.notebook.tab(self.console_tab,
+                              text="🟢 Output" if running else "📟 Output")
+        except Exception:
+            pass
+
     def update_file_info_panel(self, file_path):
         try:
             stat = os.stat(file_path)
             size_mb = stat.st_size / (1024 * 1024)
             mtime = datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
             filename = os.path.basename(file_path)
-
-            info_text = (
-                    f"File: {filename}\n\n"
-                    f"Size: {size_mb:.2f} MB\n"
-                    f"Modified: {mtime}\n"
-                    )
-            self.file_info_label.config(text=info_text)
+            base_info = (f"File: {filename}\n\nSize: {size_mb:.2f} MB\nModified: {mtime}\n")
         except FileNotFoundError:
             self.file_info_label.config(text=f"File not found:\n{os.path.basename(file_path)}")
+            return
         except Exception as e:
             self.file_info_label.config(text=f"Could not get file info:\n{e}")
+            return
+
+        # For .root files, also surface the RunInfo metadata (SN / HV / angles / shifter).
+        if not file_path.lower().endswith('.root'):
+            self.file_info_label.config(text=base_info)
+            return
+
+        if not hasattr(self, '_runinfo_cache'):
+            self._runinfo_cache = {}
+        self._info_current_path = file_path
+
+        cached = self._runinfo_cache.get(file_path)
+        if cached is not None:
+            self.file_info_label.config(text=base_info + "\n" + cached)
+            return
+
+        self.file_info_label.config(text=base_info + "\n⏳ Reading run info...")
+
+        def worker():
+            meta = self._read_runinfo(file_path)
+            self._runinfo_cache[file_path] = meta
+            def apply():
+                if getattr(self, '_info_current_path', None) == file_path:
+                    self.file_info_label.config(text=base_info + "\n" + meta)
+            try:
+                self.master.after(0, apply)
+            except Exception:
+                pass
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _read_runinfo(self, file_path):
+        """Run dump_runinfo.C through ROOT and format the RunInfo metadata (no uproot needed)."""
+        import subprocess
+        try:
+            daq_path = self.controller._get_daq_path() or os.path.dirname(file_path)
+            macro = os.path.join(daq_path, 'dump_runinfo.C')
+            if not os.path.exists(macro):
+                return "(run info: dump_runinfo.C not found)"
+            cmd = ['root', '-l', '-b', '-q', f'{macro}("{file_path}")']
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=30).stdout
+            kv = {}
+            for line in out.splitlines():
+                if '=' in line and not line.startswith('Processing'):
+                    k, _, v = line.partition('=')
+                    kv[k.strip()] = v.strip()
+            if 'ERR' in kv:
+                return f"(run info unavailable: {kv['ERR']})"
+            if 'SN1' not in kv and 'RunMode' not in kv:
+                return "(no RunInfo in this file)"
+            return (
+                "── Run Info ──\n"
+                f"Mode: {kv.get('RunMode','?')}\n"
+                f"Shifter: {kv.get('Shifter','?')}  /  Expert: {kv.get('Expert','?')}\n"
+                f"Laser: {kv.get('Laser_mA','?')} mA @ {kv.get('Wavelength','?')} nm\n"
+                f"CH0 (mon): {kv.get('SN1','?')}  HV {kv.get('HV1','?')}\n"
+                f"CH1: {kv.get('SN2','?')}  HV {kv.get('HV2','?')}\n"
+                f"     Rot {kv.get('Rot2','?')}°, Tilt {kv.get('Tilt2','?')}°\n"
+                f"CH2: {kv.get('SN3','?')}  HV {kv.get('HV3','?')}\n"
+                f"     Rot {kv.get('Rot3','?')}°, Tilt {kv.get('Tilt3','?')}°\n"
+                f"Note: {kv.get('NOTE','')}"
+            )
+        except subprocess.TimeoutExpired:
+            return "(run info: ROOT timed out)"
+        except FileNotFoundError:
+            return "(run info: 'root' not found)"
+        except Exception as e:
+            return f"(run info error: {e})"
 
     def _create_file_browser_tab(self, parent_tab, tab_type):
         control_frame = ttk.Frame(parent_tab, padding=5)
@@ -948,10 +1943,20 @@ class UIManager:
             # 1. Type Filetering ('Raw' or 'Production')
             filtered_list = [f for f in self.all_data_files if f["type"] == tab_type]
 
-            # 2. Mode Filtering('Dark' or 'Laser')
+            # 2. Mode Filtering ('Dark' or 'Laser')
+            # Laser/Dark is determined by the SUBFOLDER (.../RAW/Laser, .../RAW/Dark),
+            # not by the filename (raw files are named precal_raw_kor_run_DATE_NNN.root with
+            # no mode tag). The old filename-keyword match therefore never hit and the list
+            # came up empty. Match the folder path first, and still allow a filename tag as a
+            # fallback for older/processed files that encode the mode in the name.
             if filter_mode != "All":
-                keyword = f"_{filter_mode.lower()}"
-                filtered_list = [f for f in filtered_list if keyword in f["filename"]]
+                m = filter_mode.lower()          # "dark" or "laser"
+                folder_key = os.sep + m          # "/dark" or "/laser"
+                name_key = f"_{m}"
+                filtered_list = [
+                    f for f in filtered_list
+                    if folder_key in f["path"].lower() or name_key in f["filename"].lower()
+                ]
 
             # 3. Sort
             if sort_mode == 'name':
@@ -962,10 +1967,19 @@ class UIManager:
             if search_query:
                 filtered_list = [f for f in filtered_list if search_query in f["filename"].lower()]
 
-            # 4. Treeview 
+            # 4. Treeview — insert in one batch after clearing to minimise redraws
             tree.delete(*tree.get_children())
+            # Temporarily detach from display during bulk insert (avoids per-row redraws)
+            try:
+                tree.config(displaycolumns=[])  # hide columns → suppress redraws
+            except Exception:
+                pass
             for file_info in filtered_list:
                 tree.insert("", tk.END, values=(file_info["filename"], file_info["path"], file_info["mtime"]))
+            try:
+                tree.config(displaycolumns="#all")  # restore
+            except Exception:
+                pass
 
     def on_data_file_double_click(self, event):
         """Treeview에서 아이템을 더블클릭했을 때 호출됩니다."""
@@ -977,13 +1991,24 @@ class UIManager:
         if item_values:
             filename, dir_path, _ = item_values
             full_path = os.path.join(dir_path, filename)
-            self.controller.open_root_file_browser(full_path)
+            #self.controller.open_root_file_browser(full_path)
+            self.controller.open_data_file_viewer(full_path)
 
 
     def on_data_file_select(self, event):
-        """Treeview에서 아이템을 클릭했을 때 정보 패널 업데이트"""
-        tree = event.widget
-        if not tree.selection(): return
+        """Update info panel when a file is selected. Debounced 150ms to avoid
+        spawning many ROOT metadata threads during Ctrl/Shift multi-select."""
+        if hasattr(self, '_select_debounce_id') and self._select_debounce_id:
+            try:
+                self.master.after_cancel(self._select_debounce_id)
+            except Exception:
+                pass
+        self._select_debounce_id = self.master.after(150, lambda: self._do_file_select(event.widget))
+
+    def _do_file_select(self, tree):
+        self._select_debounce_id = None
+        if not tree.selection():
+            return
         item_id = tree.selection()[0]
         item_values = tree.item(item_id, "values")
         if item_values:
@@ -1653,11 +2678,16 @@ class UIManager:
         conn_frame = ttk.LabelFrame(container, text="UPS Connection (RS232C) OMRON BA100R ds-1423816", padding=10)
         conn_frame.pack(fill=tk.X, pady=(0, 15))
         ttk.Label(conn_frame, text="Port:").pack(side=tk.LEFT)
-    
+
         self.ups_port_combo = ttk.Combobox(conn_frame, width=20, state="normal")
         self.ups_port_combo.pack(side=tk.LEFT, padx=5)
 
-        self.ups_search_btn = ttk.Button(conn_frame, text="Search Ports 🔍", 
+        self.ups_change_port_btn = ttk.Button(conn_frame, text="Change...",
+                                              command=self.controller.unlock_ups_port,
+                                              state="disabled")
+        self.ups_change_port_btn.pack(side=tk.LEFT, padx=2)
+
+        self.ups_search_btn = ttk.Button(conn_frame, text="Search Ports 🔍",
                                          command=self.controller.search_ups_ports)
         self.ups_search_btn.pack(side=tk.LEFT, padx=5)
 
@@ -1809,15 +2839,93 @@ class UIManager:
 
             self.status_widgets[key] = {"led": led, "canvas": canvas}
 
+        ttk.Separator(dashboard, orient="horizontal").pack(fill=tk.X, pady=(10, 5))
+        self.global_job_status_label = ttk.Label(dashboard, text="📊 Pipeline Monitor: Idle", 
+                                                 font=("Helvetica", 11, "bold"), foreground="gray", anchor="center")
+        self.global_job_status_label.pack(fill=tk.X, expand=True, pady=2)
+
+        self._init_global_pipeline_watcher()
+
         self.master.after(100, self._update_dashboard_loop)
 
+
+    def _create_lock_banner(self, parent):
+        """Plan A 안전 잠금 배너.
+
+        DAQ 탭 최상단(System Connection Overview 바로 아래)에 항상 표시되며,
+        잠금 상태에 따라 배너 자체가 토글된다.
+          - 잠김(LOCKED)  : 키 큰 빨간 배너 + 'Unlock Controls' 버튼 (강한 시각 경고)
+          - 해제(ACTIVE)  : 얇은 초록 바 + 'Lock' 버튼 (공간 최소화)
+        한 번 Unlock 하면 access_mgr.unlocked 가 True 로 유지되어 프로그램 종료까지
+        풀린 상태가 지속되고, Lock 버튼을 누르면 다시 잠긴다(요구사항 4).
+        """
+        # pady 는 _update_lock_banner 에서 상태별로 다시 설정한다(높이 토글).
+        self._lock_banner = tk.Frame(parent, bg="#dc3545")
+        self._lock_banner.pack(fill=tk.X, padx=5, pady=(0, 4))
+
+        # Unlock/Lock 토글 버튼을 '왼쪽'에 배치해 눈에 잘 띄게 한다.
+        # request_control_unlock() 가 토글 동작(잠금<->해제)을 수행한다.
+        self._banner_unlock_btn = tk.Button(
+            self._lock_banner,
+            text="🔒  Unlock Controls",
+            font=("Helvetica", 13, "bold"),
+            bg="#f0ad4e", fg="black",
+            relief="flat", padx=18, pady=4,
+            command=self.controller.request_control_unlock)
+        self._banner_unlock_btn.pack(side=tk.LEFT, padx=12, pady=4)
+
+        # 버튼 오른쪽: 잠금 아이콘 + 상태 안내 문구
+        # (이 프레임도 상태에 따라 배경색을 바꿔야 한다. 안 그러면 Unlock 후에도
+        #  글씨 둘레에 빨간 박스가 남는다.)
+        self._lock_left_frame = tk.Frame(self._lock_banner, bg="#dc3545")
+        self._lock_left_frame.pack(side=tk.LEFT, padx=4, pady=4)
+        left = self._lock_left_frame
+
+        self._lock_icon_lbl = tk.Label(left, text="🔒", font=("Helvetica", 20),
+                                       bg="#dc3545", fg="white")
+        self._lock_icon_lbl.pack(side=tk.LEFT)
+
+        self._lock_text_lbl = tk.Label(
+            left,
+            text="  SYSTEM LOCKED  —  Unlock before running DAQ / General Scan or turning on the Laser.",
+            font=("Helvetica", 11, "bold"), bg="#dc3545", fg="white")
+        self._lock_text_lbl.pack(side=tk.LEFT, padx=8)
+
+        self._update_lock_banner()
+
+    def _update_lock_banner(self):
+        """배너 색/문구/버튼을 현재 잠금 상태에 맞춰 1초마다 동기화한다."""
+        is_unlocked = getattr(getattr(self.controller, 'access_mgr', None), 'unlocked', True)
+        if is_unlocked:
+            # 해제 상태: 얇은 초록 바로 축소하여 공간을 거의 차지하지 않게 한다.
+            self._lock_banner.config(bg="#28a745")
+            self._lock_left_frame.config(bg="#28a745")
+            self._lock_icon_lbl.config(text="🔓", bg="#28a745", font=("Helvetica", 13))
+            self._lock_text_lbl.config(
+                text="  CONTROLS ACTIVE — system unlocked.",
+                bg="#28a745", font=("Helvetica", 10, "bold"))
+            self._banner_unlock_btn.config(
+                text="🔓  Lock", bg="#1e7e34", fg="white",
+                font=("Helvetica", 10, "bold"))
+        else:
+            # 잠금 상태: 키 큰 빨간 배너로 강하게 경고한다.
+            self._lock_banner.config(bg="#dc3545")
+            self._lock_left_frame.config(bg="#dc3545")
+            self._lock_icon_lbl.config(text="🔒", bg="#dc3545", font=("Helvetica", 20))
+            self._lock_text_lbl.config(
+                text="  SYSTEM LOCKED  —  Unlock before running DAQ / General Scan or turning on the Laser.",
+                bg="#dc3545", font=("Helvetica", 11, "bold"))
+            self._banner_unlock_btn.config(
+                text="🔒  Unlock Controls", bg="#f0ad4e", fg="black",
+                font=("Helvetica", 13, "bold"))
+
+        self.master.after(1000, self._update_lock_banner)
 
     def _update_dashboard_loop(self):
         statuses = self.controller.get_system_status()
 
         statuses["B-field"] = getattr(self, "web_connection_status", False)
 
-        # 탭 순서 매핑
         tab_map = {"DAQ": 0, "Laser": 1, "B-field": 2, "UPS": 3}
 
         for key, connected in statuses.items():
@@ -1901,6 +3009,10 @@ class UIManager:
         if hasattr(self.controller, 'auto_ui'):
             self.controller.auto_ui.set_buttons_state(is_unlocked)
 
+        # run_daq (Execute Scripts sidebar) 버튼도 잠금 상태에 맞게 동기화
+        if 'run_daq' in self.buttons:
+            self.buttons['run_daq'].config(state=state)
+
     def setup_shortcuts(self):
         """DAQ 탭 전용 단축키 설정"""
         # 1. Configuration: Ctrl + O
@@ -1945,3 +3057,101 @@ class UIManager:
         """Hides the loading overlay."""
         if hasattr(self, 'loading_frame'):
             self.loading_frame.place_forget()
+
+
+    def _init_global_pipeline_watcher(self):
+        """Initializes shared tracking directory anchors for active process telemetry."""
+        self.pipeline_flag_dir = "/tmp/daq_flags"
+        self.cached_active_run = None
+        self._poll_global_pipeline_flags()
+
+    def _purge_stale_flags(self, flag_list, proc_name=None, grace=5):
+        """Drop flag files left behind by a dead/cancelled run so the monitor self-heals.
+
+        If proc_name is given and that process is alive, the flags are real -> keep them.
+        Otherwise remove any flag older than `grace` seconds and return the survivors.
+        """
+        if not flag_list:
+            return flag_list
+        import os, time, subprocess
+        if proc_name:
+            try:
+                if subprocess.run(['pgrep', '-x', proc_name], capture_output=True).returncode == 0:
+                    return flag_list  # the run is genuinely active
+            except Exception:
+                return flag_list  # pgrep unavailable -> don't risk purging a live run
+        survivors = []
+        now = time.time()
+        for fp in flag_list:
+            try:
+                if (now - os.path.getmtime(fp)) > grace:
+                    os.remove(fp)
+                else:
+                    survivors.append(fp)
+            except Exception:
+                survivors.append(fp)
+        return survivors
+
+    def _poll_global_pipeline_flags(self):
+        """Sweeps flag directory every 1s to project centralized process tracking onto the global frame layout."""
+        import glob
+        import os
+
+        if hasattr(self, 'master') and self.master.winfo_exists():
+            try:
+                daq_flags  = glob.glob(os.path.join(self.pipeline_flag_dir, "daq_*.flag"))
+                prod_flags = glob.glob(os.path.join(self.pipeline_flag_dir, "prod_*.flag"))
+                read_flags = glob.glob(os.path.join(self.pipeline_flag_dir, "read_*.flag"))
+                cont_flags = glob.glob(os.path.join(self.pipeline_flag_dir, "contour_*.flag"))
+
+                # Self-heal: a cancelled Run (or a closed terminal/tmux window) can leave its
+                # flag behind, which made the monitor keep showing a dead run as "Active".
+                # DAQ: trust the flag only while execute_DAQ_v2 is actually running.
+                # Analysis steps are short, so just clear any analysis flag older than 20 min.
+                daq_flags  = self._purge_stale_flags(daq_flags,  proc_name="execute_DAQ_v2", grace=5)
+                prod_flags = self._purge_stale_flags(prod_flags, proc_name=None, grace=1200)
+                read_flags = self._purge_stale_flags(read_flags, proc_name=None, grace=1200)
+                cont_flags = self._purge_stale_flags(cont_flags, proc_name=None, grace=1200)
+
+                def get_latest_run_from_flags(flag_list):
+                    if not flag_list:
+                        return None
+                    try:
+                        nums = [int(os.path.basename(f).split("_")[1].split(".")[0]) for f in flag_list]
+                        return str(max(nums))
+                    except Exception:
+                        return os.path.basename(flag_list[0]).split("_")[1].split(".")[0]
+
+                active_daq_run  = get_latest_run_from_flags(daq_flags)
+                active_prod_run = get_latest_run_from_flags(prod_flags)
+                active_read_run = get_latest_run_from_flags(read_flags)
+                active_cont_run = get_latest_run_from_flags(cont_flags)
+
+                if active_daq_run:
+                    self.cached_active_run = active_daq_run
+                    self.global_job_status_label.config(text=f"📡 [Run {active_daq_run}] DAQ: Stream Recording Active... (Live Collecting)", foreground="#dc3545")
+                elif active_prod_run:
+                    self.cached_active_run = active_prod_run
+                    self.global_job_status_label.config(text=f"📊 [Run {active_prod_run}] Analysis: Converting Raw ROOT Trees...", foreground="#ffcc00")
+                elif active_read_run:
+                    self.cached_active_run = active_read_run
+                    self.global_job_status_label.config(text=f"📊 [Run {active_read_run}] Analysis: Executing Mathematical Fit Models...", foreground="#ffcc00")
+                elif active_cont_run:
+                    self.cached_active_run = active_cont_run
+                    self.global_job_status_label.config(text=f"📊 [Run {active_cont_run}] Analysis: Rendering Boundary Matrix Contours...", foreground="#ffcc00")
+                else:
+                    if self.cached_active_run:
+                        done_flag = os.path.join(self.pipeline_flag_dir, f"done_{self.cached_active_run}.flag")
+                        if os.path.exists(done_flag):
+                            self.global_job_status_label.config(text=f"✅ [Run {self.cached_active_run}] Pipeline Sequence Processed Successfully!", foreground="#00e676")
+                            try: os.remove(done_flag) # Flush success trigger token cleanly
+                            except Exception: pass
+                            self.cached_active_run = None
+                        else:
+                            self.global_job_status_label.config(text="📊 Pipeline Monitor: Idle", foreground="gray")
+                    else:
+                        self.global_job_status_label.config(text="📊 Pipeline Monitor: Idle", foreground="gray")
+            except Exception as e:
+                print(f"[WARNING] Centralized pipeline monitoring glitch: {e}")
+
+            self.master.after(150, self._poll_global_pipeline_flags)

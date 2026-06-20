@@ -54,13 +54,13 @@ const std::string HV2 = "1800";
 const std::string HV3 = "1770";
 
 // --- NOTE ---
-const std::string NOTE = "165";
+const std::string NOTE = "B2";
 
 // --- Trigger Channel ---
 const int TriggerCh = 3;
 
 // --- Shift Information ---
-const std::string Shift_worker = "Junkyo";
+const std::string Shift_worker = "Yufei";
 const std::string Expert = "Junkyo";
 
 

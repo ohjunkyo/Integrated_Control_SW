@@ -41,5 +41,10 @@ cd "$SCRIPT_DIR"
 echo "Executing with ROOT_INCLUDE_PATH=$ROOT_INCLUDE_PATH"
 echo "Command: $COMMAND_TO_RUN"
 eval $COMMAND_TO_RUN
+EXIT_CODE=$?
 
-echo "Script finished."
+echo "Script finished. (exit=$EXIT_CODE)"
+# Propagate ROOT's real exit status. Previously the trailing echo made this script
+# always return 0, so a crashing macro (e.g. a segfault) was invisible and the
+# && analysis chain happily continued to the next step.
+exit $EXIT_CODE

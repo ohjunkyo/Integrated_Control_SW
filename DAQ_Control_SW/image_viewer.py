@@ -335,3 +335,4 @@ class ImageViewer(Toplevel):
 
             threading.Thread(target=delete_task, daemon=True).start()
 
+

@@ -94,6 +94,42 @@ class UPSManager:
             if hasattr(self.app, 'ui'):
                 self.app.ui.ups_vars["conn_status"].set("UPS H/W Not Found")
 
+    def _on_ups_connected(self, port):
+        """Called (on main thread) after a successful UPS connection."""
+        if hasattr(self.app, 'ui'):
+            self.app.ui.ups_vars["conn_status"].set(f"Connected: {port}")
+            self.app.ui.ups_port_combo.set(port)
+            self.app.ui.ups_port_combo.config(state="disabled")
+            self.app.ui.ups_search_btn.config(state="disabled")
+            self.app.ui.ups_conn_btn.config(text="Disconnect UPS", state="normal")
+            self.app.ui.ups_refresh_btn.config(state="normal")
+            self.app.ui.ups_change_port_btn.config(state="normal")
+
+    def _on_ups_disconnected(self):
+        """Called (on main thread) when UPS is disconnected."""
+        if hasattr(self.app, 'ui'):
+            self.app.ui.ups_vars["conn_status"].set("Disconnected")
+            self.app.ui.ups_port_combo.config(state="normal")
+            self.app.ui.ups_search_btn.config(state="normal")
+            self.app.ui.ups_conn_btn.config(text="Connect UPS", state="normal")
+            self.app.ui.ups_refresh_btn.config(state="disabled")
+            self.app.ui.ups_change_port_btn.config(state="disabled")
+
+    def unlock_ups_port(self):
+        """Password-locked: disconnect and allow port change."""
+        import tkinter.simpledialog as sd
+        pwd = sd.askstring("Admin", "Enter Admin Password to change port:",
+                           show='*', parent=self.app.master)
+        if pwd != "1234":
+            if pwd is not None:
+                messagebox.showerror("Access Denied", "Incorrect password.")
+            return
+        if self.ups_serial and self.ups_serial.is_open:
+            self.ups_serial.close()
+            self.ups_serial = None
+        self._on_ups_disconnected()
+        self.app._log("[INFO] UPS port unlocked by admin.")
+
     def _try_ups_handshake(self, port):
         def handshake_task():
             try:
@@ -103,7 +139,7 @@ class UPSManager:
                 )
                 ser.dtr = True
                 ser.rts = False
-                time.sleep(2.0) # 백그라운드에서만 2초 대기 (GUI는 안 멈춤)
+                time.sleep(2.0)
 
                 ser.reset_input_buffer()
                 ser.write(b'Q1\r')
@@ -113,9 +149,8 @@ class UPSManager:
 
                 if response.startswith('(') or ser.is_open:
                     self.ups_serial = ser
-                    if hasattr(self.app, 'ui'):
-                        self.app.master.after(0, lambda: self.app.ui.ups_vars["conn_status"].set(f"Connected: {port}"))
                     self.app._log(f"UPS Handshake Success with Q1: {repr(response)}")
+                    self.app.master.after(0, lambda: self._on_ups_connected(port))
                     self.app.master.after(0, self.update_ups_status_loop)
                 else:
                     ser.close()
@@ -124,7 +159,6 @@ class UPSManager:
             except Exception as e:
                 self.app._log(f"UPS Handshake Error: {e}")
 
-        # 메인 화면을 멈추지 않고 백그라운드 스레드에서 실행!
         threading.Thread(target=handshake_task, daemon=True).start()
 
     def update_ups_status_loop(self):
@@ -177,7 +211,11 @@ class UPSManager:
                                         self.app.ui.ups_vars["load_level"].set(int(load_p))
                                         self.app.ui.ups_vars["batt_level"].set(batt_pct)
                                         self.app.ui.ups_vars["frequency"].set(f"{freq:.1f} Hz")
-                                        self.app.ui.ups_vars["status_msg"].set(f"Normal ({current_watt:.1f} W) / Temp: {temp_c:.1f}°C")
+                                        # Evaluate power-failure / overload / low-battery / overheat
+                                        # conditions and update status_msg + colors accordingly.
+                                        # (Previously status_msg was hard-set to "Normal", so these
+                                        #  safety alerts never fired.)
+                                        self.check_ups_alerts(current_watt, temp_c, batt_pct, load_p, input_v)
                                     
                                     now_dt = datetime.now()
                                     self.ups_plot_history["time"].append(now_dt)
@@ -205,16 +243,15 @@ class UPSManager:
     def toggle_ups_connection(self):
         if self.ups_serial and self.ups_serial.is_open:
             self.ups_serial.close()
-            if hasattr(self.app, 'ui'):
-                self.app.ui.ups_vars["conn_status"].set("Disconnected")
+            self.ups_serial = None
+            self._on_ups_disconnected()
             self.app._log("UPS Serial Disconnected.")
         else:
             port = self.app.ui.ups_port_combo.get() if hasattr(self.app, 'ui') else None
             if not port:
                 messagebox.showwarning("Warning", "Please select a port first.")
                 return
-            
-            # [수정] 수동 연결도 스레드로 처리
+
             def manual_connect_task():
                 try:
                     ser = serial.Serial(port, 2400, timeout=1)
@@ -227,16 +264,15 @@ class UPSManager:
                     time.sleep(0.5)
 
                     self.ups_serial = ser
-                    if hasattr(self.app, 'ui'):
-                        self.app.master.after(0, lambda: self.app.ui.ups_vars["conn_status"].set(f"Connected to {port}"))
-
                     self.app._log(f"UPS Manual Connect Success: {port}")
+                    self.app.master.after(0, lambda: self._on_ups_connected(port))
                     self.app.master.after(0, self.update_ups_status_loop)
 
                 except Exception as e:
                     self.ups_serial = None
-                    error_msg = str(e) 
-                    self.app.master.after(0, lambda msg=error_msg: messagebox.showerror("UPS Connection Error", f"Failed to connect: {msg}"))
+                    error_msg = str(e)
+                    self.app.master.after(0, lambda msg=error_msg: messagebox.showerror(
+                        "UPS Connection Error", f"Failed to connect: {msg}"))
 
             if hasattr(self.app, 'ui'):
                 self.app.ui.ups_vars["conn_status"].set(f"Connecting to {port}...")
@@ -306,19 +342,86 @@ class UPSManager:
             self.app.ui.outlet_canvas.itemconfig(self.app.ui.outlet_circles[i], fill=colors[state])
 
     def shutdown_ups_all(self):
-        confirmed = messagebox.askyesno("WARNING", "Are you sure you want to SHUT DOWN all outputs?")
-        if confirmed:
-            if self.ups_serial and self.ups_serial.is_open:
-                try:
-                    self.app._log("!!! UPS SHUTDOWN COMMAND SENT !!!")
-                    self.update_ups_outlet_status([0, 0, 0, 0])
-                    messagebox.showinfo("Shutdown", "Shutdown command sent successfully.")
-                except Exception as e:
-                    self.app._log(f"Shutdown Failed: {e}")
-                    self.update_ups_outlet_status([2, 2, 2, 2])
-                    messagebox.showerror("Error", f"Failed to send shutdown command: {e}")
-            else:
-                messagebox.showwarning("Connection Error", "UPS is not connected via RS232C.")
+        import tkinter.simpledialog as sd
+
+        if not (self.ups_serial and self.ups_serial.is_open):
+            messagebox.showwarning("Connection Error", "UPS is not connected via RS232C.")
+            return
+
+        pwd = sd.askstring("Admin Password Required",
+                           "⚠️  SYSTEM WIDE SHUTDOWN will cut power to ALL devices.\n\n"
+                           "Enter Admin Password to confirm:",
+                           show='*', parent=self.app.master)
+        if pwd is None:
+            return
+        if pwd != "1234":
+            messagebox.showerror("Access Denied", "Incorrect password. Shutdown cancelled.")
+            return
+
+        confirmed = messagebox.askyesno(
+            "FINAL WARNING",
+            "⚠️  SYSTEM WIDE SHUTDOWN\n\n"
+            "All connected devices will lose power.\n"
+            "This will send S.5 command: UPS output cuts in ~30 s.\n\n"
+            "Are you ABSOLUTELY SURE?",
+            icon="warning"
+        )
+        if not confirmed:
+            return
+
+        self._run_shutdown_countdown()
+
+    def _run_shutdown_countdown(self):
+        count_win = tk.Toplevel(self.app.master)
+        count_win.title("SHUTDOWN COUNTDOWN")
+        count_win.geometry("360x160")
+        count_win.attributes("-topmost", True)
+        count_win.grab_set()
+
+        lbl = tk.Label(count_win, text="Shutdown in  5 ...",
+                       font=("Arial", 18, "bold"), fg="#dc3545")
+        lbl.pack(expand=True, pady=20)
+
+        tk.Button(count_win, text="CANCEL SHUTDOWN", width=20, font=("Arial", 11),
+                  bg="#f8d7da", fg="#721c24",
+                  command=lambda: (setattr(self, '_shutdown_cancelled', True),
+                                   count_win.destroy(),
+                                   self.app._log("[INFO] UPS shutdown cancelled by user."))).pack(pady=5)
+
+        self._shutdown_cancelled = False
+
+        def tick(n):
+            if self._shutdown_cancelled:
+                return
+            if n <= 0:
+                count_win.destroy()
+                self._send_ups_shutdown()
+                return
+            lbl.config(text=f"Shutdown in  {n} ...")
+            count_win.after(1000, lambda: tick(n - 1))
+
+        tick(5)
+
+    def _send_ups_shutdown(self):
+        try:
+            # Megatec/APC protocol: "S.5\r" schedules UPS output shutdown in 30 s.
+            # "S<n>\r" = n minutes, "S.<n>\r" = n×6 seconds.
+            # OMRON BA100R supports this protocol (verified by Q1 response format).
+            # To cancel before the 30 s window: send "C\r" — not implemented here
+            # because once this path is reached the user has already confirmed twice.
+            self.ups_serial.write(b'S.5\r')
+            time.sleep(0.2)
+            self.app._log("!!! UPS SHUTDOWN COMMAND SENT (S.5) — POWER CUTS IN ~30 SECONDS !!!")
+            self.update_ups_outlet_status([2, 2, 2, 2])
+            messagebox.showwarning(
+                "SHUTDOWN INITIATED",
+                "UPS shutdown command sent (S.5).\n\n"
+                "Power will cut in approximately 30 seconds.\n\n"
+                "Save all work NOW!"
+            )
+        except Exception as e:
+            self.app._log(f"[ERROR] UPS SHUTDOWN FAILED: {e}")
+            messagebox.showerror("Shutdown Error", f"Failed to send shutdown command:\n{e}")
 
     def save_ups_realtime_data(self, watt, temp, vin, vout):
         if vout <= 0.5:

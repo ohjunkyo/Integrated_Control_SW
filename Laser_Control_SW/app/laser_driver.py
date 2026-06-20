@@ -16,6 +16,7 @@ import hid
 import os
 import logging
 import math
+import threading
 from datetime import datetime
 from typing import Optional, List, Union
 
@@ -84,6 +85,12 @@ class TamadenshiLaser:
         """Initializes the laser controller class."""
         self.device: Optional[hid.device] = None
         self.status = {}  # Dictionary to store the status read from the device
+        # Serializes every HID write/read transaction. The interlock watchdog thread
+        # and the main GUI polling loop both call update_status() on the same device;
+        # without this lock their write/read pairs interleave and each thread reads the
+        # other's response, causing "Status parse error" and bogus temp/current values.
+        self._io_lock = threading.RLock()
+        self._last_csv_log_time = 0.0
         print(f"Controller initialized (VID: {self.VENDOR_ID:04x}, PID: {self.PRODUCT_ID:04x})")
 
     def connect(self, dev_path: bytes = None) -> (bool, str):
@@ -218,8 +225,9 @@ class TamadenshiLaser:
                 report[i + 2] = byte_val
 
         try:
-            # Write the report to the HID device
-            self.device.write(report)
+            # Write the report to the HID device (serialized against concurrent reads)
+            with self._io_lock:
+                self.device.write(report)
             return True
         except (IOError, ValueError, OSError) as e:
             # This often happens if the device is unplugged
@@ -244,13 +252,17 @@ class TamadenshiLaser:
                 report[i + 2] = byte_val
         
         try:
-            # Step 1: Write the command to the device
-            self.device.write(report)
-            
-            # Step 2: Read the 65-byte response with a 1000ms timeout
-            # Use positional argument '1000' instead of 'timeout=1000'
-            data = self.device.read(self.PACKET_LENGTH, 1000) 
-            
+            # Hold the lock across BOTH write and read so a concurrent transaction
+            # (e.g. from the watchdog thread) cannot slip a write in between and steal
+            # this response.
+            with self._io_lock:
+                # Step 1: Write the command to the device
+                self.device.write(report)
+
+                # Step 2: Read the 65-byte response with a 1000ms timeout
+                # Use positional argument '1000' instead of 'timeout=1000'
+                data = self.device.read(self.PACKET_LENGTH, 1000)
+
             if data:
                 # Return data, excluding the first byte (Report ID)
                 return data[1:] 
@@ -363,23 +375,27 @@ class TamadenshiLaser:
             self.status['bias'] = self._dac_to_val(data[7], data[8], 200.0)
             
             info_byte = data[14]
-            self.status['ld_on'] = (info_byte & 4) == 4
-            self.status['tec_on'] = (info_byte & 8) == 8
+            self.status['ld_on']     = bool(info_byte & 0x04)
+            self.status['tec_on']    = bool(info_byte & 0x08)
+            self.status['info_byte'] = info_byte   # raw — for diagnostics
+            # Bits 0/1 are tentative interlock/alarm flags (verify with hardware):
+            self.status['alarm']     = bool(info_byte & 0x01)
+            self.status['interlock'] = bool(info_byte & 0x02)
 
-            # --- [수정 사항] 날짜별 로그 관리 및 LD ON 조건부 저장 ---
-            if self.status.get('ld_on', False):
-                now = datetime.now()
+            # --- 날짜별 로그 관리 및 LD ON 조건부 저장 (10초 간격으로 downsample) ---
+            now = datetime.now()
+            now_t = now.timestamp()
+            if self.status.get('ld_on', False) and (now_t - self._last_csv_log_time >= 10.0):
+                self._last_csv_log_time = now_t
                 today_str = now.strftime('%Y%m%d')
                 current_log_file = os.path.join(DATA_LOG_DIR, f"laser_data_{today_str}.csv")
-                
-                # 날짜가 바뀌었는지 확인 (파일이 존재하지 않으면 핸들러 교체)
+
                 if not os.path.exists(current_log_file):
                     self._setup_daily_logger(current_log_file)
 
                 try:
-                    timestamp = now.isoformat()
                     csv_line = "{},{ld},{tec},{temp:.3f},{bias:.3f},{pulse:.3f}".format(
-                        timestamp,
+                        now.isoformat(),
                         ld=self.status['ld_on'],
                         tec=self.status['tec_on'],
                         temp=self.status['ld_temp'],

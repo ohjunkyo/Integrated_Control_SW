@@ -25,21 +25,25 @@ class LaserManager:
 
         # [CRITICAL FIX] Added missing connection tracking flags
         self.comm_error_flags = {wl: False for wl in self.wavelengths}
-        self.expected_connections = set() 
+        self._disc_reason    = {wl: "USB"  for wl in self.wavelengths}  # "USB" or "INTERLOCK"
+        self.expected_connections = set()
+        self._reconnecting = set()  # wavelengths with an in-flight background reconnect
 
         self.plot_history = {}
         for wl in self.wavelengths:
             self.plot_history[wl] = {
-                "time": collections.deque(maxlen=90000), 
-                "temp": collections.deque(maxlen=90000), 
+                "time": collections.deque(maxlen=90000),
+                "temp": collections.deque(maxlen=90000),
                 "pulse": collections.deque(maxlen=90000),
-                "bias": collections.deque(maxlen=90000)
+                "bias": collections.deque(maxlen=90000),
+                "ld_on": collections.deque(maxlen=90000)   # 1 while the laser diode is ON
             }
             self.load_todays_log(wl)
 
         self.laser_session_start = None
         self.laser_after_id = None
         self.watchdog_running = False
+        self._last_log_time = {wl: 0.0 for wl in self.wavelengths}
         self.start_interlock_watchdog()
 
     def auto_connect_laser(self):
@@ -125,14 +129,22 @@ class LaserManager:
 
 
     def show_interlock_recovery_dialog(self, wl, inst):
-        """Custom dialog for interlock recovery"""
+        """Custom dialog for interlock/USB recovery."""
+        reason = self._disc_reason.get(wl, "USB")
+        if reason == "USB":
+            title_txt = f"USB Reconnected - {wl}"
+            body_txt  = f"[{wl}] USB connection restored.\nDo you want to re-enable control?"
+        else:
+            title_txt = f"Interlock Recovery - {wl}"
+            body_txt  = f"[{wl}] Interlock release detected.\nDo you want to reconnect?"
+
         dialog = tk.Toplevel(self.app.master)
-        dialog.title(f"Interlock Recovery - {wl}")
+        dialog.title(title_txt)
         dialog.geometry("380x150")
         dialog.attributes("-topmost", True)
-        dialog.grab_set() 
+        dialog.grab_set()
 
-        tk.Label(dialog, text=f"[{wl}] Interlock release detected.\nDo you want to reconnect?", font=("Arial", 10, "bold"), pady=15).pack()
+        tk.Label(dialog, text=body_txt, font=("Arial", 10, "bold"), pady=15).pack()
 
         def on_normal_connect():
             dialog.destroy()
@@ -170,30 +182,57 @@ class LaserManager:
         self.app._log("[INFO] Safety Interlock Watchdog started (1s polling).")
 
     def _interlock_watchdog_loop(self):
-        """Runs purely in the background to catch interlock trips instantly without UI lag."""
+        """Background thread: polls hardware every 1 s for interlock/USB-loss events.
+        SAFETY RULE: HID I/O (update_status, set_ld_on) runs here (bg thread).
+        All Tkinter calls (_log, widget.set, .config) MUST be dispatched via
+        master.after(0, ...) — Tkinter is single-threaded and not reentrant.
+        """
         while self.watchdog_running:
             for wl in self.wavelengths:
                 inst = self.laser_instances.get(wl)
                 ui_vars = self.app.ui.laser_tabs_data.get(wl)
-                
+
                 if inst and inst.is_connected() and not self.comm_error_flags.get(wl, False):
                     try:
-                        status_ok = inst.update_status() 
+                        status_ok = inst.update_status()
                         if status_ok:
                             is_interlock = inst.status.get('alarm', False) or inst.status.get('interlock', False)
-                            
+
                             if is_interlock and not self.comm_error_flags[wl]:
                                 self.comm_error_flags[wl] = True
-                                inst.set_ld_on(False)
-                                inst.set_tec_on(False)
-                                
-                                self.app._log(f"[CRITICAL] Interlock tripped for {wl}! LD/TEC forced OFF.")
-                                
+                                self._disc_reason[wl] = "INTERLOCK"
+                                try:
+                                    inst.set_ld_on(False)   # HW command — safe from bg thread
+                                    inst.set_tec_on(False)
+                                except Exception:
+                                    pass
+                                # _log and UI updates MUST run on the main thread (Tkinter is not thread-safe)
                                 if hasattr(self.app, 'master') and ui_vars:
-                                    self.app.master.after(0, lambda w=wl: self._trigger_interlock_ui_alert(w))
-                                    
-                    except Exception as e:
-                        pass 
+                                    self.app.master.after(0, lambda w=wl: (
+                                        self.app._log(f"[CRITICAL] Interlock tripped for {w}! LD/TEC forced OFF."),
+                                        self._trigger_interlock_ui_alert(w)
+                                    ))
+                        else:
+                            # comm failed → USB disconnected (driver already set device=None via IOError)
+                            if not self.comm_error_flags.get(wl, False):
+                                self.comm_error_flags[wl] = True
+                                self._disc_reason[wl] = "USB"
+                                if hasattr(self.app, 'master') and ui_vars:
+                                    idx = self.wavelengths.index(wl)
+                                    self.app.master.after(0, lambda w=wl, i=idx: (
+                                        self.app._log(f"🔌 [{w}] USB comm lost (watchdog detected)."),
+                                        self._handle_comm_failure(w, i, "USB")
+                                    ))
+
+                    except Exception:
+                        # Unexpected exception — treat as comm failure; log on main thread only
+                        if not self.comm_error_flags.get(wl, False):
+                            self.comm_error_flags[wl] = True
+                            self._disc_reason[wl] = "USB"
+                            if hasattr(self.app, 'master') and ui_vars:
+                                idx = self.wavelengths.index(wl)
+                                self.app.master.after(
+                                    0, lambda w=wl, i=idx: self._handle_comm_failure(w, i, "USB"))
 
             time.sleep(1.0)
 
@@ -252,8 +291,15 @@ class LaserManager:
         self.update_laser_status_loop()
 
     def set_laser_ld_safe(self, target_wl, state):
+        if state is True and not getattr(getattr(self.app, 'access_mgr', None), 'unlocked', True):
+            from tkinter import messagebox
+            messagebox.showwarning(
+                "🔒 System Locked",
+                "Controls are locked.\n\nPlease click 'Unlock Controls' (top banner) before turning on the Laser.")
+            return
+
         active_lasers = []
-        
+
         # 1. 켜야 하는 상황(state == True)일 때 기존에 켜진 레이저 탐색
         if state is True:
             for wl, inst in self.laser_instances.items():
@@ -388,12 +434,16 @@ class LaserManager:
                 def apply_task():
                     try:
                         inst.set_bias_current(bias)
-                        time.sleep(0.2) 
+                        time.sleep(0.2)
                         inst.set_pulse_current(pulse)
-                        time.sleep(0.2) 
-                        self.app._log(f"[INFO] Applied to {wl}: Bias={bias:.2f}mA, Pulse={pulse:.2f}mA")
+                        time.sleep(0.2)
+                        # _log touches the Tk log widget, so it must run on the main thread.
+                        self.app.master.after(0, lambda: self.app._log(
+                            f"[INFO] Applied to {wl}: Bias={bias:.2f}mA, Pulse={pulse:.2f}mA"))
                     except Exception as e:
-                        self.app._log(f"[ERROR] Failed applying currents to {wl}: {e}")
+                        err = str(e)
+                        self.app.master.after(0, lambda m=err: self.app._log(
+                            f"[ERROR] Failed applying currents to {wl}: {m}"))
 
                 threading.Thread(target=apply_task, daemon=True).start()
 
@@ -403,104 +453,37 @@ class LaserManager:
             except Exception as e:
                 self.app._log(f"[ERROR] Configuration error for {wl}: {e}")
 
-    def update_laser_status_loop(self):
-        """Core loop for status tracking with isolated pipeline redirects and heavy capacity optimization."""
-        if self.laser_after_id:
-            self.app.master.after_cancel(self.laser_after_id)
-            self.laser_after_id = None
-
-        interval = 1000
-        current_time_floored = int(time.time())
-
-        for idx, wl in enumerate(self.wavelengths):
-            inst = self.laser_instances.get(wl)
-            ui_vars = self.app.ui.laser_tabs_data.get(wl)
-            if not inst or not ui_vars: continue
-
-            if inst.is_connected():
-                try:
-                    status_ok = inst.update_status()
-                    if status_ok:
-                        if self.comm_error_flags[wl]:
-                            self.comm_error_flags[wl] = False 
-                            self.app.master.after(10, lambda w=wl, i=inst: self.show_interlock_recovery_dialog(w, i))
-                            continue
-
-                        status = inst.status
-                        ld_on, tec_on = status.get('ld_on', False), status.get('tec_on', False)
-                        temp, pulse = status.get('ld_temp', 0), status.get('pulse', 0)
-                        actual_bias = status.get('bias', 0.0)      
-                        
-                        ld_mark = "●" if ld_on else "○"
-                        tec_mark = "●" if tec_on else "○"
-                        tab_text = f" {wl} [L:{ld_mark} T:{tec_mark}] "
-                        self.app.ui.laser_sub_notebook.tab(idx, text=tab_text, image=self.app.ui.tab_led_green, compound=tk.RIGHT)
-
-                        interlock_alarm = status.get('alarm', False) or status.get('interlock', False)
-                        if interlock_alarm:
-                            ui_vars["ld_status"].set("🔒 INTERLOCK")
-                            if "ld_label_obj" in ui_vars: 
-                                ui_vars["ld_label_obj"].config(foreground="#fd7e14")
-                        else:
-                            ui_vars["ld_status"].set("ON" if ld_on else "OFF")
-                            self.app.ui.update_laser_status_colors(wl, ld_on, tec_on)
-
-                        ui_vars["tec_status"].set("ON" if tec_on else "OFF")
-                        ui_vars["temp"].set(f"{temp:.2f} °C")
-                        ui_vars["pulse_live"].set(f"{pulse:.2f} mA")
-                        ui_vars["bias_live"].set(f"{actual_bias:.2f} mA")
-
-                        # RAM cache arrays update every 1s for immediate smooth GUI line plots
-                        self.plot_history[wl]["temp"].append(temp)
-                        self.plot_history[wl]["pulse"].append(pulse)
-                        self.plot_history[wl]["bias"].append(actual_bias)
-                        self.plot_history[wl]["time"].append(datetime.now())
-                        
-                        try:
-                            current_tab_idx = self.app.ui.laser_sub_notebook.index(self.app.ui.laser_sub_notebook.select())
-                            if idx == current_tab_idx:
-                                self.refresh_laser_realtime_plot(wl)
-                        except Exception as e:
-                            self.app._log(f"[WARNING] Failed to update plot: {e}")
-                            pass
-
-                        # [FIX & OPTIMIZATION] 
-                        # 1. Removed the old duplicate 3-argument call that generated the broken "laser_data_날짜.csv" files.
-                        # 2. Downsample logging to disk: Write only once every 30 seconds, OR immediately if hardware is currently running (LD ON).
-                        if ld_on or tec_on or (current_time_floored % 30 == 0):
-                            self.save_laser_realtime_data(wl, temp, pulse, ld_on, tec_on)
-                    else:
-                        self._handle_comm_failure(wl, idx)
-                except Exception as e:
-                    self.app._log(f"[ERROR] {wl} Comm Error: {e}")
-                    inst.disconnect()
-                    self._handle_comm_failure(wl, idx)
-            else:
-                if wl in self.expected_connections:
-                    self.app._log(f"[INFO] {wl} Attempting auto-reconnect...")
-                    inst.connect(dev_path=self.laser_port_mapping.get(wl))
-
-        if hasattr(self.app, 'master') and self.app.master.winfo_exists():
-            if self.laser_session_start and (time.time() - self.laser_session_start < 10):
-                interval = 1000
-            self.laser_after_id = self.app.master.after(interval, self.update_laser_status_loop)
-
-    def _handle_comm_failure(self, wl, idx):
-        """Handle UI when communication is lost"""
+    def _handle_comm_failure(self, wl, idx, reason="USB"):
+        """Handle UI when communication is lost.
+        reason: "USB"  = physical cable/port disconnect
+                "INTERLOCK" = device reachable but interlock tripped
+        """
         inst = self.laser_instances.get(wl)
         if inst:
-            inst.set_ld_on(False)
-            inst.set_tec_on(False)
+            try:
+                inst.set_ld_on(False)
+                inst.set_tec_on(False)
+            except Exception:
+                pass
         ui_vars = self.app.ui.laser_tabs_data.get(wl)
         if not self.comm_error_flags[wl]:
-            self.app._log(f"🚨 [ {wl} ] Connection lost. Check hardware/interlock.")
+            self._disc_reason[wl] = reason
+            if reason == "USB":
+                self.app._log(f"🔌 [ {wl} ] USB connection lost — check cable/port.")
+            else:
+                self.app._log(f"🔒 [ {wl} ] Interlock triggered — check safety circuit.")
             self.comm_error_flags[wl] = True
-        
-        # 에러 발생 시 탭 제목에서 동그라미 제거 (깔끔하게 파장만 표시)
+
+        reason_now = self._disc_reason.get(wl, "USB")
+        label  = "USB DISCONNECTED" if reason_now == "USB" else "INTERLOCK"
+        color  = "#dc3545"          if reason_now == "USB" else "#fd7e14"   # red vs orange
+
         self.app.ui.laser_sub_notebook.tab(idx, text=f" {wl} ", image=self.app.ui.tab_led_red, compound=tk.RIGHT)
-        
-        ui_vars["ld_status"].set("INTERLOCK / ERR")
-        self.app.ui.update_laser_status_colors(wl, False, False)
+        if ui_vars:
+            ui_vars["ld_status"].set(label)
+            if "ld_label_obj" in ui_vars:
+                ui_vars["ld_label_obj"].config(foreground=color)
+            self.app.ui.update_laser_status_colors(wl, False, False)
 
     def on_laser_trigger_change(self, event=None):
         """Initializes all trigger states at startup, or handles active tab on event."""
@@ -574,42 +557,6 @@ class LaserManager:
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to load data: {e}")
 
-    def refresh_laser_realtime_plot(self, wl="405nm"):
-        vars_dict = self.app.ui.laser_tabs_data.get(wl)
-        history = self.plot_history.get(wl)
-        if not vars_dict or not history or "ax_temp" not in vars_dict: return
-
-        times = list(history["time"])
-        if not times: return
-
-        step = max(1, len(times) // 1000)
-
-        d_times, d_temp, d_pulse = times[::step], list(history["temp"])[::step], list(history["pulse"])[::step]
-        bias_history = list(history.get("bias", []))
-        if len(bias_history) < len(times):
-            bias_history = [0.0] * (len(times) - len(bias_history)) + bias_history
-        d_bias = bias_history[::step]
-
-        ax_temp = vars_dict["ax_temp"]
-        ax_temp.clear()
-        ax_temp.plot(d_times, d_temp, 'r-', linewidth=1)
-        ax_temp.set_ylabel("Temp (°C)", color='r')
-        ax_temp.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
-        ax_temp.grid(True, alpha=0.3)
-
-        ax_curr = vars_dict["ax_curr"]
-        ax_curr.clear()
-
-        ax_curr.plot(d_times, d_pulse, 'g-', linewidth=1, label='Pulse')
-        ax_curr.plot(d_times, d_bias, color='purple', linestyle='-', linewidth=1, label='Bias')
-        ax_curr.set_ylabel("Current (mA)", color='g')
-        ax_curr.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
-        ax_curr.grid(True, alpha=0.3)
-        ax_curr.legend(loc='upper left') 
-
-        vars_dict["fig"].autofmt_xdate(rotation=30)
-        vars_dict["canvas"].draw()
-
     def setup_laser_logger(self):
         os.makedirs(self.laser_log_dir, exist_ok=True)
 
@@ -622,59 +569,6 @@ class LaserManager:
             handler.suffix = "_%Y-%m-%d.txt"
             handler.setFormatter(logging.Formatter('%(asctime)s | %(message)s'))
             self.laser_logger.addHandler(handler)
-
-    def load_today_laser_log(self):
-        """프로그램 시작 시 오늘 작성된 텍스트 로그가 있다면 불러와서 UI에 표시"""
-        today_str = datetime.now().strftime('%Y-%m-%d')
-        log_file = os.path.join(self.laser_log_dir, "laser_log_" + today_str + ".txt")
-
-        if os.path.exists(log_file):
-            try:
-                with open(log_file, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                    self.app.ui.laser_log_text.config(state="normal")
-                    self.app.ui.laser_log_text.insert(tk.END, content)
-                    self.app.ui.laser_log_text.config(state="disabled")
-                    self.app.ui.laser_log_text.yview(tk.END)
-            except Exception as e:
-                print(f"Failed to load today's laser log: {e}")
-
-
-    def preload_laser_history(self):
-        """Restore history from self.laser_log_dir for the last 24h"""
-        import pandas as pd
-        from datetime import timedelta
-        now = datetime.now()
-        start_point = (now - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-        dates_to_check = [(now - timedelta(days=1)).strftime('%Y%m%d'), now.strftime('%Y%m%d')]
-
-        for wl in self.wavelengths:
-            self.plot_history[wl]["time"].clear()
-            self.plot_history[wl]["temp"].clear()
-            self.plot_history[wl]["pulse"].clear()
-            total_points = 0
-
-            for date_str in dates_to_check:
-                # [FIX] Use dynamic log directory instead of hardcoded path
-                log_file = os.path.join(self.laser_log_dir, f"laser_data_{wl}_{date_str}.csv")
-                if os.path.exists(log_file):
-                    try:
-                        df = pd.read_csv(log_file)
-                        for _, row in df.iterrows():
-                            try:
-                                ts = datetime.fromisoformat(row['timestamp'])
-                                if ts >= start_point:
-                                    self.plot_history[wl]["time"].append(ts)
-                                    self.plot_history[wl]["temp"].append(float(row['temp_c']))
-                                    self.plot_history[wl]["pulse"].append(float(row['pulse_ma']))
-                                    self.plot_history[wl]["bias"].append(float(row.get('bias_ma', 0.0)))
-                                    total_points += 1
-                            except: continue
-                    except Exception as e:
-                        self.app._log(f"Preload error ({wl}, {date_str}): {e}")
-
-            if total_points > 0:
-                self.refresh_laser_realtime_plot(wl)
 
     def _log_laser(self, wl, msg):
         """Logs session messages into wavelength-isolated text files and distinct UI widgets."""
@@ -760,6 +654,7 @@ class LaserManager:
                         self.plot_history[wl]["temp"].append(float(row['temp_c']))
                         self.plot_history[wl]["pulse"].append(float(row['pulse_ma']))
                         self.plot_history[wl]["bias"].append(float(row.get('bias_ma', 0.0)))
+                        self.plot_history[wl]["ld_on"].append(int(float(row.get('ld_on', 0))))
                     except Exception:
                         pass
 
@@ -781,6 +676,7 @@ class LaserManager:
             self.plot_history[wl]["temp"].clear()
             self.plot_history[wl]["pulse"].clear()
             self.plot_history[wl]["bias"].clear()
+            self.plot_history[wl]["ld_on"].clear()
             total_points = 0
 
             for date_str in dates_to_check:
@@ -796,6 +692,7 @@ class LaserManager:
                                     self.plot_history[wl]["temp"].append(float(row['temp_c']))
                                     self.plot_history[wl]["pulse"].append(float(row['pulse_ma']))
                                     self.plot_history[wl]["bias"].append(float(row.get('bias_ma', 0.0)))
+                                    self.plot_history[wl]["ld_on"].append(int(float(row.get('ld_on', 0))))
                                     total_points += 1
                             except: continue
                     except Exception as e:
@@ -835,20 +732,49 @@ class LaserManager:
         if len(bias_history) < len(times):
             bias_history = [0.0] * (len(times) - len(bias_history)) + bias_history
         d_bias = bias_history[::step]
+        # LD on/off state aligned with the time axis (older logs may have no ld_on column)
+        ld_history = list(history.get("ld_on", []))
+        if len(ld_history) < len(times):
+            ld_history = [0] * (len(times) - len(ld_history)) + ld_history
+        d_ld = ld_history[::step]
+
+        def _shade_ld_on(ax):
+            """Shade the time spans where the LD was ON, so on/off periods are obvious
+            even though the hardware keeps reporting the last set Pulse/Bias while OFF."""
+            start = None
+            for i, on in enumerate(d_ld):
+                if on and start is None:
+                    start = d_times[i]
+                elif not on and start is not None:
+                    ax.axvspan(start, d_times[i], color='#2ecc71', alpha=0.12, linewidth=0)
+                    start = None
+            if start is not None:
+                ax.axvspan(start, d_times[-1], color='#2ecc71', alpha=0.12, linewidth=0)
 
         ax_temp.clear()
         ax_temp.plot(d_times, d_temp, 'r-', linewidth=1)
         ax_temp.set_ylabel("Temp (°C)", color='r')
         ax_temp.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
         ax_temp.grid(True, alpha=0.3)
+        _shade_ld_on(ax_temp)
 
         ax_curr.clear()
-        ax_curr.plot(d_times, d_pulse, 'g-', linewidth=1, label='Pulse')
+        # Pulse line split by LD state: bright green while ON, faint grey while OFF
+        # (the hardware keeps reporting the last set Pulse value even when the LD is off).
+        pulse_on  = [p if ld else float('nan') for p, ld in zip(d_pulse, d_ld)]
+        pulse_off = [p if not ld else float('nan') for p, ld in zip(d_pulse, d_ld)]
+        ax_curr.plot(d_times, pulse_off, color='#b0b0b0', linewidth=1.0, label='Pulse (LD off)')
+        ax_curr.plot(d_times, pulse_on, color='#2e7d32', linewidth=1.6, label='Pulse (LD on)')
         ax_curr.plot(d_times, d_bias, color='purple', linestyle='-', linewidth=1, label='Bias')
         ax_curr.set_ylabel("Current (mA)", color='g')
         ax_curr.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d %H:%M'))
         ax_curr.grid(True, alpha=0.3)
-        ax_curr.legend(loc='upper left') 
+        _shade_ld_on(ax_curr)
+        # add an "LD ON" entry to the legend (green band)
+        from matplotlib.patches import Patch
+        handles, _ = ax_curr.get_legend_handles_labels()
+        handles.append(Patch(facecolor='#2ecc71', alpha=0.25, label='LD ON'))
+        ax_curr.legend(handles=handles, loc='upper left')
 
         # Restore limits strictly if zoom or pan is active
         if user_zoomed:
@@ -867,6 +793,7 @@ class LaserManager:
             self.laser_after_id = None
 
         interval = 1000
+        current_time_floored = int(time.time())
         for idx, wl in enumerate(self.wavelengths):
             inst = self.laser_instances.get(wl)
             ui_vars = self.app.ui.laser_tabs_data.get(wl)
@@ -909,6 +836,7 @@ class LaserManager:
                         self.plot_history[wl]["pulse"].append(pulse)
                         self.plot_history[wl]["bias"].append(actual_bias)
                         self.plot_history[wl]["time"].append(datetime.now())
+                        self.plot_history[wl]["ld_on"].append(1 if ld_on else 0)
 
                         try:
                             current_tab_idx = self.app.ui.laser_sub_notebook.index(self.app.ui.laser_sub_notebook.select())
@@ -918,19 +846,44 @@ class LaserManager:
                             self.app._log(f"[WARNING] Failed to update plot: {e}")
                             pass
 
-                        # [FIX] Removed duplicate 3-argument call block to prevent TypeError crash
-                        self.save_laser_realtime_data(wl, temp, pulse, ld_on, tec_on)
+                        # Downsample disk logging: write every 10s when active, every 60s otherwise.
+                        now_t = time.time()
+                        log_interval = 10 if (ld_on or tec_on) else 60
+                        if now_t - self._last_log_time.get(wl, 0.0) >= log_interval:
+                            self._last_log_time[wl] = now_t
+                            self.save_laser_realtime_data(wl, temp, pulse, ld_on, tec_on)
                     else:
-                        self._handle_comm_failure(wl, idx)
-                        
+                        self._handle_comm_failure(wl, idx, "USB")
+
                 except Exception as e:
                     self.app._log(f"[ERROR] {wl} Comm Error: {e}")
-                    inst.disconnect()
-                    self._handle_comm_failure(wl, idx)
+                    try:
+                        inst.disconnect()
+                    except Exception:
+                        pass
+                    self._handle_comm_failure(wl, idx, "USB")
             else:
-                if wl in self.expected_connections:
+                # Device is not connected — update UI before attempting reconnect
+                if not self.comm_error_flags.get(wl, False):
+                    self._disc_reason[wl] = "USB"
+                    self._handle_comm_failure(wl, idx, "USB")
+                if wl in self.expected_connections and wl not in self._reconnecting:
+                    # USB (re)connection can block for a second or more; doing it inline
+                    # froze the GUI on every 1s poll. Run it off the main thread and guard
+                    # against overlapping attempts for the same wavelength.
+                    self._reconnecting.add(wl)
                     self.app._log(f"[INFO] {wl} Attempting auto-reconnect...")
-                    inst.connect(dev_path=self.laser_port_mapping.get(wl))
+
+                    def reconnect_task(w=wl, i=inst):
+                        try:
+                            i.connect(dev_path=self.laser_port_mapping.get(w))
+                        except Exception as e:
+                            self.app.master.after(0, lambda m=str(e): self.app._log(
+                                f"[WARNING] {w} reconnect failed: {m}"))
+                        finally:
+                            self._reconnecting.discard(w)
+
+                    threading.Thread(target=reconnect_task, daemon=True).start()
 
         if hasattr(self.app, 'master') and self.app.master.winfo_exists():
             if self.laser_session_start and (time.time() - self.laser_session_start < 10):
