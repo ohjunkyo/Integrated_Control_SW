@@ -2076,21 +2076,31 @@ class UIManager:
             pass
 
     def _open_last_cmd_in_terminal(self, slot):
-        """Re-run the last command for this slot in a new gnome-terminal window."""
-        last = getattr(self.controller, '_console_last_cmd', {}).get(slot)
-        if not last:
-            messagebox.showinfo("No Command", "No command has been run in this slot yet.")
-            return
+        """Open a fresh interactive terminal in the working directory.
+
+        Intentionally does NOT re-run the last command — re-running would spawn a
+        second DAQ/analysis job and leave orphan pipeline flags behind. This just
+        gives the user a shell (e.g. to inspect files or run a command manually).
+        """
+        # Pick a sensible working directory: DAQ base path, else project root.
+        workdir = None
+        try:
+            getp = getattr(self.controller, '_get_daq_path', None)
+            if getp:
+                workdir = getp()
+        except Exception:
+            workdir = None
+        if not workdir or not os.path.isdir(workdir):
+            workdir = os.path.dirname(os.path.abspath(__file__))
+
         try:
             subprocess.Popen(
-                ['gnome-terminal', '--', 'bash', '-c', f'{last}; echo; echo "--- Done (press Enter to close) ---"; read'],
+                ['gnome-terminal', f'--working-directory={workdir}'],
                 start_new_session=True)
         except FileNotFoundError:
             # Fallback: xterm
             try:
-                subprocess.Popen(
-                    ['xterm', '-e', f'bash -c \'{last}; echo; echo "--- Done ---"; read\''],
-                    start_new_session=True)
+                subprocess.Popen(['xterm'], cwd=workdir, start_new_session=True)
             except Exception as e:
                 messagebox.showerror("Terminal Error", f"Could not open terminal:\n{e}")
 
@@ -2248,12 +2258,6 @@ class UIManager:
         _, color, dot, _ = self._SLOT_STATES.get(state, self._SLOT_STATES["idle"])
         pane["status_var"].set(text)
         pane["status_lbl"].config(fg=color)
-        # Disable Terminal button while running (re-running would start a new job)
-        if "term_btn" in pane:
-            if state == "running":
-                pane["term_btn"].config(state="disabled", bg="#444444")
-            else:
-                pane["term_btn"].config(state="normal", bg="#2d5a27")
         # Update sub-tab label
         try:
             label = f"{dot} {self._SLOT_LABELS.get(slot, slot)}"
@@ -3584,7 +3588,13 @@ class UIManager:
         import os, time, subprocess
         if proc_name:
             try:
-                if subprocess.run(['pgrep', '-x', proc_name], capture_output=True).returncode == 0:
+                # A real acquisition run is `execute_DAQ_v2 <args>` WITHOUT -j.
+                # The connection probe (`execute_DAQ_v2 -j`) fires every 2s and must
+                # NOT be mistaken for a live run, or stale flags never get purged.
+                probe = subprocess.run(
+                    f'pgrep -x {proc_name} | xargs -r ps -o args= -p 2>/dev/null | grep -v -- "-j"',
+                    shell=True, capture_output=True, text=True)
+                if probe.returncode == 0 and probe.stdout.strip():
                     return flag_list  # the run is genuinely active
             except Exception:
                 return flag_list  # pgrep unavailable -> don't risk purging a live run

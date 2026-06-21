@@ -1951,7 +1951,11 @@ def launch():
     try:
         import glob
 
-        daq_active = subprocess.run(['pgrep', '-x', 'execute_DAQ_v2'], capture_output=True).returncode == 0
+        # Exclude the transient `-j` connection probe — only a real acquisition run counts.
+        daq_probe = subprocess.run(
+            'pgrep -x execute_DAQ_v2 | xargs -r ps -o args= -p 2>/dev/null | grep -v -- "-j"',
+            shell=True, capture_output=True, text=True)
+        daq_active = bool(daq_probe.stdout.strip())
         ana_active = subprocess.run(['pgrep', '-f', 'run_cpp_script_v2.sh'], capture_output=True).returncode == 0
         tmux_active = subprocess.run(['pgrep', '-f', 'Ana_Seq'], capture_output=True).returncode == 0
 
