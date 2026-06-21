@@ -17,9 +17,9 @@ This software provides a wide range of features.
 
 #### **Monitoring & Viewers (모니터링 및 뷰어)**
 	* **Real-time DAQ Connection Status**: Periodically checks the connection status with the DAQ hardware and displays it as `Connected` or `Disconnected` in the GUI. (실시간 DAQ 연결 상태: 주기적으로 DAQ 하드웨어와의 연결 상태를 확인하여 GUI에 `Connected` 또는 `Disconnected`로 표시합니다.)
-	* **PMT Status Indicators**: Visually displays the activation status of PMTs based on the `config2.h` file settings. (PMT 상태 표시: `config2.h` 파일에 설정된 PMT의 활성화 여부를 시각적인 인디케이터로 보여줍니다.)
+	* **PMT Status Indicators**: Visually displays the activation status of PMTs based on the `config3.h` file settings. (PMT 상태 표시: `config3.h` 파일에 설정된 PMT의 활성화 여부를 시각적인 인디케이터로 보여줍니다.)
 	* **Network Information Display**: Shows local IP and Tailscale IP addresses in the GUI to support remote access and monitoring. (네트워크 정보 표시: 로컬 IP 및 Tailscale IP 주소를 GUI에 표시하여 원격 접속 및 모니터링을 지원합니다.)
-	* **Configuration File Viewer**: Allows real-time viewing of the currently applied `config2.h` file's content through a tab in the main window. (설정 파일 뷰어: 메인 화면의 탭을 통해 현재 적용된 `config2.h` 파일의 내용을 실시간으로 확인할 수 있습니다.)
+	* **Configuration File Viewer**: Allows real-time viewing of the currently applied `config3.h` file's content through a tab in the main window. (설정 파일 뷰어: 메인 화면의 탭을 통해 현재 적용된 `config3.h` 파일의 내용을 실시간으로 확인할 수 있습니다.)
 	* **Detailed Log Viewer**: Check and manage all script execution histories in the 'Log' tab of the main window. (상세 로그 뷰어: 메인 화면의 'Log' 탭을 통해 프로그램의 모든 스크립트 실행 기록을 확인하고 관리할 수 있습니다.)
 
 #### **Data Management (데이터 관리)**
@@ -39,7 +39,7 @@ This software provides a wide range of features.
 																																																																	   * **Fit to Screen**: Optimizes the image size to fit the current viewer dimensions. (화면 맞춤: 이미지를 현재 뷰어 크기에 최적화하여 보여줍니다.)
 
 #### **Usability (사용자 편의성)**
-* **Change Config File Path**: Specify and save the location of the `config2.h` file directly from the 'File' menu in the GUI. (설정 파일 경로 변경: GUI의 'File' 메뉴를 통해 `config2.h` 파일의 위치를 직접 지정하고 저장할 수 있습니다.)
+* **Change Config File Path**: Specify and save the location of the `config3.h` file directly from the 'File' menu in the GUI. (설정 파일 경로 변경: GUI의 'File' 메뉴를 통해 `config3.h` 파일의 위치를 직접 지정하고 저장할 수 있습니다.)
 * **Path Shortcuts**: Displays key directory paths and allows opening a terminal at that location with a button click. (경로 바로가기: 주요 디렉토리 경로를 표시하고, 버튼 클릭으로 해당 경로에서 바로 터미널을 열 수 있습니다.)
 * **Refresh Function**: Reload all information (configuration, Run Number, file lists) from the disk using the Refresh button on the main window. (새로고침 기능: 메인 화면의 Refresh 버튼으로 모든 정보(설정, Run Number, 파일 목록)를 다시 불러올 수 있습니다.)
 
@@ -53,8 +53,8 @@ To run this software from the source code, the following environment is required
 	* **Core Framework**: [ROOT Data Analysis Framework](https://root.cern/) must be installed, and the `root` command must be registered in the system `PATH`. 
 	(핵심 프레임워크: [ROOT Data Analysis Framework](https://root.cern/)가 설치되어 있고, `root` 명령어가 시스템 `PATH`에 등록되어 있어야 합니다.)
 	* **Required Programs**: `gnome-terminal`. (필수 프로그램: `gnome-terminal`)
-	* **DAQ Environment**: The existing DAQ system files must all be present at the `BasePath` specified in the `config2.h` file. (DAQ 환경: `config2.h` 파일에 명시된 `BasePath` 경로에 다음과 같은 기존 DAQ 시스템 파일들이 모두 존재해야 합니다.)
-	* `execute_DAQ` executable binary (execute\_DAQ 실행 바이너리)
+	* **DAQ Environment**: The existing DAQ system files must all be present at the `BasePath` specified in the `config3.h` file. (DAQ 환경: `config3.h` 파일에 명시된 `BasePath` 경로에 다음과 같은 기존 DAQ 시스템 파일들이 모두 존재해야 합니다.)
+	* `execute_DAQ_v2` executable binary (execute\_DAQ\_v2 실행 바이너리)
 	* C++ analysis scripts (`prod_ntp_v2.C`, `read_ntp_v2.C`, etc.). (C++ 분석 스크립트)
 * Data storage directories (`Data/RAW`, `Data/production`, etc.). (데이터 저장 디렉토리)
 
@@ -105,12 +105,12 @@ Once the build is complete, the final executable file named `DAQ_Control` will b
 
 ## 🔧 Configuration (설정)
 
-All operations of this program are centered around the `config2.h` file. (이 프로그램의 모든 동작은 `config2.h` 파일을 중심으로 이루어집니다.)
+All operations of this program are centered around the `config3.h` file. (이 프로그램의 모든 동작은 `config3.h` 파일을 중심으로 이루어집니다.)
 
-	* **Central Configuration File**: All DAQ system paths, sequence settings, device information, etc., are managed in the `config2.h` file. (중앙 설정 파일: DAQ 시스템의 모든 경로, 시퀀스 설정, 장비 정보 등은 `config2.h` 파일에서 관리됩니다.)
+	* **Central Configuration File**: All DAQ system paths, sequence settings, device information, etc., are managed in the `config3.h` file. (중앙 설정 파일: DAQ 시스템의 모든 경로, 시퀀스 설정, 장비 정보 등은 `config3.h` 파일에서 관리됩니다.)
 	* **Modification via GUI (GUI를 통한 수정)**:
-	* **Change Path**: You can change the location of the `config2.h` file that the program references through the `File -> Set Config Path...` menu. This path is saved in the `.daq_control_config.json` file in your home directory. (경로 변경: `File -> Set Config Path...` 메뉴를 통해 프로그램이 참조할 `config2.h` 파일의 위치를 변경할 수 있습니다. 이 경로는 사용자 홈 디렉토리의 `.daq_control_config.json` 파일에 저장됩니다.)
-	* **Edit Content**: You can directly edit and save the content of the `config2.h` file by clicking the `Configuration` button or the PMT status indicators. (내용 편집: `Configuration` 버튼이나 PMT 상태 인디케이터를 클릭하여 `config2.h` 파일의 내용을 직접 수정하고 저장할 수 있습니다.)
+	* **Change Path**: You can change the location of the `config3.h` file that the program references through the `File -> Set Config Path...` menu. This path is saved in the `.daq_control_config.json` file in your home directory. (경로 변경: `File -> Set Config Path...` 메뉴를 통해 프로그램이 참조할 `config3.h` 파일의 위치를 변경할 수 있습니다. 이 경로는 사용자 홈 디렉토리의 `.daq_control_config.json` 파일에 저장됩니다.)
+	* **Edit Content**: You can directly edit and save the content of the `config3.h` file by clicking the `Configuration` button or the PMT status indicators. (내용 편집: `Configuration` 버튼이나 PMT 상태 인디케이터를 클릭하여 `config3.h` 파일의 내용을 직접 수정하고 저장할 수 있습니다.)
 
 	---
 
@@ -120,11 +120,18 @@ The roles of the main files are as follows. (주요 파일의 역할은 다음�
 
 	* `main.py`: Main application logic, event handling, script execution, etc. (Controller role). (메인 애플리케이션 로직, 이벤트 처리, 스크립트 실행 등 (Controller 역할))
 	* `ui_manager.py`: Creates and manages all UI elements of the main window (View role). (메인 윈도우의 모든 UI 요소 생성 및 관리 (View 역할))
-	* `config_manager.py`: Handles the logic for reading and writing the `config2.h` file. (`config2.h` 파일을 읽고 쓰는 로직 담당)
+	* `config_manager.py`: Handles the logic for reading and writing the `config3.h` file. (`config3.h` 파일을 읽고 쓰는 로직 담당)
 	* `image_viewer.py`: UI and logic for the advanced image viewer window. (고급 이미지 뷰어 창의 UI 및 로직)
-	* `config_window.py`: UI and logic for the main configuration window. (전체 설정 창의 UI 및 로직)
-	* `pmt_config_window.py`: UI and logic for the individual PMT configuration window. (PMT 개별 설정 창의 UI 및 로직)
-	* `start.sh`: Helper script for running the application from source code. (소스 코드 실행을 위한 헬퍼 스크립트)
-	* `build.sh`: Automation script for building the PyInstaller executable. (PyInstaller 실행 파일 빌드를 위한 자동화 스크립트)
-	* `buttons.json`: Defines the configuration for buttons in the `Execute Scripts` and `View` sections. (`Execute Scripts`와 `View` 버튼의 구성을 정의하는 파일)
-	* `*.sh`: Shell scripts used by functions like `Run DAQ`, `Produce`, etc. (`Run DAQ`, `Produce` 등에서 사용하는 셸 스크립트)
+	* `config_window.py` / `pmt_config_window.py`: UI for the main / per-PMT configuration windows. (전체 / PMT 개별 설정 창 UI)
+
+	**`managers/` (integrated subsystems — 통합 서브시스템):**
+	* `laser_manager.py`: 4-unit laser control, interlock watchdog, USB-disconnect handling, telemetry logging. (레이저 4대 제어, 인터락 워치독, USB 단선 처리, 텔레메트리 로깅)
+	* `ups_manager.py`: OMRON UPS auto-detect, live monitoring, port lock, gated shutdown. (OMRON UPS 자동 탐지·모니터링·포트 잠금·게이트 종료)
+	* `rotation_manager.py` / `rotation_control.py`: Motorized PMT tilt/rotation automation ("General Scan") and the low-level stage driver. (모터 구동 PMT 틸트/회전 자동화와 저수준 스테이지 드라이버)
+	* `ui_automation.py`: UI for the General Scan / scheduling tab. (General Scan / 예약 탭 UI)
+	* `waveform_viewer.py`: Embedded uproot waveform & FFT viewer (single/average, pedestal range, charge search). (내장 uproot 파형·FFT 뷰어)
+	* `control_access.py`: Lock/unlock access control gating dangerous actions. (위험 동작을 막는 잠금/해제 제어)
+
+	* `start.sh` / `build.sh`: Run-from-source / PyInstaller build helpers. (소스 실행 / 빌드 헬퍼)
+	* `buttons.json`: Button configuration for the `Execute Scripts` / `View` sections. (버튼 구성 정의)
+	* `*.sh`: Shell scripts used by `Run DAQ`, `Produce`, etc. (`Run DAQ`, `Produce` 등에서 사용하는 셸 스크립트)
