@@ -12,9 +12,10 @@ from tkinter import messagebox
 class AppLauncher(tk.Tk):
     def __init__(self):
         super().__init__()
-        # Auto-reap children so they never linger as zombies and
-        # never cause false "already running" pgrep hits.
+        # Auto-reap children (no zombies, no false "already running" hits).
         signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+        # Ignore SIGHUP so closing the launch terminal doesn't kill the launcher.
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
 
         self.title("Integrated Control Software Launcher")
         self.geometry("550x800")
