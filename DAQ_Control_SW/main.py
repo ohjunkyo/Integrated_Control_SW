@@ -485,15 +485,15 @@ class App:
                 else:
                     term_command_str = f"{' '.join(command)}; echo; read -p 'Execution finished. Press Enter to close this terminal...'"
                     term_command = ['xterm', '-hold', '-e', 'bash', '-c', term_command_str]
-                subprocess.Popen(term_command, env=env)
-            else: 
+                subprocess.Popen(term_command, env=env, start_new_session=True)
+            else:
                 if auto_close:
                     term_command_str = f"{' '.join(command)}"
                 else:
                     term_command_str = f"{' '.join(command)}; echo; read -p 'Execution finished. Press Enter to close this terminal...'"
 
                 term_command = ['gnome-terminal', '--', 'bash', '-c', term_command_str]
-                subprocess.Popen(term_command, env=env)
+                subprocess.Popen(term_command, env=env, start_new_session=True)
 
         except FileNotFoundError:
             error_msg = f"'{self.terminal_preference}' not found. Please install it or select another terminal from the File menu."
@@ -1936,6 +1936,10 @@ def launch():
     실제 시뮬레이션 모드는 별도 파일이 아니라 in-app 'TEST RUN (Simulation Mode)'
     체크박스(auto_ui.dummy_var)로 동작하므로, 두 진입점은 동일한 App 을 실행한다.
     """
+    # Prevent zombie processes: tell the kernel to auto-reap children we don't
+    # explicitly wait() for (gnome-terminal launches, gedit, etc.).
+    signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+
     base_directory = os.path.dirname(os.path.abspath(__file__))
 
     # 시작 시, 크래시로 남은 '좀비' 런타임 플래그를 안전하게 청소한다.
