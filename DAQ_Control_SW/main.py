@@ -835,8 +835,12 @@ class App:
 
         if not is_auto_running:
             try:
-                check_running = subprocess.run(['pgrep', '-f', 'execute_DAQ'], capture_output=True)
-                if check_running.returncode == 0:
+                # Check for a real DAQ acquisition run — exclude the connection-check
+                # probe (execute_DAQ_v2 -j) which is transient and harmless to overlap.
+                check_running = subprocess.run(
+                    'pgrep -f "execute_DAQ" | xargs -r ps -o pid=,args= -p 2>/dev/null | grep -v -- "-j"',
+                    shell=True, capture_output=True)
+                if check_running.returncode == 0 and check_running.stdout.strip():
                     messagebox.showwarning("DAQ Already Running",
                                            "An instance of 'execute_DAQ' is already running.\nPlease close the current terminal first.")
                     return
