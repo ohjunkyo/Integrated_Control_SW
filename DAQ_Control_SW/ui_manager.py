@@ -5,6 +5,7 @@ import os
 import json
 import math
 import re
+import subprocess
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
@@ -2162,36 +2163,48 @@ class UIManager:
         widget.config(state="normal")
 
         if '\r' in text:
-            # \r = carriage return: move cursor to start of current line (C++ progress bars).
-            # Popen(text=False) preserves raw \r bytes; text=True would convert \r→\n.
+            # \r = carriage return (C++ progress: "Processing... 73%\r" + flush).
+            # Popen(text=False) preserves raw \r; text=True would silently convert it to \n.
             #
-            # Strategy:
-            #   Parse the chunk into segments split by \r and \n.
-            #   A \r means "overwrite what we built on the current line so far."
-            #   A \n commits the current line and starts a new one.
-            #   Multiple \r updates within one chunk → only the last value per line survives.
-            #   The final segment (no trailing \n) is an in-progress overwrite line:
-            #   erase the widget's current last line and replace it.
+            # Parsing rules:
+            #   \r  → the text BEFORE this \r is the latest overwrite value for this line;
+            #          save it as `last_cr` (next \r replaces it, \n commits it).
+            #   \n  → commit the current line to completed_lines, reset.
+            #   end → if last_cr is non-empty, it is an in-progress progress line:
+            #          erase the widget's current last line and redraw with that value.
+            #
+            # Key insight: "text\r" means "show 'text', cursor back to start".
+            # So the segment BEFORE \r is what should be displayed, not discarded.
 
-            text = text.replace('\r\n', '\n')   # Windows line endings first
+            text = text.replace('\r\n', '\n')   # Windows CRLF → LF first
 
-            completed_lines = []  # lines that ended with \n
-            current = ""          # text accumulated on the current overwrite line
+            completed_lines = []
+            current  = ""    # chars accumulated since last \n or start
+            last_cr  = None  # most recent \r-delimited value on this line
+
             for ch in text:
                 if ch == '\r':
-                    current = ""  # restart current line (discard intermediate progress)
+                    last_cr = current   # save current as overwrite candidate
+                    current = ""        # reset for next segment after \r
                 elif ch == '\n':
-                    completed_lines.append(current + '\n')
+                    # commit whichever is latest: post-\r text or the last_cr value
+                    line_val = current if current else (last_cr or "")
+                    completed_lines.append(line_val + '\n')
                     current = ""
+                    last_cr = None
                 else:
                     current += ch
 
-            # Write completed lines normally
+            # Write completed lines (they ended with \n — normal output)
             if completed_lines:
                 self._write_segment(widget, "".join(completed_lines), tag, pane)
 
-            # current is a live progress line (no \n yet) — overwrite widget's last line
-            if current:
+            # Determine the live progress value:
+            #   last_cr holds the text before the final \r (e.g. "Processing... 73%")
+            #   current holds anything after the final \r (usually empty for progress lines)
+            progress_val = current if current else last_cr
+            if progress_val:
+                # Overwrite the widget's current last line in-place
                 try:
                     ls = widget.index("end-1c linestart")
                     le = widget.index("end-1c")
@@ -2199,7 +2212,7 @@ class UIManager:
                         widget.delete(ls, "end-1c")
                 except Exception:
                     pass
-                self._write_segment(widget, current, tag, pane)
+                self._write_segment(widget, progress_val, tag, pane)
         else:
             self._write_segment(widget, text, tag, pane)
 
