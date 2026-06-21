@@ -80,6 +80,7 @@ class WaveformViewerPanel:
         self._avg_to       = tk.StringVar(value="1000")
         self._avg_result   = None       # cached {ch: mag_array} after compute
         self._avg_computing = False     # guard against concurrent compute
+        self._avg_cancel   = False      # set True to abort an in-flight compute
         self._thresh = tk.StringVar(value="-0.5")
 
         self._status = tk.StringVar(value="Load a RAW .root file to begin.")
@@ -166,12 +167,25 @@ class WaveformViewerPanel:
 
         ttk.Label(self._fft_ctrl_frame, text="Event range  from:",
                   font=("Helvetica", 9)).pack(side=tk.LEFT)
-        ttk.Entry(self._fft_ctrl_frame, textvariable=self._avg_from,
-                  width=7, justify="center").pack(side=tk.LEFT, padx=3)
+        self._avg_from_entry = ttk.Entry(self._fft_ctrl_frame, textvariable=self._avg_from,
+                                         width=7, justify="center")
+        self._avg_from_entry.pack(side=tk.LEFT, padx=3)
         ttk.Label(self._fft_ctrl_frame, text="to:",
                   font=("Helvetica", 9)).pack(side=tk.LEFT)
-        ttk.Entry(self._fft_ctrl_frame, textvariable=self._avg_to,
-                  width=7, justify="center").pack(side=tk.LEFT, padx=3)
+        self._avg_to_entry = ttk.Entry(self._fft_ctrl_frame, textvariable=self._avg_to,
+                                       width=7, justify="center")
+        self._avg_to_entry.pack(side=tk.LEFT, padx=3)
+
+        # Quick presets — save typing for common ranges.
+        tk.Button(self._fft_ctrl_frame, text="All", command=self._avg_range_all,
+                  bg="#e5e7eb", fg="#374151", font=("Helvetica", 8, "bold"),
+                  relief="flat", padx=6).pack(side=tk.LEFT, padx=(4, 0))
+        tk.Button(self._fft_ctrl_frame, text="1k", command=lambda: self._avg_range_quick(1000),
+                  bg="#e5e7eb", fg="#374151", font=("Helvetica", 8, "bold"),
+                  relief="flat", padx=6).pack(side=tk.LEFT, padx=(2, 0))
+        tk.Button(self._fft_ctrl_frame, text="10k", command=lambda: self._avg_range_quick(10000),
+                  bg="#e5e7eb", fg="#374151", font=("Helvetica", 8, "bold"),
+                  relief="flat", padx=6).pack(side=tk.LEFT, padx=(2, 0))
 
         self._avg_compute_btn = tk.Button(
             self._fft_ctrl_frame, text="Compute Avg FFT",
@@ -348,9 +362,35 @@ class WaveformViewerPanel:
         if self._tree:
             self._show_entry(self._cur_entry)
 
+    def _avg_range_all(self):
+        """Quick preset: average over the entire loaded file."""
+        if self._avg_computing:
+            return
+        self._avg_from.set("0")
+        self._avg_to.set(str(self._n_entries))
+
+    def _avg_range_quick(self, n: int):
+        """Quick preset: average the first N events from the current 'from'."""
+        if self._avg_computing:
+            return
+        try:
+            start = int(self._avg_from.get())
+        except ValueError:
+            start = 0
+        self._avg_to.set(str(min(start + n, self._n_entries)))
+
     def _start_avg_fft(self):
-        """Validate range and start background average-FFT computation."""
-        if not self._tree or self._avg_computing:
+        """Validate range and start (or cancel) background average-FFT computation.
+
+        The Compute button doubles as a Cancel button while a job runs.
+        """
+        # If a job is already running, this click means "Cancel".
+        if self._avg_computing:
+            self._avg_cancel = True
+            self._avg_status_lbl.config(text="Cancelling…", foreground="#f0ad4e")
+            return
+
+        if not self._tree:
             return
         try:
             ev_from = int(self._avg_from.get())
@@ -368,45 +408,65 @@ class WaveformViewerPanel:
             return
 
         self._avg_computing = True
-        self._avg_compute_btn.config(state="disabled")
+        self._avg_cancel    = False
+        # Re-purpose the button as a Cancel control while the job runs.
+        self._avg_compute_btn.config(text="✕ Cancel", bg="#dc3545")
+        self._avg_from_entry.config(state="disabled")
+        self._avg_to_entry.config(state="disabled")
         self._avg_status_lbl.config(text=f"Computing 0/{n_events}…", foreground="#6b7280")
         self._avg_result = None
 
+        BATCH = 2000   # events per uproot read — batching is the main speedup
+
         def compute():
-            # Wrap the whole body so any exception still re-enables the button.
-            # (Previously a crash here left _avg_computing=True forever, which
-            # silently blocked every subsequent Compute click — even after Clear.)
+            # Wrap whole body so any exception (or cancel) still resets state.
             result = {}
             count  = 0
             err    = None
+            cancelled = False
             try:
                 n      = self._n_samples
-                window = np.hanning(n)
+                window = np.hanning(n).astype(np.float64)   # shape (n,)
                 # Accumulate power (|FFT|²) per channel; RMS average = sqrt(mean(power))
                 power_acc = {ch: np.zeros(n // 2 + 1, dtype=np.float64)
                              for ch in self._channels}
-                for ev in range(ev_from, min(ev_to, self._n_entries)):
+
+                ev = ev_from
+                while ev < ev_to:
+                    if self._avg_cancel:
+                        cancelled = True
+                        break
+                    stop = min(ev + BATCH, ev_to)
                     try:
-                        raw = self._tree["ADC"].array(
-                            entry_start=ev, entry_stop=ev + 1, library="np")
-                        # Flatten to 1-D (n_ch * n_samples) — same as _show_entry.
-                        # Without ravel() this is (8, 1024) and channel slicing
-                        # produces a 2-D segment → broadcast error on power_acc.
-                        adc_flat = np.asarray(raw[0]).astype(np.float64).ravel()
+                        # Read a whole block at once → (n_block, n_ch*n_samples).
+                        # One uproot call per BATCH events instead of per event:
+                        # ~100× fewer I/O round-trips, the dominant cost.
+                        block = self._tree["ADC"].array(
+                            entry_start=ev, entry_stop=stop, library="np")
+                        block = np.asarray(block, dtype=np.float64)
                     except Exception:
+                        ev = stop
                         continue
+
+                    n_block = block.shape[0]
+                    # Reshape flat (n_block, n_ch*n) → (n_block, n_ch, n)
+                    block = block.reshape(n_block, -1, n)
+
                     for ch in self._channels:
-                        seg    = adc_flat[ch * n: (ch + 1) * n]
-                        ped    = float(np.mean(seg[PED_START:PED_END]))
+                        seg    = block[:, ch, :]                       # (n_block, n)
+                        ped    = seg[:, PED_START:PED_END].mean(axis=1, keepdims=True)
                         sig_mv = (seg - ped) * ADC_TO_MV
-                        mag    = np.abs(np.fft.rfft(sig_mv * window)) * 2.0 / n
-                        power_acc[ch] += mag ** 2
-                    count += 1
-                    if count % 100 == 0:
-                        p = count
-                        self._avg_status_lbl.master.after(
-                            0, lambda p=p: self._avg_status_lbl.config(
-                                text=f"Computing {p}/{n_events}…", foreground="#6b7280"))
+                        # Batched real FFT along the sample axis → (n_block, n//2+1)
+                        mag    = np.abs(np.fft.rfft(sig_mv * window, axis=1)) * 2.0 / n
+                        power_acc[ch] += (mag ** 2).sum(axis=0)
+
+                    count += n_block
+                    ev = stop
+                    p = count
+                    self._avg_status_lbl.master.after(
+                        0, lambda p=p: self._avg_status_lbl.config(
+                            text=f"Computing {p:,}/{n_events:,} "
+                                 f"({100*p//n_events}%)…", foreground="#6b7280"))
 
                 if count > 0:
                     for ch in self._channels:
@@ -416,16 +476,22 @@ class WaveformViewerPanel:
 
             def finish():
                 self._avg_computing = False
-                self._avg_compute_btn.config(state="normal")
+                self._avg_cancel    = False
+                self._avg_compute_btn.config(text="Compute Avg FFT", bg="#7c3aed")
+                self._avg_from_entry.config(state="normal")
+                self._avg_to_entry.config(state="normal")
                 if err is not None:
                     self._avg_status_lbl.config(text=f"Error: {err}", foreground="#dc3545")
                     return
                 if count == 0:
                     self._avg_status_lbl.config(text="No events read", foreground="#dc3545")
                     return
+                # Render partial result even if cancelled — useful for a quick look.
                 self._avg_result = result
+                tag = "Cancelled" if cancelled else "Done"
+                color = "#f0ad4e" if cancelled else "#16a34a"
                 self._avg_status_lbl.config(
-                    text=f"Done — {count} events averaged", foreground="#16a34a")
+                    text=f"{tag} — {count:,} events averaged", foreground=color)
                 if self._tree:
                     self._show_entry(self._cur_entry)
 
