@@ -233,6 +233,11 @@ class App:
                 self.ui.update_helper_live(dev_num, tilt, rot)
             except Exception:
                 pass
+        if hasattr(self, 'ui') and hasattr(self.ui, 'update_pmt_position_widget'):
+            try:
+                self.ui.update_pmt_position_widget(dev_num, tilt, rot)
+            except Exception:
+                pass
 
     def request_control_unlock(self):
         """비밀번호 확인 후 제어권 활성화 및 자동화 UI 연동"""

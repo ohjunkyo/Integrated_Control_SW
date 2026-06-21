@@ -203,6 +203,7 @@ class UIManager:
         ))
 
         self._create_connection_status_frame(left_pane)
+        self._create_pmt_position_widget(left_pane)
         self._create_run_control_frame(left_pane)
         self._create_dynamic_buttons_frame(left_pane, "Execute Scripts", "scripts")
         self._create_dynamic_buttons_frame(left_pane, "View", "view")
@@ -220,6 +221,7 @@ class UIManager:
         # Tab 1: PMT Rotation Helper (이제 스크롤 없이 바로 보임)
         config_tab = ttk.Frame(self.notebook, padding=(10, 10, 10, 10))
         self.notebook.add(config_tab, text="PMT Setup & Helper")
+        self.pmt_setup_tab = config_tab   # ref for the position widget's "Open Setup" jump
         self._create_status_frame(config_tab)
 
         # Tab 2: Console — DAQ/Produce/Analysis 작업 출력을 별도 터미널 대신
@@ -368,7 +370,8 @@ class UIManager:
             indicator["canvas"].config(bg=c["bg"])
         
         self.outlet_canvas.config(bg=c["bg"])
-        self._update_pmt_status_and_helper() 
+        self._update_pmt_status_and_helper()
+        self._retheme_pmt_position_widget()
 
         self.controller.update_plots_theme(self.is_dark_mode)
 
@@ -1195,6 +1198,204 @@ class UIManager:
         except tk.TclError:
             pass
 
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Always-visible PMT position widget (left Control Panel)
+    # ══════════════════════════════════════════════════════════════════════
+
+    def _create_pmt_position_widget(self, parent):
+        """Compact, always-visible live PMT position panel for the left Control Panel.
+
+        SN2/SN3 (motorized): mini TOP (rotation compass) + SIDE (tilt) views, live
+        angles, and a moving / rotation-locked state. SN1 is monitor-only (no motor)
+        so it is shown as a simple label. Read-only by design — the only action is the
+        safe 'Go to 0°'; real moves stay in the Setup tab where the tilt→rot interlock
+        sequence is enforced. Updated from the motor monitoring thread via
+        update_pmt_position_widget() (master.after for thread safety).
+        """
+        self.pmt_pos_widgets = {}
+
+        frame = ttk.LabelFrame(parent, text=" PMT position (live) ", padding=(8, 6))
+        frame.pack(fill=tk.X, pady=(0, 8), padx=2)
+
+        # SN1 — monitor only (no motor)
+        ttk.Label(frame, text="SN1 · monitor (no motor)",
+                  font=("Helvetica", 9), foreground="#888").pack(anchor="w", pady=(0, 4))
+
+        cfg = {}
+        try:
+            if self.controller.config_manager:
+                cfg = self.controller.config_manager.get_all_variables()
+        except Exception:
+            cfg = {}
+
+        for dev in (2, 3):
+            row = ttk.Frame(frame)
+            row.pack(fill=tk.X, pady=2)
+
+            bg = "#2d2d2d" if self.is_dark_mode else "white"
+            top_c = tk.Canvas(row, width=52, height=52, bg=bg, highlightthickness=0)
+            top_c.pack(side=tk.LEFT, padx=(0, 2))
+            side_c = tk.Canvas(row, width=60, height=52, bg=bg, highlightthickness=0)
+            side_c.pack(side=tk.LEFT, padx=(0, 6))
+
+            info = ttk.Frame(row)
+            info.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            name_lbl = ttk.Label(info, text=f"SN{dev}", font=("Helvetica", 10, "bold"))
+            name_lbl.pack(anchor="w")
+            ang_lbl = ttk.Label(info, text="Rot —° · Tilt —°", font=("Helvetica", 9))
+            ang_lbl.pack(anchor="w")
+            state_lbl = tk.Label(info, text="—", font=("Helvetica", 8, "bold"),
+                                 fg="#888", bg=bg)
+            state_lbl.pack(anchor="w", pady=(1, 0))
+
+            # Initial draw from config so it isn't blank before monitoring starts.
+            try:
+                rot0 = float(cfg.get(f'RotateAngle{dev}', "0") or 0)
+                tilt0 = float(cfg.get(f'TiltAngle{dev}', "0") or 0)
+            except (TypeError, ValueError):
+                rot0, tilt0 = 0.0, 0.0
+
+            self.pmt_pos_widgets[dev] = {
+                "top": top_c, "side": side_c,
+                "name": name_lbl, "ang": ang_lbl, "state": state_lbl,
+                "last_rot": rot0, "last_tilt": tilt0,
+            }
+
+            self._draw_pos_compass(top_c, rot0, "#1D9E75")
+            self._draw_pos_sideview(side_c, tilt0)
+            ang_lbl.config(text=f"Rot {rot0:.0f}° · Tilt {tilt0:.0f}°")
+
+        btns = ttk.Frame(frame)
+        btns.pack(fill=tk.X, pady=(6, 0))
+        tk.Button(btns, text="⌂ Go to 0°", command=self._pmt_pos_go_zero,
+                  bg="#4f46e5", fg="white", font=("Helvetica", 9, "bold"),
+                  relief="flat", padx=6).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 3))
+        tk.Button(btns, text="⚙ Open Setup", command=self._pmt_pos_open_setup,
+                  bg="#374151", fg="white", font=("Helvetica", 9, "bold"),
+                  relief="flat", padx=6).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(3, 0))
+
+    def _pmt_pos_go_zero(self):
+        """Safe origin return — reuses the Setup tab's interlocked reset (tilt→rot)."""
+        try:
+            self.controller.auto_ui.confirm_and_reset_angles()
+        except Exception as e:
+            self.controller._log(f"[WARNING] Go to 0° failed: {e}")
+
+    def _pmt_pos_open_setup(self):
+        try:
+            self.notebook.select(self.pmt_setup_tab)
+        except Exception:
+            pass
+
+    def _retheme_pmt_position_widget(self):
+        """Recolor the position-widget canvases + state labels for the current theme,
+        redrawing from the last known angles (the live thread may not fire if motors
+        are idle/offline, so we can't rely on it to refresh the background)."""
+        for w in getattr(self, 'pmt_pos_widgets', {}).values():
+            try:
+                bg = "#2d2d2d" if self.is_dark_mode else "white"
+                w["state"].config(bg=bg)
+                self._draw_pos_compass(w["top"], w.get("last_rot", 0.0), "#1D9E75")
+                self._draw_pos_sideview(w["side"], w.get("last_tilt", 0.0))
+            except (tk.TclError, KeyError):
+                pass
+
+    def _draw_pos_compass(self, canvas, rot_deg, needle_color):
+        """Mini TOP view: cable-direction needle around the scan axis (0° = 9 o'clock)."""
+        try:
+            if not canvas.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        canvas.config(bg="#2d2d2d" if self.is_dark_mode else "white")  # keep bg theme-synced
+        canvas.delete("all")
+        cx, cy, R = 26, 26, 21
+        canvas.create_oval(cx - R, cy - R, cx + R, cy + R,
+                           outline="#888", width=1)
+        # Match the helper diagram convention: physical cable at 180° + rotation.
+        ang = math.radians(180 + rot_deg)
+        ex, ey = cx + R * math.cos(ang), cy - R * math.sin(ang)
+        canvas.create_line(cx, cy, ex, ey, fill=needle_color, width=3,
+                           capstyle=tk.ROUND)
+        canvas.create_oval(cx - 2, cy - 2, cx + 2, cy + 2,
+                           fill=needle_color, outline="")
+
+    def _draw_pos_sideview(self, canvas, tilt_deg):
+        """Mini SIDE view: a 20-inch PMT dome tilted by tilt_deg vs a fixed vertical
+        reference (the laser axis). Same KR→position-angle conversion as the full
+        helper side view, just smaller and label-free."""
+        try:
+            if not canvas.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        canvas.config(bg="#2d2d2d" if self.is_dark_mode else "white")  # keep bg theme-synced
+        canvas.delete("all")
+        W, H = 60, 52
+        cx, cy, Rb = 30, 36, 22
+
+        kr = abs(tilt_deg)
+        pos_deg = -0.0049 * kr * kr + 1.7515 * kr - 0.0402
+        pos_deg = max(0.0, min(90.0, pos_deg))
+        sign = -1.0 if tilt_deg < 0 else 1.0
+        th = math.radians(sign * pos_deg)
+
+        upx, upy = math.sin(th), -math.cos(th)
+        rxh, ryh = math.cos(th), math.sin(th)
+
+        def to_screen(lx, ly):
+            return (cx + lx * rxh + ly * upx, cy + lx * ryh + ly * upy)
+
+        # Fixed vertical reference (laser axis).
+        canvas.create_line(cx, cy, cx, cy - Rb - 8, fill="#bbb", dash=(2, 2))
+
+        bulb_fill = "#274b6d" if self.is_dark_mode else "#d0e7fb"
+        pts = []
+        for a in range(0, 181, 10):
+            rad = math.radians(a)
+            sx, sy = to_screen(Rb * math.cos(rad), Rb * math.sin(rad))
+            pts.extend([sx, sy])
+        canvas.create_polygon(*pts, fill=bulb_fill, outline="#5a7fa5", width=1)
+        # Laser spot where the vertical axis meets the (tilted) dome top.
+        canvas.create_oval(cx - 2, cy - Rb + 2, cx + 2, cy - Rb + 6,
+                           fill="#e24b4a", outline="")
+
+    def update_pmt_position_widget(self, dev_num, tilt, rot):
+        """Motor-monitoring-thread callback: refresh the live position widget for
+        SN2/SN3. Marshals to the main thread (Tkinter is not thread-safe)."""
+        if dev_num not in (2, 3) or tilt is None or rot is None:
+            return
+        w = getattr(self, 'pmt_pos_widgets', {}).get(dev_num)
+        if not w:
+            return
+
+        def _apply():
+            try:
+                moving = self.controller.rot_mgr.is_moving.get(dev_num, False)
+            except Exception:
+                moving = False
+            locked = abs(tilt) > 0.5      # rotation locked while tilted (hardware rule)
+
+            w["last_rot"], w["last_tilt"] = rot, tilt
+            needle = "#BA7517" if moving else "#1D9E75"
+            self._draw_pos_compass(w["top"], rot, needle)
+            self._draw_pos_sideview(w["side"], tilt)
+            try:
+                w["ang"].config(text=f"Rot {rot:.0f}° · Tilt {tilt:.0f}°")
+                if moving:
+                    w["state"].config(text="● moving", fg="#BA7517")
+                elif locked:
+                    w["state"].config(text="🔒 tilt to 0° to rotate", fg="#dc3545")
+                else:
+                    w["state"].config(text="✓ rotation ok", fg="#1D9E75")
+            except tk.TclError:
+                pass
+
+        try:
+            self.master.after(0, _apply)
+        except tk.TclError:
+            pass
 
     def _create_helper_text(self, parent, pmt_index, sn, direction, x_map, y_map):
         """회전/틸트 각도를 알려주는 텍스트를 생성합니다."""
