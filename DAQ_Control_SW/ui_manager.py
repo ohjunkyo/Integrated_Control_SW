@@ -1669,16 +1669,7 @@ class UIManager:
     # DAQ Diagnostics tab
     # ------------------------------------------------------------------
     def _create_daq_diagnostics_tab(self, parent):
-        """DAQ connection diagnostics + one-click recovery panel.
-
-        재부팅이나 DAQ 전원 재투입 후 USB 드라이버(CAENUSBdrvB)가 로드되지 않아
-        연결이 안 되는 문제를 진단·복구하는 패널입니다.
-
-        원인:
-          CAEN USB 드라이버는 DKMS 방식이라 커널 업데이트 시 재빌드 가능하지만,
-          /etc/modules-load.d/ 에 등록되어 있지 않으면 재부팅 시 자동 로드가
-          보장되지 않습니다. 또한 USB 디바이스 파일 권한 문제가 겹칠 수 있습니다.
-        """
+        """DAQ connection diagnostics + one-click recovery panel."""
         canvas = tk.Canvas(parent, highlightthickness=0)
         vsb = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
         canvas.configure(yscrollcommand=vsb.set)
@@ -1689,41 +1680,42 @@ class UIManager:
         inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda e: canvas.itemconfig(win_id, width=e.width))
 
-        # ── 섹션 1: 연결 상태 ──────────────────────────────────────────
-        s1 = ttk.LabelFrame(inner, text="현재 상태 (Live)", padding=10)
+        # ── Section 1: Live Status ─────────────────────────────────────
+        s1 = ttk.LabelFrame(inner, text="Live Status", padding=10)
         s1.pack(fill=tk.X, pady=(0, 8))
 
-        self._diag_status_lbl = ttk.Label(s1, text="확인 중...", font=("Helvetica", 11, "bold"))
+        self._diag_status_lbl = ttk.Label(s1, text="Not checked yet.", font=("Helvetica", 11, "bold"))
         self._diag_status_lbl.pack(anchor="w")
 
         self._diag_detail_lbl = ttk.Label(s1, text="", font=("Helvetica", 9), foreground="#888",
                                           justify=tk.LEFT, wraplength=600)
         self._diag_detail_lbl.pack(anchor="w", pady=(2, 0))
 
-        ttk.Button(s1, text="🔍 지금 진단 실행", command=self._run_daq_diagnostics).pack(
+        ttk.Button(s1, text="🔍 Run Diagnostics Now", command=self._run_daq_diagnostics).pack(
             anchor="w", pady=(8, 0))
 
-        # ── 섹션 2: 원인 설명 ──────────────────────────────────────────
-        s2 = ttk.LabelFrame(inner, text="알려진 원인 및 설명", padding=10)
+        # ── Section 2: Known Causes ────────────────────────────────────
+        s2 = ttk.LabelFrame(inner, text="Known Causes & Explanations", padding=10)
         s2.pack(fill=tk.X, pady=(0, 8))
 
         causes = [
-            ("🔌  USB 드라이버 미로드 (가장 흔함)",
-             "CAENUSBdrvB 드라이버가 커널 모듈로 로드되어 있어야 CAEN 디지타이저와 통신할 수 있습니다.\n"
-             "재부팅 후 자동 로드가 안 되면 execute_DAQ_v2 -j 가 CommError(-1)를 반환합니다.\n"
-             "아래 '드라이버 자동 로드 등록' 버튼으로 /etc/modules-load.d/caen.conf 에 등록하면\n"
-             "이후 재부팅부터는 자동으로 로드됩니다."),
-            ("⚡  DAQ 전원 재투입 직후 USB 열거 지연",
-             "CAEN 디지타이저 전원을 껐다 켜면 USB 재열거에 2~5초 걸립니다.\n"
-             "이 시간 전에 연결 시도하면 실패합니다. 잠시 기다린 후 재시도하세요."),
-            ("🔒  USB 장치 파일 권한 문제",
-             "/dev/bus/usb/... 파일에 접근 권한이 없을 때 발생합니다.\n"
-             "현재 사용자가 'dialout' 또는 'plugdev' 그룹에 속해 있어야 합니다.\n"
-             "아래 '권한 진단' 버튼으로 확인하세요."),
-            ("📚  공유 라이브러리 경로 문제",
-             "libCAENDigitizer.so 등이 /usr/lib에 설치된 stale 32비트 버전을 먼저 잡으면\n"
-             "'wrong ELF class' 오류가 납니다. /home/precalkor/ADC/lib 경로가 LD_LIBRARY_PATH에\n"
-             "우선해야 합니다. 프로그램은 이미 이를 보장하지만, 터미널에서 직접 실행 시 확인하세요."),
+            ("🔌  USB Driver Not Loaded  (most common)",
+             "The CAENUSBdrvB kernel module must be loaded for the CAEN digitizer to be reachable.\n"
+             "If it is not registered in /etc/modules-load.d/, it will NOT auto-load after a reboot,\n"
+             "and execute_DAQ_v2 -j will return CommError (-1).\n"
+             "Fix: click 'Register Auto-Load on Boot' below — after that, reboots will load it automatically."),
+            ("⚡  USB Re-enumeration Delay After Power Cycle",
+             "When the CAEN digitizer is power-cycled, the OS needs 2–5 seconds to re-enumerate the USB device.\n"
+             "Attempting to connect before enumeration finishes will fail. Wait a few seconds, then retry."),
+            ("🔒  USB Device File Permission Issue",
+             "Access to /dev/bus/usb/... requires the current user to be in the 'dialout' or 'plugdev' group.\n"
+             "If neither group is present, the open call will fail with EACCES (Permission denied).\n"
+             "Fix: click 'Add USB Permission Groups' below, then log out and back in."),
+            ("📚  Shared Library Path Conflict",
+             "A stale 32-bit libCAENComm.so in /usr/lib may shadow the correct 64-bit version in\n"
+             "/home/precalkor/ADC/lib, causing 'wrong ELF class' at runtime.\n"
+             "This program already prepends the correct path via LD_LIBRARY_PATH.\n"
+             "If running execute_DAQ_v2 directly in a terminal, set LD_LIBRARY_PATH manually first."),
         ]
 
         for title, desc in causes:
@@ -1733,31 +1725,30 @@ class UIManager:
             ttk.Label(f, text=desc, font=("Helvetica", 9), foreground="#666",
                       justify=tk.LEFT, wraplength=600).pack(anchor="w", padx=(12, 0))
 
-        # ── 섹션 3: 빠른 수동 복구 ────────────────────────────────────
-        s3 = ttk.LabelFrame(inner, text="복구 액션 (sudo 권한 필요)", padding=10)
+        # ── Section 3: Recovery Actions ────────────────────────────────
+        s3 = ttk.LabelFrame(inner, text="Recovery Actions  (sudo required)", padding=10)
         s3.pack(fill=tk.X, pady=(0, 8))
 
         ttk.Label(s3,
-                  text="아래 버튼은 sudo 명령을 실행합니다. 비밀번호 입력이 필요할 수 있습니다.\n"
-                       "결과는 아래 출력 창에 표시됩니다.",
+                  text="These buttons run sudo commands. A password prompt may appear in the output window below.",
                   font=("Helvetica", 9), foreground="#888").pack(anchor="w", pady=(0, 8))
 
         btn_frame = ttk.Frame(s3)
         btn_frame.pack(fill=tk.X)
 
         actions = [
-            ("▶  드라이버 지금 로드\n(modprobe)",
+            ("▶  Load Driver Now\n(modprobe)",
              "sudo modprobe CAENUSBdrvB",
-             "USB 드라이버를 지금 즉시 로드합니다.\n재부팅 없이 바로 연결을 시도할 수 있습니다."),
-            ("🔁  드라이버 재설치\n(auto_DAQ_setup.sh)",
-             f"sudo bash /home/precalkor/ADC/auto_DAQ_setup.sh",
-             "드라이버 전체를 재컴파일·재설치합니다.\n커널 업데이트 후 드라이버가 깨진 경우 사용하세요.\n(시간이 걸립니다)"),
-            ("📌  부팅 자동 로드 등록\n(caen.conf)",
+             "Loads the USB driver immediately without rebooting.\nTry connecting to the DAQ right after."),
+            ("🔁  Reinstall Drivers\n(auto_DAQ_setup.sh)",
+             "sudo bash /home/precalkor/ADC/auto_DAQ_setup.sh",
+             "Recompiles and reinstalls all CAEN drivers.\nUse this if the driver broke after a kernel update.\n(Takes a while.)"),
+            ("📌  Register Auto-Load\non Boot (caen.conf)",
              "echo 'CAENUSBdrvB' | sudo tee /etc/modules-load.d/caen.conf",
-             "재부팅 후에도 드라이버가 자동으로 로드되도록 등록합니다.\n이 설정 후에는 auto_DAQ_setup.sh 를 다시 돌릴 필요가 없습니다."),
-            ("🔒  USB 권한 그룹 추가\n(dialout)",
-             f"sudo usermod -aG dialout $(whoami) && sudo usermod -aG plugdev $(whoami)",
-             "현재 사용자를 dialout/plugdev 그룹에 추가합니다.\n로그아웃 후 재로그인 시 적용됩니다."),
+             "Registers the driver to load automatically at every boot.\nAfter this, running auto_DAQ_setup.sh on each reboot is no longer needed."),
+            ("🔒  Add USB Permission\nGroups (dialout)",
+             "sudo usermod -aG dialout $(whoami) && sudo usermod -aG plugdev $(whoami)",
+             "Adds the current user to dialout and plugdev groups.\nLog out and back in for the change to take effect."),
         ]
 
         for i, (label, cmd, tip) in enumerate(actions):
@@ -1769,34 +1760,37 @@ class UIManager:
             ttk.Label(col, text=tip, font=("Helvetica", 8), foreground="#666",
                       justify=tk.LEFT, wraplength=180).pack(anchor="w", pady=(4, 0))
 
-        # ── 섹션 4: 드라이버 상태 진단 ────────────────────────────────
-        s4 = ttk.LabelFrame(inner, text="드라이버·권한 상태 진단", padding=10)
+        # ── Section 4: Individual Checks ──────────────────────────────
+        s4 = ttk.LabelFrame(inner, text="Driver & Permission Checks", padding=10)
         s4.pack(fill=tk.X, pady=(0, 8))
 
         diag_btns = ttk.Frame(s4)
         diag_btns.pack(anchor="w", pady=(0, 6))
-        ttk.Button(diag_btns, text="커널 모듈 상태 확인",
-                   command=lambda: self._diag_run_cmd("lsmod | grep -i caen || echo '[없음] CAENUSBdrvB 모듈이 로드되지 않음'")).pack(
+        ttk.Button(diag_btns, text="Kernel Module State",
+                   command=lambda: self._diag_run_cmd(
+                       "lsmod | grep -i caen || echo '[NOT LOADED] CAENUSBdrvB module is not loaded'")).pack(
                        side=tk.LEFT, padx=(0, 6))
-        ttk.Button(diag_btns, text="USB 장치 목록",
-                   command=lambda: self._diag_run_cmd("lsusb | grep -i caen || echo '[없음] CAEN USB 장치가 인식되지 않음'")).pack(
+        ttk.Button(diag_btns, text="USB Device List",
+                   command=lambda: self._diag_run_cmd(
+                       "lsusb | grep -i caen || echo '[NOT FOUND] No CAEN USB device detected'")).pack(
                        side=tk.LEFT, padx=(0, 6))
-        ttk.Button(diag_btns, text="권한·그룹 확인",
-                   command=lambda: self._diag_run_cmd("id && ls -la /dev/bus/usb/ 2>/dev/null | head -5")).pack(
+        ttk.Button(diag_btns, text="User Groups & Permissions",
+                   command=lambda: self._diag_run_cmd(
+                       "id && ls -la /dev/bus/usb/ 2>/dev/null | head -5")).pack(
                        side=tk.LEFT, padx=(0, 6))
-        ttk.Button(diag_btns, text="라이브러리 경로 확인",
+        ttk.Button(diag_btns, text="Library Path Check",
                    command=lambda: self._diag_run_cmd(
                        "ldconfig -p | grep -i caen; echo '---'; ls /home/precalkor/ADC/lib/*.so* 2>/dev/null")).pack(
                        side=tk.LEFT)
 
-        # ── 섹션 5: 출력 창 ────────────────────────────────────────────
-        s5 = ttk.LabelFrame(inner, text="실행 결과", padding=6)
+        # ── Section 5: Output window ───────────────────────────────────
+        s5 = ttk.LabelFrame(inner, text="Command Output", padding=6)
         s5.pack(fill=tk.BOTH, expand=True, pady=(0, 0))
 
         out_bar = ttk.Frame(s5)
         out_bar.pack(fill=tk.X)
-        ttk.Label(out_bar, text="명령 출력:", font=("Helvetica", 9)).pack(side=tk.LEFT)
-        ttk.Button(out_bar, text="지우기", command=lambda: (
+        ttk.Label(out_bar, text="Output:", font=("Helvetica", 9)).pack(side=tk.LEFT)
+        ttk.Button(out_bar, text="Clear", command=lambda: (
             self._diag_out.config(state="normal"),
             self._diag_out.delete("1.0", tk.END),
             self._diag_out.config(state="disabled")
@@ -1818,7 +1812,6 @@ class UIManager:
 
     def _diag_run_cmd(self, cmd):
         """Run a shell command and stream output to the diagnostics pane."""
-        import shlex
         self._diag_append(f"\n$ {cmd}\n")
 
         def _run():
@@ -1829,47 +1822,46 @@ class UIManager:
                 for line in proc.stdout:
                     self._diag_append(line)
                 proc.wait()
-                self._diag_append(f"[종료 코드: {proc.returncode}]\n")
+                self._diag_append(f"[exit code: {proc.returncode}]\n")
             except Exception as e:
-                self._diag_append(f"[오류] {e}\n")
+                self._diag_append(f"[ERROR] {e}\n")
 
         threading.Thread(target=_run, daemon=True).start()
 
     def _run_daq_diagnostics(self):
-        """Quick diagnostic: check driver load state, USB device presence, execute_DAQ_v2 -j."""
-        self._diag_append("\n=== DAQ 연결 진단 시작 ===\n")
+        """Run all diagnostic checks and update the Live Status section."""
+        self._diag_append("\n=== DAQ Connection Diagnostics ===\n")
 
         def _run():
-            import shutil
-
-            # 1. 드라이버 로드 여부
+            # 1. Kernel module
             r = subprocess.run("lsmod | grep -i caen", shell=True,
                                capture_output=True, text=True)
             if r.stdout.strip():
-                self._diag_append(f"[✓] CAENUSBdrvB 모듈 로드됨:\n{r.stdout}")
+                self._diag_append(f"[OK] CAENUSBdrvB module is loaded:\n{r.stdout}")
             else:
-                self._diag_append("[✗] CAENUSBdrvB 모듈이 로드되어 있지 않습니다.\n"
-                                  "    → '드라이버 지금 로드' 버튼을 눌러주세요.\n")
+                self._diag_append("[FAIL] CAENUSBdrvB module is NOT loaded.\n"
+                                  "  → Click 'Load Driver Now' to load it without rebooting.\n"
+                                  "  → Click 'Register Auto-Load on Boot' to make it permanent.\n")
 
-            # 2. USB 장치 인식
+            # 2. USB device presence
             r2 = subprocess.run("lsusb | grep -i caen", shell=True,
                                 capture_output=True, text=True)
             if r2.stdout.strip():
-                self._diag_append(f"[✓] CAEN USB 장치 인식됨:\n{r2.stdout}")
+                self._diag_append(f"[OK] CAEN USB device detected:\n{r2.stdout}")
             else:
-                self._diag_append("[✗] CAEN USB 장치가 lsusb에 보이지 않습니다.\n"
-                                  "    → DAQ 전원·USB 케이블을 확인하세요.\n")
+                self._diag_append("[FAIL] No CAEN USB device found in lsusb.\n"
+                                  "  → Check DAQ power and USB cable.\n")
 
-            # 3. 부팅 자동 로드 등록 여부
+            # 3. Boot auto-load registration
             caen_conf = "/etc/modules-load.d/caen.conf"
             if os.path.exists(caen_conf):
-                self._diag_append(f"[✓] 부팅 자동 로드 등록 확인: {caen_conf}\n")
+                self._diag_append(f"[OK] Boot auto-load registered: {caen_conf}\n")
             else:
-                self._diag_append("[!] /etc/modules-load.d/caen.conf 가 없습니다.\n"
-                                  "    → 재부팅 후 드라이버가 자동으로 로드되지 않을 수 있습니다.\n"
-                                  "    → '부팅 자동 로드 등록' 버튼으로 등록하세요.\n")
+                self._diag_append("[WARN] /etc/modules-load.d/caen.conf not found.\n"
+                                  "  → Driver may not load automatically after reboot.\n"
+                                  "  → Click 'Register Auto-Load on Boot' to fix this.\n")
 
-            # 4. execute_DAQ_v2 -j
+            # 4. execute_DAQ_v2 -j connection test
             try:
                 daq_path = self.controller.config_manager.get_config_value('BasePath')
                 exe = os.path.join(daq_path, 'execute_DAQ_v2') if daq_path else None
@@ -1878,24 +1870,24 @@ class UIManager:
                     r3 = subprocess.run([exe, '-j'], capture_output=True, text=True,
                                         timeout=6, env=env)
                     if r3.returncode == 0:
-                        self._diag_append(f"[✓] execute_DAQ_v2 -j 성공 (연결됨)\n{r3.stdout}")
+                        self._diag_append(f"[OK] execute_DAQ_v2 -j succeeded (digitizer reachable)\n{r3.stdout}")
                         self.master.after(0, lambda: (
-                            self._diag_status_lbl.config(text="● DAQ 연결됨", foreground="#28a745"),
-                            self._diag_detail_lbl.config(text="모든 진단 항목 정상")))
+                            self._diag_status_lbl.config(text="● DAQ Connected", foreground="#28a745"),
+                            self._diag_detail_lbl.config(text="All checks passed.")))
                     else:
-                        self._diag_append(f"[✗] execute_DAQ_v2 -j 실패 (returncode={r3.returncode})\n"
-                                          f"    stdout: {r3.stdout.strip()}\n"
-                                          f"    stderr: {r3.stderr.strip()}\n")
+                        self._diag_append(f"[FAIL] execute_DAQ_v2 -j failed (exit {r3.returncode})\n"
+                                          f"  stdout: {r3.stdout.strip()}\n"
+                                          f"  stderr: {r3.stderr.strip()}\n")
                         self.master.after(0, lambda: (
-                            self._diag_status_lbl.config(text="✗ DAQ 연결 안 됨", foreground="#dc3545"),
+                            self._diag_status_lbl.config(text="✗ DAQ Not Connected", foreground="#dc3545"),
                             self._diag_detail_lbl.config(
-                                text="위 결과를 참고해 드라이버 로드 또는 USB 확인 후 재시도하세요.")))
+                                text="See output above. Load the driver or check USB, then run diagnostics again.")))
                 else:
-                    self._diag_append("[!] execute_DAQ_v2 경로를 찾을 수 없습니다. (BasePath 설정 확인)\n")
+                    self._diag_append("[WARN] execute_DAQ_v2 not found — check BasePath in config.\n")
             except Exception as e:
-                self._diag_append(f"[오류] execute_DAQ_v2 실행 실패: {e}\n")
+                self._diag_append(f"[ERROR] Could not run execute_DAQ_v2: {e}\n")
 
-            self._diag_append("=== 진단 완료 ===\n")
+            self._diag_append("=== Diagnostics complete ===\n")
 
         threading.Thread(target=_run, daemon=True).start()
 
