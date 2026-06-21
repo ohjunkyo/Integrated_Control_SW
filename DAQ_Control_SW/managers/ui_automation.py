@@ -165,6 +165,7 @@ class AutomationUI:
         right_status.grid(row=0, column=1, sticky="nsew")
 
         self.manual_control_buttons = []
+        self.manual_rot_buttons = {}   # dev_num -> (btn_rot, interlock_label)
 
         for idx, sn in enumerate([self.sn2_val, self.sn3_val]):
             dev_frame = ttk.Frame(right_status)
@@ -211,6 +212,15 @@ class AutomationUI:
 
             tk.Button(btn_f, text="⏹ Stop", bg="#ffc107", font=("Helvetica", 10, "bold"), width=10,
                       command=lambda d=idx+2: self.controller.rot_mgr.stop_rotation(d)).pack(side=tk.LEFT, padx=5)
+
+            # Interlock warning label — shown when tilt != 0
+            lock_lbl = tk.Label(btn_f, text="🔒 Tilt to 0° before rotating",
+                                fg="#dc3545", bg=btn_f.winfo_toplevel().cget("bg"),
+                                font=("Helvetica", 9, "bold"))
+            lock_lbl.pack(side=tk.LEFT, padx=(6, 0))
+            lock_lbl.pack_forget()   # hidden by default
+
+            self.manual_rot_buttons[idx + 2] = (btn_rot, lock_lbl)
 
         # ── Scan Progress Matrix (dash_tab row=1, spans both columns) ──────
         matrix_outer = ttk.LabelFrame(dash_tab, text=" 📊 Scan Progress Matrix ", padding=5)
@@ -520,12 +530,23 @@ class AutomationUI:
         if hasattr(self, 'sn_labels') and sn in self.sn_labels:
             # Guard against the widget being destroyed before this queued callback
             # fires (e.g. during app shutdown) → avoids TclError "invalid command name".
-            def _apply_sn(sn=sn, t_str=t_str, r_str=r_str):
+            tilt_locked = (tilt is not None and abs(tilt) > 0.5)
+
+            def _apply_sn(sn=sn, t_str=t_str, r_str=r_str, dev=dev_num, locked=tilt_locked):
                 if getattr(self.controller, '_shutting_down', False):
                     return
                 try:
                     self.sn_labels[sn].config(
                         text=f"{sn} | Status -> Tilt: {t_str}°, Rot: {r_str}°")
+                    # Enforce rotation interlock: disable Move Rot when tilt != 0
+                    if dev in getattr(self, 'manual_rot_buttons', {}):
+                        btn_rot, lock_lbl = self.manual_rot_buttons[dev]
+                        if locked:
+                            btn_rot.config(state=tk.DISABLED, bg="#6c757d")
+                            lock_lbl.pack(side=tk.LEFT, padx=(6, 0))
+                        else:
+                            btn_rot.config(state=tk.NORMAL, bg="#17a2b8")
+                            lock_lbl.pack_forget()
                 except tk.TclError:
                     pass
             self.notebook.after(0, _apply_sn)
