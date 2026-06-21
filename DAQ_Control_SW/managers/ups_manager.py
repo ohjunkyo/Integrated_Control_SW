@@ -163,8 +163,15 @@ class UPSManager:
 
     def update_ups_status_loop(self):
         """Core loop for UPS status without UI freezing."""
+        # Guard: stop rescheduling once the app is shutting down.
+        if getattr(self.app, '_shutting_down', False):
+            return
+
         if self.ups_after_id:
-            self.app.master.after_cancel(self.ups_after_id)
+            try:
+                self.app.master.after_cancel(self.ups_after_id)
+            except Exception:
+                pass
             self.ups_after_id = None
 
         interval = 2000
@@ -225,13 +232,16 @@ class UPSManager:
                                     self.ups_plot_history["vout"].append(output_v)
                                     self.refresh_ups_plot()
 
-                                self.app.master.after(0, update_ui)
+                                if not getattr(self.app, '_shutting_down', False):
+                                    self.app.master.after(0, update_ui)
                 except Exception as e:
-                    self.app.master.after(0, lambda e=e: self.app._log(f"[ERROR] UPS Loop Error: {e}"))
+                    if not getattr(self.app, '_shutting_down', False):
+                        self.app.master.after(0, lambda e=e: self.app._log(f"[ERROR] UPS Loop Error: {e}"))
 
             threading.Thread(target=fetch_ups_task, daemon=True).start()
 
-        if hasattr(self.app, 'master') and self.app.master.winfo_exists():
+        if (not getattr(self.app, '_shutting_down', False)
+                and hasattr(self.app, 'master') and self.app.master.winfo_exists()):
             self.ups_after_id = self.app.master.after(interval, self.update_ups_status_loop)
 
     def manual_refresh_ups(self):

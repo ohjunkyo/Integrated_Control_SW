@@ -632,6 +632,8 @@ class App:
         _MAX_CHUNK = 32 * 1024  # bytes per flush — keeps UI responsive
 
         def flush_buffer():
+            if getattr(self, '_shutting_down', False):
+                return
             buf = self._console_buffer.get(slot)
             if buf:
                 chunk = "".join(buf)
@@ -676,7 +678,8 @@ class App:
                             f"===== {job_name} FAILED (exit {code}) =====\n\n", "err", slot=slot)
                         self.ui.console_set_status(
                             f"✗ Failed (exit {code})", slot=slot, state="failed")
-                self.master.after(0, done)
+                if not getattr(self, '_shutting_down', False):
+                    self.master.after(0, done)
 
         threading.Thread(target=reader, daemon=True).start()
         self.master.after(120, flush_buffer)
@@ -1850,6 +1853,21 @@ class App:
 
         # Stop all periodic poll loops from rescheduling against soon-to-be-destroyed widgets.
         self._shutting_down = True
+
+        # Immediately cancel any pending after() callbacks from periodic loops so they
+        # cannot fire against a partially-destroyed widget and produce Tcl errors.
+        try:
+            if hasattr(self, 'ups_mgr') and self.ups_mgr.ups_after_id:
+                self.master.after_cancel(self.ups_mgr.ups_after_id)
+                self.ups_mgr.ups_after_id = None
+        except Exception:
+            pass
+        try:
+            if hasattr(self, 'laser_mgr') and self.laser_mgr.laser_after_id:
+                self.master.after_cancel(self.laser_mgr.laser_after_id)
+                self.laser_mgr.laser_after_id = None
+        except Exception:
+            pass
 
         self._log("Shutting down... Releasing hardware resources.")
         self._log("=== Application Closing Process ===")
