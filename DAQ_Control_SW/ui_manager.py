@@ -2016,10 +2016,11 @@ class UIManager:
                   command=lambda s=slot: self.clear_console(s),
                   bg="#444", fg="white", relief="flat", padx=10,
                   activebackground="#555").pack(side=tk.RIGHT, padx=4, pady=4)
-        tk.Button(bar, text="🖥 Terminal",
+        term_btn = tk.Button(bar, text="🖥 Terminal",
                   command=lambda s=slot: self._open_last_cmd_in_terminal(s),
                   bg="#2d5a27", fg="white", relief="flat", padx=10,
-                  activebackground="#3a7a34").pack(side=tk.RIGHT, padx=4, pady=4)
+                  activebackground="#3a7a34")
+        term_btn.pack(side=tk.RIGHT, padx=4, pady=4)
         autoscroll = tk.BooleanVar(value=True)
         tk.Checkbutton(bar, text="Auto-scroll", variable=autoscroll,
                        bg="#2d2d2d", fg="#d4d4d4", selectcolor="#2d2d2d",
@@ -2049,7 +2050,7 @@ class UIManager:
         self.console_panes[slot] = {
             "frame": parent, "text": text,
             "status_var": status_var, "status_lbl": status_lbl,
-            "autoscroll": autoscroll,
+            "autoscroll": autoscroll, "term_btn": term_btn,
             "ansi_tag": None, "ansi_bold": False, "ansi_fg": None}
 
     def _pick_mono_font(self):
@@ -2247,6 +2248,12 @@ class UIManager:
         _, color, dot, _ = self._SLOT_STATES.get(state, self._SLOT_STATES["idle"])
         pane["status_var"].set(text)
         pane["status_lbl"].config(fg=color)
+        # Disable Terminal button while running (re-running would start a new job)
+        if "term_btn" in pane:
+            if state == "running":
+                pane["term_btn"].config(state="disabled", bg="#444444")
+            else:
+                pane["term_btn"].config(state="normal", bg="#2d5a27")
         # Update sub-tab label
         try:
             label = f"{dot} {self._SLOT_LABELS.get(slot, slot)}"
