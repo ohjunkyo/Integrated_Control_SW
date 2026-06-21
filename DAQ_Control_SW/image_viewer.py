@@ -57,7 +57,7 @@ class ImageViewer(Toplevel):
         # 1. 뷰 모드 선택
         mode_frame = ttk.LabelFrame(list_frame, text="View Mode", padding=5)
         mode_frame.pack(fill=tk.X, padx=5, pady=5)
-        modes = ["All", "ByProduce", "ByAnalysis", "Contour", "Uniformity", "Noise"]
+        modes = ["All", "ByProduce", "ByAnalysis", "Contour", "Uniformity", "Noise", "RateScan"]
         for m in modes:
             ttk.Radiobutton(mode_frame, text=m.replace("By", ""), variable=self.view_mode, 
                             value=m, command=self.load_image_list).pack(side=tk.LEFT, expand=True)
@@ -147,7 +147,7 @@ class ImageViewer(Toplevel):
         valid_ext = tuple(valid_ext)
 
         # 대상 디렉토리 결정
-        sub_dirs = ["ByProduce", "ByAnalysis", "Contour", "Uniformity", "Noise"]
+        sub_dirs = ["ByProduce", "ByAnalysis", "Contour", "Uniformity", "Noise", "RateScan"]
         target_dirs = [os.path.join(self.base_image_dir, d) for d in (sub_dirs if mode == "All" else [mode])]
 
         for d in target_dirs:

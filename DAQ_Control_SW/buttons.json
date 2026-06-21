@@ -37,6 +37,12 @@
     },
     {
         "frame": "scripts",
+        "label": "6b. Dark Rate Scan (Threshold)",
+        "command": "run_rate_scan",
+        "style": "Normal.TButton"
+    },
+    {
+        "frame": "scripts",
         "label": "7. Uniformity (tag, runs)",
         "command": "run_uniformity",
         "style": "Normal.TButton"

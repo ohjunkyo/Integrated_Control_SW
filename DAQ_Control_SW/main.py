@@ -736,6 +736,46 @@ class App:
             else:
                 self.ui.buttons['run_daq'].config(state=tk.NORMAL, text="2. Run DAQ")
 
+        # Dark mode uses the PMT self-trigger, so the laser must normally be OFF
+        # (a running laser would dominate the trigger and ruin the dark-rate scan).
+        # Prompt the user when switching into Dark, but let them keep it on if they
+        # have a reason to.
+        if category == "manual" and manual_sub == "dark":
+            self._prompt_laser_off_for_dark()
+
+    def _prompt_laser_off_for_dark(self):
+        """When entering Dark (self-trigger) mode, offer to turn the laser(s) off."""
+        if not hasattr(self, 'laser_mgr'):
+            return
+        # Which connected lasers currently have their LD ON?
+        lasers_on = []
+        for wl, inst in self.laser_mgr.laser_instances.items():
+            try:
+                if inst.is_connected() and \
+                   self.ui.laser_tabs_data[wl]["ld_status"].get() == "ON":
+                    lasers_on.append(wl)
+            except Exception:
+                pass
+
+        if not lasers_on:
+            return  # nothing on — nothing to ask
+
+        msg = (f"Dark mode uses the PMT self-trigger.\n\n"
+               f"Laser(s) currently ON: {', '.join(str(w) for w in lasers_on)}\n\n"
+               f"A running laser will dominate the trigger and spoil the dark-rate "
+               f"measurement. Turn the laser(s) OFF now?\n\n"
+               f"   • OK  — turn laser(s) OFF (recommended)\n"
+               f"   • No  — keep laser(s) ON and continue")
+        if messagebox.askyesno("Dark Mode — Laser Off?", msg, icon="warning"):
+            for wl in lasers_on:
+                try:
+                    self.laser_mgr.set_laser_ld_safe(wl, False)
+                    self._log(f"[INFO] Dark mode: laser {wl} LD turned OFF.")
+                except Exception as e:
+                    self._log(f"[WARNING] Could not turn off laser {wl}: {e}")
+        else:
+            self._log("[INFO] Dark mode: user chose to keep laser(s) ON.")
+
     def command_not_found(self):
         messagebox.showerror("Error", "Unknown command received from UI.")
 
@@ -960,13 +1000,56 @@ class App:
         final_command_string = " && ".join(all_commands_list)
         self._run_job_in_console([final_command_string], job_name="Produce")
 
+    def run_rate_scan(self):
+        """Dark-mode threshold scan: sweep the software threshold over a single
+        self-triggered dark RAW run and plot Rate [kHz] vs Threshold [mV] per
+        channel (RateScan_v7.C). Output PNG is viewable in the Image Viewer."""
+        selected_files = self.ui.get_selected_file_paths()
+        daq_path = self._get_daq_path()
+        if not daq_path: return
+
+        helper = os.path.join(self.base_dir, 'run_cpp_script_v2.sh')
+        script = os.path.join(daq_path, 'RateScan_v7.C')
+        config_path = self.config_manager.filepath
+
+        # Operate on RAW files (the scan re-reads waveforms directly).
+        runs_to_process = []
+        if selected_files:
+            pattern = re.compile(r'(\d+)(?=[^\d]*\.root$)')
+            for f_path in selected_files:
+                if "raw" not in f_path.lower():
+                    self._log(f"[INFO] Rate Scan needs a RAW file; skipping {os.path.basename(f_path)}.")
+                    continue
+                m = pattern.search(os.path.basename(f_path))
+                if m:
+                    runs_to_process.append((str(int(m.group(1))), f_path))
+        else:
+            run_num = self.ui.get_run_num()
+            if not run_num: return
+            runs_to_process.append((run_num, ""))
+
+        if not runs_to_process:
+            messagebox.showwarning("No Dark Runs",
+                                   "Select one or more RAW files from a Dark run,\n"
+                                   "or enter a run number, then try again.")
+            return
+
+        all_commands_list = []
+        for run_num, f_path in runs_to_process:
+            f_path_arg = f"\\\"{f_path}\\\"" if f_path else "\"\""
+            command_parts = [helper, script, config_path, run_num, f_path_arg]
+            all_commands_list.append(" ".join(command_parts))
+
+        final_command_string = " && ".join(all_commands_list)
+        self._run_job_in_console([final_command_string], job_name="Rate Scan", slot="analysis")
+
     def run_analysis(self):
         selected_files = self.ui.get_selected_file_paths()
         daq_path = self._get_daq_path()
         if not daq_path: return
 
         helper = os.path.join(self.base_dir, 'run_cpp_script_v2.sh')
-        script = os.path.join(daq_path, 'read_ntp_v7.C') 
+        script = os.path.join(daq_path, 'read_ntp_v7.C')
         config_path = self.config_manager.filepath
 
         runs_to_process = [] 
