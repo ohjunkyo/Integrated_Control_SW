@@ -12,6 +12,10 @@ from tkinter import messagebox
 class AppLauncher(tk.Tk):
     def __init__(self):
         super().__init__()
+        # Auto-reap children so they never linger as zombies and
+        # never cause false "already running" pgrep hits.
+        signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+
         self.title("Integrated Control Software Launcher")
         self.geometry("550x800")
 
@@ -74,9 +78,24 @@ class AppLauncher(tk.Tk):
         self.update_file_status()
 
     def is_process_running(self, script_keyword):
+        """Return True only if a non-zombie process matching script_keyword exists."""
         try:
-            result = subprocess.run(['pgrep', '-f', script_keyword], capture_output=True)
-            return result.returncode == 0
+            # pgrep finds PIDs; then check each is not a zombie (stat != Z)
+            r = subprocess.run(['pgrep', '-f', script_keyword], capture_output=True, text=True)
+            if r.returncode != 0:
+                return False
+            for pid in r.stdout.split():
+                stat_path = f"/proc/{pid.strip()}/status"
+                try:
+                    with open(stat_path) as f:
+                        for line in f:
+                            if line.startswith("State:"):
+                                if "Z" in line:  # zombie — ignore
+                                    break
+                                return True  # alive, non-zombie
+                except OSError:
+                    pass  # process already gone
+            return False
         except Exception:
             return False
 
