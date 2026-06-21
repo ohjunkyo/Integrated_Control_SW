@@ -72,6 +72,10 @@ class App:
         
         self.terminal_preference = 'gnome-terminal'
         self.start_time = datetime.now()
+        # When True, periodic .after() poll loops bail out instead of rescheduling.
+        # Prevents "invalid command name" TclError spam during shutdown, when a
+        # queued callback fires after its target widget has been destroyed.
+        self._shutting_down = False
         self.config_manager = None
         self.contacts_file = os.path.join(self.base_dir, "contacts.json")
         
@@ -318,6 +322,8 @@ class App:
 
     def _update_status_bar(self):
         """1초마다 현재 시간과 경과 시간을 계산하여 상태 표시줄을 업데이트합니다."""
+        if self._shutting_down:
+            return
 
         now = datetime.now()
         current_time_str = now.strftime('%Y-%m-%d %H:%M:%S')
@@ -1821,6 +1827,9 @@ class App:
         """Shows a shutdown progress dialog and safely releases hardware."""
         if not messagebox.askokcancel("Exit", "Are you sure you want to exit the program?"):
             return
+
+        # Stop all periodic poll loops from rescheduling against soon-to-be-destroyed widgets.
+        self._shutting_down = True
 
         self._log("Shutting down... Releasing hardware resources.")
         self._log("=== Application Closing Process ===")

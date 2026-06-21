@@ -459,7 +459,11 @@ class LaserManager:
                 "INTERLOCK" = device reachable but interlock tripped
         """
         inst = self.laser_instances.get(wl)
-        if inst:
+        # Only push the safety-OFF commands if the device is actually reachable.
+        # On a USB disconnect (or at startup before any laser is connected) the
+        # device is gone, so writing to it just spams "Command send failed:
+        # Device not connected" — 8 lines at every launch (4 wl × LD+TEC).
+        if inst and inst.is_connected():
             try:
                 inst.set_ld_on(False)
                 inst.set_tec_on(False)
@@ -788,6 +792,8 @@ class LaserManager:
 
     def update_laser_status_loop(self):
         """Core loop for status tracking with isolated pipeline redirects."""
+        if getattr(self.app, '_shutting_down', False):
+            return
         if self.laser_after_id:
             self.app.master.after_cancel(self.laser_after_id)
             self.laser_after_id = None

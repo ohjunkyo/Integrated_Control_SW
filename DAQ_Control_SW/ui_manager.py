@@ -2916,6 +2916,8 @@ class UIManager:
 
     def _update_lock_banner(self):
         """배너 색/문구/버튼을 현재 잠금 상태에 맞춰 1초마다 동기화한다."""
+        if getattr(self.controller, '_shutting_down', False):
+            return
         is_unlocked = getattr(getattr(self.controller, 'access_mgr', None), 'unlocked', True)
         if is_unlocked:
             # 해제 상태: 얇은 초록 바로 축소하여 공간을 거의 차지하지 않게 한다.
@@ -2943,6 +2945,8 @@ class UIManager:
         self.master.after(1000, self._update_lock_banner)
 
     def _update_dashboard_loop(self):
+        if getattr(self.controller, '_shutting_down', False):
+            return
         statuses = self.controller.get_system_status()
 
         statuses["B-field"] = getattr(self, "web_connection_status", False)
@@ -3117,6 +3121,9 @@ class UIManager:
         """Sweeps flag directory every 1s to project centralized process tracking onto the global frame layout."""
         import glob
         import os
+
+        if getattr(self.controller, '_shutting_down', False):
+            return
 
         if hasattr(self, 'master') and self.master.winfo_exists():
             try:

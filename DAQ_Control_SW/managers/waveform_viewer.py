@@ -373,40 +373,53 @@ class WaveformViewerPanel:
         self._avg_result = None
 
         def compute():
-            DT     = 2e-9
-            n      = self._n_samples
-            window = np.hanning(n)
-            # Accumulate power (|FFT|²) per channel; RMS average = sqrt(mean(power))
-            power_acc = {ch: np.zeros(n // 2 + 1, dtype=np.float64)
-                         for ch in self._channels}
-            count = 0
-            for ev in range(ev_from, min(ev_to, self._n_entries)):
-                try:
-                    adc_flat = self._tree["ADC"].array(
-                        entry_start=ev, entry_stop=ev + 1, library="np")[0]
-                except Exception:
-                    continue
-                for ch in self._channels:
-                    seg    = adc_flat[ch * n: (ch + 1) * n]
-                    ped    = float(np.mean(seg[PED_START:PED_END]))
-                    sig_mv = (seg - ped) * ADC_TO_MV
-                    mag    = np.abs(np.fft.rfft(sig_mv * window)) * 2.0 / n
-                    power_acc[ch] += mag ** 2
-                count += 1
-                if count % 100 == 0:
-                    p = count
-                    self._avg_status_lbl.master.after(
-                        0, lambda p=p: self._avg_status_lbl.config(
-                            text=f"Computing {p}/{n_events}…", foreground="#6b7280"))
-
+            # Wrap the whole body so any exception still re-enables the button.
+            # (Previously a crash here left _avg_computing=True forever, which
+            # silently blocked every subsequent Compute click — even after Clear.)
             result = {}
-            if count > 0:
-                for ch in self._channels:
-                    result[ch] = np.sqrt(power_acc[ch] / count)   # RMS amplitude [mV]
+            count  = 0
+            err    = None
+            try:
+                n      = self._n_samples
+                window = np.hanning(n)
+                # Accumulate power (|FFT|²) per channel; RMS average = sqrt(mean(power))
+                power_acc = {ch: np.zeros(n // 2 + 1, dtype=np.float64)
+                             for ch in self._channels}
+                for ev in range(ev_from, min(ev_to, self._n_entries)):
+                    try:
+                        raw = self._tree["ADC"].array(
+                            entry_start=ev, entry_stop=ev + 1, library="np")
+                        # Flatten to 1-D (n_ch * n_samples) — same as _show_entry.
+                        # Without ravel() this is (8, 1024) and channel slicing
+                        # produces a 2-D segment → broadcast error on power_acc.
+                        adc_flat = np.asarray(raw[0]).astype(np.float64).ravel()
+                    except Exception:
+                        continue
+                    for ch in self._channels:
+                        seg    = adc_flat[ch * n: (ch + 1) * n]
+                        ped    = float(np.mean(seg[PED_START:PED_END]))
+                        sig_mv = (seg - ped) * ADC_TO_MV
+                        mag    = np.abs(np.fft.rfft(sig_mv * window)) * 2.0 / n
+                        power_acc[ch] += mag ** 2
+                    count += 1
+                    if count % 100 == 0:
+                        p = count
+                        self._avg_status_lbl.master.after(
+                            0, lambda p=p: self._avg_status_lbl.config(
+                                text=f"Computing {p}/{n_events}…", foreground="#6b7280"))
+
+                if count > 0:
+                    for ch in self._channels:
+                        result[ch] = np.sqrt(power_acc[ch] / count)   # RMS amplitude [mV]
+            except Exception as e:
+                err = e
 
             def finish():
                 self._avg_computing = False
                 self._avg_compute_btn.config(state="normal")
+                if err is not None:
+                    self._avg_status_lbl.config(text=f"Error: {err}", foreground="#dc3545")
+                    return
                 if count == 0:
                     self._avg_status_lbl.config(text="No events read", foreground="#dc3545")
                     return
@@ -670,7 +683,6 @@ class WaveformViewerPanel:
                         arrowprops=dict(arrowstyle="-", color="#dc2626", lw=0.8))
 
             label = "Trigger" if ch == TRIGGER_CH else f"{peak_freq:.1f} MHz peak"
-            n_ev = self._avg_to.get() + "–" + self._avg_from.get()
             ax.set_title(f"CH{ch}  AVG FFT  │  {label}",
                          color=LABEL_C, fontsize=9, fontweight="bold", pad=4)
 

@@ -518,7 +518,17 @@ class AutomationUI:
         r_str = f"{rot:.1f}" if rot is not None else "Err"
 
         if hasattr(self, 'sn_labels') and sn in self.sn_labels:
-            self.notebook.after(0, lambda: self.sn_labels[sn].config(text=f"{sn} | Status -> Tilt: {t_str}°, Rot: {r_str}°"))
+            # Guard against the widget being destroyed before this queued callback
+            # fires (e.g. during app shutdown) → avoids TclError "invalid command name".
+            def _apply_sn(sn=sn, t_str=t_str, r_str=r_str):
+                if getattr(self.controller, '_shutting_down', False):
+                    return
+                try:
+                    self.sn_labels[sn].config(
+                        text=f"{sn} | Status -> Tilt: {t_str}°, Rot: {r_str}°")
+                except tk.TclError:
+                    pass
+            self.notebook.after(0, _apply_sn)
 
     def sync_current_to_inputs(self, sn):
         """Reads hardware angles, updates config3.h first, then syncs to the GUI Helper."""
