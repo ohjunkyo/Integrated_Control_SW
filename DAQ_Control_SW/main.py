@@ -912,7 +912,7 @@ class App:
             if is_dummy:
                 start_block = "900"
             elif category == "manual":
-                start_block = "800"
+                start_block = "800" if mode == "dark" else "850"
             else:
                 if hasattr(self, 'auto_mgr') and hasattr(self.auto_mgr, 'current_scan_block'):
                     start_block = str(self.auto_mgr.current_scan_block)
@@ -1603,14 +1603,15 @@ class App:
                 if is_dummy:
                     start_block = 900
                 elif category == "manual":
-                    start_block = 800
+                    manual_mode = self.ui.run_mode.get()
+                    start_block = 800 if manual_mode == "dark" else 850
                 else:
                     if hasattr(self, 'auto_mgr') and hasattr(self.auto_mgr, 'current_scan_block'):
                         start_block = self.auto_mgr.current_scan_block
                     else:
                         start_block = 0
 
-            upper_bound = start_block + 99
+            upper_bound = start_block + 49
 
             mode = self.ui.run_mode.get()
             if mode == "dark":
