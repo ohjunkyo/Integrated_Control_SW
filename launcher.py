@@ -26,6 +26,8 @@ class AppLauncher(tk.Tk):
         status_font = ("Helvetica", 10, "bold")
 
         self.processes = []
+        # Per-app process handles — checked with poll() instead of pgrep
+        self._procs = {"daq": None, "test": None, "hv": None, "laser": None}
 
         self.protocol("WM_DELETE_WINDOW", self._hide_to_tray)
 
@@ -86,27 +88,17 @@ class AppLauncher(tk.Tk):
         self.update_clock()
         self.update_file_status()
 
-    def is_process_running(self, script_keyword):
-        """Return True only if a non-zombie process matching script_keyword exists."""
-        try:
-            # pgrep finds PIDs; then check each is not a zombie (stat != Z)
-            r = subprocess.run(['pgrep', '-f', script_keyword], capture_output=True, text=True)
-            if r.returncode != 0:
-                return False
-            for pid in r.stdout.split():
-                stat_path = f"/proc/{pid.strip()}/status"
-                try:
-                    with open(stat_path) as f:
-                        for line in f:
-                            if line.startswith("State:"):
-                                if "Z" in line:  # zombie — ignore
-                                    break
-                                return True  # alive, non-zombie
-                except OSError:
-                    pass  # process already gone
-            return False
-        except Exception:
-            return False
+    def _is_alive(self, key):
+        """Return True if the tracked process for `key` is still running."""
+        proc = self._procs.get(key)
+        return proc is not None and proc.poll() is None
+
+    def _launch_proc(self, key, command, cwd):
+        """Spawn a process, store it under key, and add to self.processes."""
+        proc = subprocess.Popen(command, cwd=cwd, preexec_fn=os.setsid)
+        self._procs[key] = proc
+        self.processes.append(proc)
+        return proc
 
     # --- [MODIFIED] Process termination functions ---
     def terminate_all_processes(self):
@@ -217,99 +209,70 @@ class AppLauncher(tk.Tk):
         return "python3"
 
     def launch_daq_control(self):
-        script_path = os.path.abspath(os.path.join("DAQ_Control_SW", "main.py"))
-        test_script_path = os.path.abspath(os.path.join("DAQ_Control_SW", "main_test.py"))
-        if self.is_process_running(test_script_path):
+        if self._is_alive("test"):
             messagebox.showerror("Hardware Collision Alert", "⚠️ Test Mode is currently running!\n\nPlease close Test Mode before starting Production.")
             return
-
-        if self.is_process_running(script_path):
+        if self._is_alive("daq"):
             messagebox.showwarning("Already Running", "DAQ Control Panel is already running.")
             return
 
+        script_path = os.path.abspath(os.path.join("DAQ_Control_SW", "main.py"))
         print(f"Launching DAQ Control: {script_path}")
-        python_exe = self.get_python_executable()
-
-        script_dir = os.path.dirname(script_path)
-        
-        command = [python_exe, script_path] 
-
         try:
-            proc = subprocess.Popen(command, cwd=script_dir, preexec_fn=os.setsid)
-            self.processes.append(proc)
+            self._launch_proc("daq", [self.get_python_executable(), script_path],
+                              os.path.dirname(script_path))
         except Exception as e:
             messagebox.showerror("Error", f"Failed to launch DAQ Control:\n{e}")
 
     def launch_test_control(self):
-        prod_script_path = os.path.abspath(os.path.join("DAQ_Control_SW", "main.py"))
-        test_script_path = os.path.abspath(os.path.join("DAQ_Control_SW", "main_test.py"))
-
-        if self.is_process_running(prod_script_path):
+        if self._is_alive("daq"):
             messagebox.showerror("Hardware Collision Alert", "⚠️ Production (main.py) is currently running!\n\nPlease close the real DAQ Control Panel before starting Test Mode.")
             return
-
-        if self.is_process_running(test_script_path):
+        if self._is_alive("test"):
             messagebox.showwarning("Already Running", "Test Mode is already running.")
             return
 
-        print(f"Launching Test Mode: {test_script_path}")
-        python_exe = self.get_python_executable()
-        script_dir = os.path.dirname(test_script_path)
-
+        test_script_path = os.path.abspath(os.path.join("DAQ_Control_SW", "main_test.py"))
         if not os.path.exists(test_script_path):
             messagebox.showerror("File Not Found", f"Test script not found:\n{test_script_path}\n\nPlease create main_test.py first.")
             return
 
-        command = [python_exe, test_script_path]
-
+        print(f"Launching Test Mode: {test_script_path}")
         try:
-            proc = subprocess.Popen(command, cwd=script_dir, preexec_fn=os.setsid)
-            self.processes.append(proc)
+            self._launch_proc("test", [self.get_python_executable(), test_script_path],
+                              os.path.dirname(test_script_path))
         except Exception as e:
             messagebox.showerror("Error", f"Failed to launch Test Mode:\n{e}")
 
 
     def launch_hv_monitor(self):
-        script_path = os.path.abspath(os.path.join("HV_Control_SW", "monitoring_app.py"))
-        
-        if self.is_process_running(script_path): 
+        if self._is_alive("hv"):
             messagebox.showwarning("Already Running", "HV Monitor is already running.")
             return
 
-        print(f"Launching HV Monitor: {script_path}")
-        python_exe = self.get_python_executable()
-
+        script_path = os.path.abspath(os.path.join("HV_Control_SW", "monitoring_app.py"))
         config_path = os.path.abspath(os.path.join("HV_Control_SW", "config_precal.json"))
-        script_dir = os.path.dirname(script_path)
-
-        command = [python_exe, script_path, config_path]
-
+        print(f"Launching HV Monitor: {script_path}")
         try:
-            proc = subprocess.Popen(command, cwd=script_dir, preexec_fn=os.setsid)
-            self.processes.append(proc)
+            self._launch_proc("hv", [self.get_python_executable(), script_path, config_path],
+                              os.path.dirname(script_path))
         except Exception as e:
             messagebox.showerror("Error", f"Failed to launch HV Monitor:\n{e}")
 
     def launch_laser_control(self):
-        script_path = os.path.abspath(os.path.join("Laser_Control_SW", "app", "laser_gui.py"))
-
-        if self.is_process_running(script_path): 
+        if self._is_alive("laser"):
             messagebox.showwarning("Already Running", "Laser Control is already running.")
             return
-            
-        print(f"Launching Laser Control: {script_path}")
-        python_exe = self.get_python_executable()
-        script_dir = os.path.dirname(script_path)
 
+        script_path = os.path.abspath(os.path.join("Laser_Control_SW", "app", "laser_gui.py"))
         if not os.path.exists(script_path):
             messagebox.showerror("Error", f"Laser script not found:\n{script_path}")
             return
 
-        command = [python_exe, script_path]
-
+        print(f"Launching Laser Control: {script_path}")
         try:
-            proc = subprocess.Popen(command, cwd=script_dir, preexec_fn=os.setsid)
-            self.processes.append(proc)
+            proc = self._launch_proc("laser", [self.get_python_executable(), script_path],
+                                     os.path.dirname(script_path))
         except Exception as e:
             messagebox.showerror("Error", f"Failed to launch Laser Control:\n{e}")
 
