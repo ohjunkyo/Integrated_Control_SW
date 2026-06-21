@@ -1638,10 +1638,20 @@ class UIManager:
         delete_button.pack(fill=tk.X, padx=5, pady=(5,0))
 
         right_info_frame = ttk.LabelFrame(data_paned_window, text="File Info", padding=10)
-        data_paned_window.add(right_info_frame, weight=2)
+        data_paned_window.add(right_info_frame, weight=1)
 
         self.file_info_label = ttk.Label(right_info_frame, text="Select a file to see details.", justify=tk.LEFT, wraplength=350)
         self.file_info_label.pack(anchor=tk.NW)
+
+        # Set initial sash: file list ~65%, info ~35%
+        def _set_sash(pw=data_paned_window):
+            try:
+                total = pw.winfo_width()
+                if total > 100:
+                    pw.sashpos(0, int(total * 0.65))
+            except Exception:
+                pass
+        data_paned_window.after(200, _set_sash)
 
     def on_move_selected_files(self):
         files_to_move = self.get_selected_file_paths()
@@ -2005,6 +2015,10 @@ class UIManager:
                   command=lambda s=slot: self.clear_console(s),
                   bg="#444", fg="white", relief="flat", padx=10,
                   activebackground="#555").pack(side=tk.RIGHT, padx=4, pady=4)
+        tk.Button(bar, text="🖥 Terminal",
+                  command=lambda s=slot: self._open_last_cmd_in_terminal(s),
+                  bg="#2d5a27", fg="white", relief="flat", padx=10,
+                  activebackground="#3a7a34").pack(side=tk.RIGHT, padx=4, pady=4)
         autoscroll = tk.BooleanVar(value=True)
         tk.Checkbutton(bar, text="Auto-scroll", variable=autoscroll,
                        bg="#2d2d2d", fg="#d4d4d4", selectcolor="#2d2d2d",
@@ -2017,9 +2031,13 @@ class UIManager:
             padx=10, pady=8, relief="flat", borderwidth=0,
             font=(mono, 11))
         text.pack(fill=tk.BOTH, expand=True)
-        text.tag_config("info", foreground="#4fc1ff")
-        text.tag_config("ok", foreground="#73c991")
-        text.tag_config("err", foreground="#f48771")
+        text.tag_config("info",     foreground="#4fc1ff")
+        text.tag_config("ok",       foreground="#73c991")
+        text.tag_config("err",      foreground="#f48771")
+        text.tag_config("warn",     foreground="#e5c07b")
+        text.tag_config("progress", foreground="#c678dd")
+        text.tag_config("header",   foreground="#ffd479", font=(mono, 11, "bold"))
+        text.tag_config("cmd",      foreground="#888888", font=(mono, 10))
 
         # ANSI(터미널) 색상 태그 — 스크립트가 내보내는 \x1b[..m 코드를 실제 색으로 칠한다.
         for code, color in self.ANSI_FG.items():
@@ -2055,6 +2073,25 @@ class UIManager:
         except Exception:
             pass
 
+    def _open_last_cmd_in_terminal(self, slot):
+        """Re-run the last command for this slot in a new gnome-terminal window."""
+        last = getattr(self.controller, '_console_last_cmd', {}).get(slot)
+        if not last:
+            messagebox.showinfo("No Command", "No command has been run in this slot yet.")
+            return
+        try:
+            subprocess.Popen(
+                ['gnome-terminal', '--', 'bash', '-c', f'{last}; echo; echo "--- Done (press Enter to close) ---"; read'],
+                start_new_session=True)
+        except FileNotFoundError:
+            # Fallback: xterm
+            try:
+                subprocess.Popen(
+                    ['xterm', '-e', f'bash -c \'{last}; echo; echo "--- Done ---"; read\''],
+                    start_new_session=True)
+            except Exception as e:
+                messagebox.showerror("Terminal Error", f"Could not open terminal:\n{e}")
+
     def clear_console(self, slot="analysis"):
         """해당 슬롯 콘솔 내용을 비운다."""
         pane = self.console_panes.get(slot)
@@ -2069,11 +2106,35 @@ class UIManager:
 
     _CONSOLE_MAX_LINES = 3000  # trim oldest when exceeded
 
+    # Keyword → tag for automatic line colouring in the console.
+    _LINE_TAGS = [
+        (re.compile(r'^={3,}|^-{3,}'),                          "header"),
+        (re.compile(r'\[INFO\]|^\[OK\]|^> PMT '),               "info"),
+        (re.compile(r'\[OK\]|succeeded|connection OK|reached',
+                    re.IGNORECASE),                              "ok"),
+        (re.compile(r'\[ERROR\]|\[FAIL\]|Error:|failed|abort',
+                    re.IGNORECASE),                              "err"),
+        (re.compile(r'\[WARN\]|Warning:',   re.IGNORECASE),     "warn"),
+        (re.compile(r'Processing |^\s*\d+/\d+|\d+\s*%'),        "progress"),
+        (re.compile(r'^Changing directory|^Executing with|^Command:'), "cmd"),
+    ]
+
+    def _keyword_tag(self, line: str):
+        """Return the best-matching tag for a single output line, or None."""
+        stripped = line.strip()
+        for pattern, tag in self._LINE_TAGS:
+            if pattern.search(stripped):
+                return tag
+        return None
+
     def _write_segment(self, widget, text, tag, pane):
-        """Insert text into widget, applying ANSI colours if no explicit tag."""
+        """Insert text into widget, applying ANSI colours or keyword tags."""
         if tag:
             widget.insert(tk.END, self.ANSI_RE.sub('', text), tag)
-        else:
+            return
+
+        # If the text has ANSI codes, delegate to ANSI renderer (no keyword coloring).
+        if self.ANSI_RE.search(text):
             cur = pane.get("ansi_tag")
             pos = 0
             for m in self.ANSI_RE.finditer(text):
@@ -2085,6 +2146,12 @@ class UIManager:
             tail = text[pos:]
             if tail:
                 widget.insert(tk.END, tail, cur if cur else ())
+            return
+
+        # No ANSI: apply keyword-based line colouring.
+        for line in re.split(r'(?<=\n)', text):   # split but keep \n attached
+            ktag = self._keyword_tag(line)
+            widget.insert(tk.END, line, ktag if ktag else ())
 
     def console_write(self, text, tag=None, slot="analysis"):
         """Write to console. Must be called from the main thread (master.after)."""

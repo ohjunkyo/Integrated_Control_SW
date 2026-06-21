@@ -597,6 +597,11 @@ class App:
         # Console 탭 + 해당 슬롯 서브탭을 전면에 띄운다.
         self.ui.focus_console(slot)
 
+        # Store last command so "Open in Terminal" can replay it.
+        if not hasattr(self, '_console_last_cmd'):
+            self._console_last_cmd = {}
+        self._console_last_cmd[slot] = cmd_str
+
         self.ui.console_set_status(f"▶ Running: {job_name}", slot=slot, state="running")
         self.ui.console_write(
             f"\n===== {job_name} started @ {datetime.now().strftime('%H:%M:%S')} =====\n",
