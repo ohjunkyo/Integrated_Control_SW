@@ -730,31 +730,13 @@ class UIManager:
         txt.config(state="disabled")
 
     def _create_connection_status_frame(self, parent):
-        frame = ttk.LabelFrame(parent, text="Connection Status", padding="10")
-        frame.pack(fill=tk.X, pady=(0, 3), padx=5)
-
-        self.connection_status_label = ttk.Label(frame, text="Checking...", font=("Helvetica", 10, "bold"))
-        self.connection_status_label.pack(pady=(0, 3))
-
-        ip_frame = ttk.Frame(frame)
-        ip_frame.pack(fill=tk.X, padx=3)
-        ip_frame.columnconfigure(1, weight=1)
-
-#       ttk.Label(ip_frame, text="Local IP:").grid(row=0, column=0, sticky="w", padx=(0, 3))
-#       self.local_ip_value = ttk.Label(ip_frame, text="Fetching...", anchor="w")
-#       self.local_ip_value.grid(row=0, column=1, sticky="ew")
+        pass  # DAQ status is shown in the top status bar; no separate panel needed
 
     def update_ip_display(self, ip_info):
-#       self.local_ip_value.config(text=ip_info.get('local_ip', 'N/A'))
         pass
 
     def update_daq_connection_status(self, is_connected):
-        self.daq_connected_flag = is_connected 
-        
-        if is_connected:
-            self.connection_status_label.config(text="DAQ Status: Connected", foreground="#28a745")
-        else:
-            self.connection_status_label.config(text="DAQ Status: Disconnected", foreground="#dc3545")
+        self.daq_connected_flag = is_connected
 
     def open_config_window(self):
         if self.controller.config_manager:
