@@ -227,7 +227,7 @@ class UPSManager:
 
                                 self.app.master.after(0, update_ui)
                 except Exception as e:
-                    self.app.master.after(0, lambda: self.app._log(f"[ERROR] UPS Loop Error: {e}"))
+                    self.app.master.after(0, lambda e=e: self.app._log(f"[ERROR] UPS Loop Error: {e}"))
 
             threading.Thread(target=fetch_ups_task, daemon=True).start()
 

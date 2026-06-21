@@ -125,7 +125,6 @@ class App:
         if LASER_AVAILABLE:
             for wl in self.laser_mgr.wavelengths:
                 try:
-                    from laser_driver import TamadenshiLaser
                     self.laser_mgr.laser_instances[wl] = TamadenshiLaser()
                     if wl == "405nm":
                         self.laser = self.laser_mgr.laser_instances[wl]
@@ -758,7 +757,9 @@ class App:
                 self.master.after(0, apply_to_ui)
 
             except Exception as e:
-                self.master.after(0, lambda: self._log(f"[ERROR] Refresh failed: {e}"))
+                # Bind e as a default arg: the except-scope 'e' is gone by the time
+                # this deferred lambda runs, which would raise NameError otherwise.
+                self.master.after(0, lambda e=e: self._log(f"[ERROR] Refresh failed: {e}"))
                 if hasattr(self, 'ui'):
                     self.master.after(0, self.ui.hide_loading_overlay)
 

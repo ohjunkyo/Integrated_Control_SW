@@ -668,8 +668,6 @@ class AutomationUI:
         self.notebook.after(1000, self.update_eta_realtime)
 
     def add_auto_log(self, message):
-        from datetime import datetime, timezone, timedelta
-        
         JST = timezone(timedelta(hours=9))
         timestamp = datetime.now(JST).strftime("%H:%M:%S")
         

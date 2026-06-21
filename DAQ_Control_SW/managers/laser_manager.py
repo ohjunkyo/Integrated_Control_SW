@@ -4,14 +4,13 @@ import os
 import collections
 import threading
 from datetime import datetime, timedelta
-from tkinter import messagebox
 import matplotlib.dates as mdates
 import pandas as pd
 import logging
-from tkinter import messagebox, filedialog  
+from tkinter import messagebox, filedialog
 from logging.handlers import TimedRotatingFileHandler
 import tkinter as tk
-import tkinter.simpledialog as sd 
+import tkinter.simpledialog as sd
 
 class LaserManager:
     def __init__(self, app):
@@ -352,7 +351,7 @@ class LaserManager:
                 self.app.master.after(0, update_target_ui)
 
             except Exception as e:
-                self.app.master.after(0, lambda: self.app._log(f"[ERROR] LD control error for {target_wl}: {e}"))
+                self.app.master.after(0, lambda e=e: self.app._log(f"[ERROR] LD control error for {target_wl}: {e}"))
 
         threading.Thread(target=apply_task, daemon=True).start()
 
@@ -418,7 +417,7 @@ class LaserManager:
                         
                     self.app.master.after(0, update_ui)
                 except Exception as e:
-                    self.app.master.after(0, lambda: self.app._log(f"[ERROR] TEC control error for {wl}: {e}"))
+                    self.app.master.after(0, lambda e=e: self.app._log(f"[ERROR] TEC control error for {wl}: {e}"))
 
             threading.Thread(target=apply_task, daemon=True).start()
 
@@ -670,7 +669,6 @@ class LaserManager:
 
     def preload_laser_history(self):
         """Restores historical telemetry for the past 24 hours safely without memory mismatch."""
-        from datetime import timedelta
         now = datetime.now()
         start_point = (now - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
         dates_to_check = [(now - timedelta(days=1)).strftime('%Y%m%d'), now.strftime('%Y%m%d')]

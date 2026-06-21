@@ -6,6 +6,7 @@ import json
 import glob
 import subprocess
 import shutil
+import tkinter as tk
 from tkinter import messagebox
 
 class AutomationManager:
