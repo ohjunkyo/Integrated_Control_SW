@@ -26,7 +26,7 @@ class AppLauncher(tk.Tk):
 
         self.processes = []
 
-        self.protocol("WM_DELETE_WINDOW", self.on_closing)
+        self.protocol("WM_DELETE_WINDOW", self._hide_to_tray)
 
         button_frame = tk.Frame(self, bg='#333333')
         button_frame.pack(pady=15, fill=tk.X, padx=20)
@@ -71,8 +71,16 @@ class AppLauncher(tk.Tk):
         refresh_button = ttk.Button(status_frame, text="Refresh Status 🔄", command=self.update_file_status)
         refresh_button.pack(pady=10)
 
-        exit_button = tk.Button(self, text="Exit Launcher (and All Apps)", font=("Helvetica", 10), bg="#dc3545", fg="white", command=self.on_closing)
-        exit_button.pack(pady=15, padx=20)
+        btn_row = tk.Frame(self, bg='#333333')
+        btn_row.pack(pady=15, padx=20, fill=tk.X)
+
+        tk.Button(btn_row, text="⬇ Minimize to Tray", font=("Helvetica", 10),
+                  bg="#555555", fg="white", command=self._hide_to_tray).pack(
+                      side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 5))
+
+        tk.Button(btn_row, text="Exit Launcher (and All Apps)", font=("Helvetica", 10),
+                  bg="#dc3545", fg="white", command=self.on_closing).pack(
+                      side=tk.LEFT, expand=True, fill=tk.X)
 
         self.update_clock()
         self.update_file_status()
@@ -126,6 +134,57 @@ class AppLauncher(tk.Tk):
                 except Exception as e:
                     print(f"  - Error terminating PGID {pgid} (PID {proc.pid}): {e}")
         print("All processes terminated.")
+
+    def _hide_to_tray(self):
+        """Hide the main window and show a small tray-like floating button."""
+        self.withdraw()
+        if hasattr(self, '_tray_win') and self._tray_win.winfo_exists():
+            return
+        tray = tk.Toplevel()
+        self._tray_win = tray
+        tray.title("")
+        tray.resizable(False, False)
+        tray.attributes("-topmost", True)
+        tray.overrideredirect(True)   # no title bar
+
+        # Position: bottom-right corner
+        sw, sh = tray.winfo_screenwidth(), tray.winfo_screenheight()
+        w, h = 220, 36
+        tray.geometry(f"{w}x{h}+{sw - w - 10}+{sh - h - 50}")
+
+        frame = tk.Frame(tray, bg="#1a1a2e", bd=1, relief="solid")
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        tk.Label(frame, text="🔬 ICS Launcher",
+                 bg="#1a1a2e", fg="#aaaaff",
+                 font=("Helvetica", 9, "bold")).pack(side=tk.LEFT, padx=8)
+
+        tk.Button(frame, text="▲ Open", bg="#007ACC", fg="white",
+                  font=("Helvetica", 8, "bold"), relief="flat", padx=6,
+                  command=self._show_from_tray).pack(side=tk.RIGHT, padx=4, pady=4)
+
+        tk.Button(frame, text="✕", bg="#555", fg="white",
+                  font=("Helvetica", 8), relief="flat", padx=4,
+                  command=self.on_closing).pack(side=tk.RIGHT, pady=4)
+
+        # Allow dragging the tray widget
+        frame.bind("<ButtonPress-1>", self._tray_drag_start)
+        frame.bind("<B1-Motion>", self._tray_drag_move)
+
+    def _show_from_tray(self):
+        if hasattr(self, '_tray_win') and self._tray_win.winfo_exists():
+            self._tray_win.destroy()
+        self.deiconify()
+        self.lift()
+
+    def _tray_drag_start(self, event):
+        self._drag_x = event.x_root - self._tray_win.winfo_x()
+        self._drag_y = event.y_root - self._tray_win.winfo_y()
+
+    def _tray_drag_move(self, event):
+        x = event.x_root - self._drag_x
+        y = event.y_root - self._drag_y
+        self._tray_win.geometry(f"+{x}+{y}")
 
     def on_closing(self):
         """Called on window close or 'Exit' button press."""
