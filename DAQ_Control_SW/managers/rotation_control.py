@@ -268,16 +268,23 @@ class RotationManager:
                     
                     if self.is_moving[dev_num]:
                         target = self.target_angles[dev_num]
-                        reached_tilt = True
-                        reached_rot = True
-                        
+                        # An axis with a target counts as "reached" ONLY when we
+                        # positively confirm it is within tolerance. If the angle
+                        # read failed (None) while a move is in progress, do NOT
+                        # assume it arrived — otherwise a transient Modbus read
+                        # failure would release the lock early, letting the General
+                        # Scan advance / take DAQ data while the motor is still
+                        # physically moving (wrong-angle data, or a new command
+                        # interrupting the move). An axis with no target (None) has
+                        # nothing to wait for, so it starts as already reached.
+                        reached_tilt = (target["tilt"] is None)
+                        reached_rot  = (target["rot"]  is None)
+
                         if target["tilt"] is not None and tilt is not None:
-                            if abs(tilt - target["tilt"]) > 0.5: # 0.5도 오차 허용
-                                reached_tilt = False
+                            reached_tilt = abs(tilt - target["tilt"]) <= 0.5  # 0.5도 오차 허용
                         if target["rot"] is not None and rot is not None:
-                            if abs(rot - target["rot"]) > 0.5:
-                                reached_rot = False
-                                
+                            reached_rot = abs(rot - target["rot"]) <= 0.5
+
                         if reached_tilt and reached_rot:
                             self.is_moving[dev_num] = False
                             self.target_angles[dev_num] = {"tilt": None, "rot": None}
