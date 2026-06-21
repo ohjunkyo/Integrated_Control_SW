@@ -79,7 +79,8 @@ class WaveformViewerPanel:
         self._fft_avg_mode = tk.BooleanVar(value=False)  # False=Single, True=Average
         self._avg_from     = tk.StringVar(value="0")
         self._avg_to       = tk.StringVar(value="1000")
-        self._avg_result   = None       # cached {ch: mag_array} after compute
+        self._avg_result   = None       # cached {ch: rms_mag} FFT spectrum
+        self._avg_wave     = None       # cached {ch: mean_adc} time-domain waveform
         self._avg_computing = False     # guard against concurrent compute
         self._avg_cancel   = False      # set True to abort an in-flight compute
         self._thresh = tk.StringVar(value="-0.5")
@@ -158,10 +159,11 @@ class WaveformViewerPanel:
                                      font=("Helvetica", 9, "bold"), relief="flat", padx=8)
         self._search_btn.pack(side=tk.LEFT, padx=(4, 0))
 
-        # ── Row 1: FFT controls (hidden until FFT is ON) ─────────────────
+        # ── Row 1: averaging controls (always visible; apply to BOTH the
+        #    time-domain waveform and the FFT spectrum) ────────────────────
         self._fft_ctrl_frame = ttk.Frame(parent, padding=(8, 4, 8, 4))
-        # Not grid()-placed yet; shown via _toggle_fft_controls()
-        ttk.Label(self._fft_ctrl_frame, text="FFT Mode:",
+        self._fft_ctrl_frame.grid(row=1, column=0, sticky="ew")
+        ttk.Label(self._fft_ctrl_frame, text="Display:",
                   font=("Helvetica", 9, "bold")).pack(side=tk.LEFT)
         ttk.Radiobutton(self._fft_ctrl_frame, text="Single event",
                         variable=self._fft_avg_mode, value=False,
@@ -195,7 +197,7 @@ class WaveformViewerPanel:
                   relief="flat", padx=6).pack(side=tk.LEFT, padx=(2, 0))
 
         self._avg_compute_btn = tk.Button(
-            self._fft_ctrl_frame, text="Compute Avg FFT",
+            self._fft_ctrl_frame, text="Compute Average",
             command=self._start_avg_fft,
             bg="#7c3aed", fg="white", font=("Helvetica", 9, "bold"),
             relief="flat", padx=10)
@@ -210,34 +212,29 @@ class WaveformViewerPanel:
         ab.grid(row=2, column=0, sticky="ew")
         ab.columnconfigure(0, weight=1)
 
-        # Button strip (right) — two stacked rows
+        # Button strip (right) — single row to avoid vertical clipping
         btn_strip = ttk.Frame(ab)
         btn_strip.grid(row=0, column=1, rowspan=2, sticky="ne", padx=(10, 0))
 
-        # Top: pedestal-window controls (global; drives ped line + charge)
-        ped_row = ttk.Frame(btn_strip)
-        ped_row.pack(side=tk.TOP, anchor="e", pady=(0, 4))
-        ttk.Label(ped_row, text="Pedestal range:", font=("Helvetica", 9, "bold")).pack(side=tk.LEFT)
-        ped_s_entry = ttk.Entry(ped_row, textvariable=self._ped_start_var,
+        # Pedestal-window controls (global; drives ped line + charge)
+        ttk.Label(btn_strip, text="Pedestal range:", font=("Helvetica", 9, "bold")).pack(side=tk.LEFT)
+        ped_s_entry = ttk.Entry(btn_strip, textvariable=self._ped_start_var,
                                 width=6, justify="center")
         ped_s_entry.pack(side=tk.LEFT, padx=(4, 1))
-        ttk.Label(ped_row, text="–", font=("Helvetica", 9)).pack(side=tk.LEFT)
-        ped_e_entry = ttk.Entry(ped_row, textvariable=self._ped_end_var,
+        ttk.Label(btn_strip, text="–", font=("Helvetica", 9)).pack(side=tk.LEFT)
+        ped_e_entry = ttk.Entry(btn_strip, textvariable=self._ped_end_var,
                                 width=6, justify="center")
         ped_e_entry.pack(side=tk.LEFT, padx=(1, 4))
         ped_s_entry.bind("<Return>", lambda _: self._redraw())
         ped_e_entry.bind("<Return>", lambda _: self._redraw())
-        tk.Button(ped_row, text="↺", command=self._reset_ped_range,
+        tk.Button(btn_strip, text="↺", command=self._reset_ped_range,
                   bg="#e5e7eb", fg="#374151", font=("Helvetica", 9, "bold"),
-                  relief="flat", padx=5).pack(side=tk.LEFT)
+                  relief="flat", padx=5).pack(side=tk.LEFT, padx=(0, 10))
 
-        # Bottom: existing action buttons
-        act_row = ttk.Frame(btn_strip)
-        act_row.pack(side=tk.TOP, anchor="e")
-        tk.Button(act_row, text="⊙ Ped Center", command=self._ped_center,
+        tk.Button(btn_strip, text="⊙ Ped Center", command=self._ped_center,
                   bg="#4f46e5", fg="white", font=("Helvetica", 9, "bold"),
                   relief="flat", padx=8).pack(side=tk.LEFT, padx=(0, 4))
-        tk.Button(act_row, text="Apply", command=self._redraw,
+        tk.Button(btn_strip, text="Apply", command=self._redraw,
                   bg="#374151", fg="white", font=("Helvetica", 9, "bold"),
                   relief="flat", padx=8).pack(side=tk.LEFT)
 
@@ -261,6 +258,7 @@ class WaveformViewerPanel:
         parent.bind("<Left>",  lambda _: self._prev())
         parent.bind("<Right>", lambda _: self._next())
 
+        self._update_avg_btn_label()   # "Compute Avg Waveform" (FFT off by default)
         self._draw_placeholder()
 
     def _draw_placeholder(self):
@@ -394,20 +392,25 @@ class WaveformViewerPanel:
         self._redraw()
 
     def _toggle_fft(self):
+        # FFT and Single/Average are independent: the averaging row stays visible.
         self._fft_mode = not self._fft_mode
         if self._fft_mode:
             self._fft_btn.config(bg="#4f46e5", fg="white")
-            self._fft_ctrl_frame.grid(row=1, column=0, sticky="ew")
         else:
             self._fft_btn.config(bg="#e5e7eb", fg="#374151")
-            self._fft_ctrl_frame.grid_remove()
-            self._avg_result = None   # clear cache when FFT turned off
+        self._update_avg_btn_label()
         if self._tree:
             self._show_entry(self._cur_entry)
 
+    def _update_avg_btn_label(self):
+        """Compute button label reflects what 'Average' will produce in this view."""
+        if self._avg_computing:
+            return
+        self._avg_compute_btn.config(
+            text="Compute Avg FFT" if self._fft_mode else "Compute Avg Waveform")
+
     def _on_fft_mode_change(self):
         """Called when Single ↔ Average radio is toggled."""
-        self._avg_result = None   # cached avg is invalid for the other mode
         if self._tree:
             self._show_entry(self._cur_entry)
 
@@ -456,6 +459,9 @@ class WaveformViewerPanel:
             self._avg_status_lbl.config(text="Need at least 2 events", foreground="#dc3545")
             return
 
+        # Computing an average implies the user wants to SEE the average → switch on.
+        self._fft_avg_mode.set(True)
+
         self._avg_computing = True
         self._avg_cancel    = False
         # Re-purpose the button as a Cancel control while the job runs.
@@ -464,20 +470,26 @@ class WaveformViewerPanel:
         self._avg_to_entry.config(state="disabled")
         self._avg_status_lbl.config(text=f"Computing 0/{n_events}…", foreground="#6b7280")
         self._avg_result = None
+        self._avg_wave   = None
 
+        ped_start, ped_end = self._get_ped_range()
         BATCH = 2000   # events per uproot read — batching is the main speedup
 
         def compute():
-            # Wrap whole body so any exception (or cancel) still resets state.
+            # One pass produces BOTH outputs:
+            #   • result[ch]  = RMS-average |FFT| spectrum   (for FFT view)
+            #   • wave[ch]    = mean raw ADC waveform        (for time-domain view)
             result = {}
+            wave   = {}
             count  = 0
             err    = None
             cancelled = False
             try:
                 n      = self._n_samples
                 window = np.hanning(n).astype(np.float64)   # shape (n,)
-                # Accumulate power (|FFT|²) per channel; RMS average = sqrt(mean(power))
                 power_acc = {ch: np.zeros(n // 2 + 1, dtype=np.float64)
+                             for ch in self._channels}
+                adc_acc   = {ch: np.zeros(n, dtype=np.float64)
                              for ch in self._channels}
 
                 ev = ev_from
@@ -503,7 +515,8 @@ class WaveformViewerPanel:
 
                     for ch in self._channels:
                         seg    = block[:, ch, :]                       # (n_block, n)
-                        ped    = seg[:, PED_START:PED_END].mean(axis=1, keepdims=True)
+                        adc_acc[ch] += seg.sum(axis=0)                 # mean waveform later
+                        ped    = seg[:, ped_start:ped_end].mean(axis=1, keepdims=True)
                         sig_mv = (seg - ped) * ADC_TO_MV
                         # Batched real FFT along the sample axis → (n_block, n//2+1)
                         mag    = np.abs(np.fft.rfft(sig_mv * window, axis=1)) * 2.0 / n
@@ -520,13 +533,15 @@ class WaveformViewerPanel:
                 if count > 0:
                     for ch in self._channels:
                         result[ch] = np.sqrt(power_acc[ch] / count)   # RMS amplitude [mV]
+                        wave[ch]   = adc_acc[ch] / count              # mean ADC counts
             except Exception as e:
                 err = e
 
             def finish():
                 self._avg_computing = False
                 self._avg_cancel    = False
-                self._avg_compute_btn.config(text="Compute Avg FFT", bg="#7c3aed")
+                self._update_avg_btn_label()
+                self._avg_compute_btn.config(bg="#7c3aed")
                 self._avg_from_entry.config(state="normal")
                 self._avg_to_entry.config(state="normal")
                 if err is not None:
@@ -537,6 +552,7 @@ class WaveformViewerPanel:
                     return
                 # Render partial result even if cancelled — useful for a quick look.
                 self._avg_result = result
+                self._avg_wave   = wave
                 tag = "Cancelled" if cancelled else "Done"
                 color = "#f0ad4e" if cancelled else "#16a34a"
                 self._avg_status_lbl.config(
@@ -577,8 +593,9 @@ class WaveformViewerPanel:
             traceback.print_exc()
 
     def _render(self, adc_flat: np.ndarray, entry: int):
+        is_avg = self._fft_avg_mode.get()
         if self._fft_mode:
-            if self._fft_avg_mode.get():
+            if is_avg:
                 # Average mode: show cached result if available; else placeholder
                 if self._avg_result is not None:
                     self._render_fft_avg(self._avg_result)
@@ -587,6 +604,19 @@ class WaveformViewerPanel:
             else:
                 self._render_fft(adc_flat, entry)
             return
+
+        # Time-domain average: rebuild a flat ADC array from the mean waveform
+        # and fall through to the normal renderer (so pedestal/charge/axes all work).
+        if is_avg:
+            if self._avg_wave is None:
+                self._render_avg_wave_placeholder()
+                return
+            n = self._n_samples
+            flat = np.zeros((max(self._channels) + 1) * n, dtype=np.float64)
+            for ch, mean_adc in self._avg_wave.items():
+                flat[ch * n:(ch + 1) * n] = mean_adc
+            adc_flat = flat
+
         n_ch = len(self._channels)
         if n_ch == 0:
             return
@@ -629,13 +659,14 @@ class WaveformViewerPanel:
             ped_adc = _pedestal(seg, ped_start, ped_end)
             ped_mv  = ped_adc * ADC_TO_MV
 
+            tag = "AVG" if is_avg else f"#{entry}"
             if ch == TRIGGER_CH:
-                ax.set_title(f"CH{ch}  #{entry}  │  Trigger",
+                ax.set_title(f"CH{ch}  {tag}  │  Trigger",
                              color=LABEL_C, fontsize=9, fontweight="bold", pad=4)
                 ax.set_ylim(ped_mv - 100, ped_mv + 200)
             else:
                 q = _charge_pC(seg, ped_adc)
-                ax.set_title(f"CH{ch}  #{entry}  │  {q:+.3f} pC",
+                ax.set_title(f"CH{ch}  {tag}  │  {q:+.3f} pC",
                              color=LABEL_C, fontsize=9, fontweight="bold", pad=4)
                 # Highlight the (now user-defined) pedestal window and the signal window
                 ax.axvspan(ped_start, ped_end, alpha=0.35, color=PED_SPAN_C, lw=0)
@@ -743,15 +774,20 @@ class WaveformViewerPanel:
         self._canvas.get_tk_widget().update_idletasks()
 
     def _render_fft_avg_placeholder(self):
-        """Show a message prompting the user to click Compute."""
+        """Show a message prompting the user to click Compute (FFT mode)."""
+        self._avg_placeholder("Click  'Compute Avg FFT'  to average the selected event range")
+
+    def _render_avg_wave_placeholder(self):
+        """Show a message prompting the user to click Compute (time-domain mode)."""
+        self._avg_placeholder("Click  'Compute Avg Waveform'  to average the selected event range")
+
+    def _avg_placeholder(self, msg: str):
         self._fig.clear()
         self._fig.set_facecolor("#f9fafb")
         ax = self._fig.add_subplot(1, 1, 1)
         ax.set_facecolor("#f9fafb")
-        ax.text(0.5, 0.5,
-                "Click  'Compute Avg FFT'  to average the selected event range",
-                ha="center", va="center", fontsize=12, color="#6b7280",
-                transform=ax.transAxes)
+        ax.text(0.5, 0.5, msg, ha="center", va="center",
+                fontsize=12, color="#6b7280", transform=ax.transAxes)
         ax.axis("off")
         self._canvas.draw()
 
