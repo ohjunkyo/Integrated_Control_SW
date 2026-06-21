@@ -42,12 +42,13 @@ PED_SPAN_C = "#e0e7ff"   # light indigo for pedestal region
 SIG_SPAN_C = "#fee2e2"   # light red for signal region
 
 
-def _pedestal(adc: np.ndarray) -> float:
-    return float(np.mean(adc[PED_START:PED_END]))
+def _pedestal(adc: np.ndarray, ped_start: int = PED_START, ped_end: int = PED_END) -> float:
+    return float(np.mean(adc[ped_start:ped_end]))
 
 
-def _charge_pC(adc: np.ndarray, ped: float) -> float:
-    integral = np.sum(ped - adc[SIG_START:SIG_END].astype(float))
+def _charge_pC(adc: np.ndarray, ped: float,
+               sig_start: int = SIG_START, sig_end: int = SIG_END) -> float:
+    integral = np.sum(ped - adc[sig_start:sig_end].astype(float))
     return TIME_PER_SAMPLE * ADC_TO_MV * integral / IMPEDANCE
 
 
@@ -82,6 +83,12 @@ class WaveformViewerPanel:
         self._avg_computing = False     # guard against concurrent compute
         self._avg_cancel   = False      # set True to abort an in-flight compute
         self._thresh = tk.StringVar(value="-0.5")
+
+        # User-adjustable pedestal window (defaults mirror Analysis.cpp constants).
+        # Changing it moves the dashed average-pedestal line AND recomputes charge,
+        # since charge = Σ(pedestal − adc) over the signal window.
+        self._ped_start_var = tk.StringVar(value=str(PED_START))
+        self._ped_end_var   = tk.StringVar(value=str(PED_END))
 
         self._status = tk.StringVar(value="Load a RAW .root file to begin.")
         self._file_lbl = tk.StringVar(value="—")
@@ -203,13 +210,34 @@ class WaveformViewerPanel:
         ab.grid(row=2, column=0, sticky="ew")
         ab.columnconfigure(0, weight=1)
 
-        # Button strip (right)
+        # Button strip (right) — two stacked rows
         btn_strip = ttk.Frame(ab)
         btn_strip.grid(row=0, column=1, rowspan=2, sticky="ne", padx=(10, 0))
-        tk.Button(btn_strip, text="⊙ Ped Center", command=self._ped_center,
+
+        # Top: pedestal-window controls (global; drives ped line + charge)
+        ped_row = ttk.Frame(btn_strip)
+        ped_row.pack(side=tk.TOP, anchor="e", pady=(0, 4))
+        ttk.Label(ped_row, text="Pedestal range:", font=("Helvetica", 9, "bold")).pack(side=tk.LEFT)
+        ped_s_entry = ttk.Entry(ped_row, textvariable=self._ped_start_var,
+                                width=6, justify="center")
+        ped_s_entry.pack(side=tk.LEFT, padx=(4, 1))
+        ttk.Label(ped_row, text="–", font=("Helvetica", 9)).pack(side=tk.LEFT)
+        ped_e_entry = ttk.Entry(ped_row, textvariable=self._ped_end_var,
+                                width=6, justify="center")
+        ped_e_entry.pack(side=tk.LEFT, padx=(1, 4))
+        ped_s_entry.bind("<Return>", lambda _: self._redraw())
+        ped_e_entry.bind("<Return>", lambda _: self._redraw())
+        tk.Button(ped_row, text="↺", command=self._reset_ped_range,
+                  bg="#e5e7eb", fg="#374151", font=("Helvetica", 9, "bold"),
+                  relief="flat", padx=5).pack(side=tk.LEFT)
+
+        # Bottom: existing action buttons
+        act_row = ttk.Frame(btn_strip)
+        act_row.pack(side=tk.TOP, anchor="e")
+        tk.Button(act_row, text="⊙ Ped Center", command=self._ped_center,
                   bg="#4f46e5", fg="white", font=("Helvetica", 9, "bold"),
                   relief="flat", padx=8).pack(side=tk.LEFT, padx=(0, 4))
-        tk.Button(btn_strip, text="Apply", command=self._redraw,
+        tk.Button(act_row, text="Apply", command=self._redraw,
                   bg="#374151", fg="white", font=("Helvetica", 9, "bold"),
                   relief="flat", padx=8).pack(side=tk.LEFT)
 
@@ -343,6 +371,27 @@ class WaveformViewerPanel:
 
     def _redraw(self):
         if self._tree: self._show_entry(self._cur_entry)
+
+    def _get_ped_range(self):
+        """Return the current (start, end) pedestal window from the UI, clamped
+        to valid sample bounds. Falls back to defaults on invalid input."""
+        try:
+            ps = int(self._ped_start_var.get())
+            pe = int(self._ped_end_var.get())
+        except (ValueError, tk.TclError):
+            return PED_START, PED_END
+        n = self._n_samples or (PED_END + 1)
+        ps = max(0, min(ps, n - 1))
+        pe = max(0, min(pe, n))
+        if pe <= ps:                      # guard against an empty/inverted window
+            return PED_START, PED_END
+        return ps, pe
+
+    def _reset_ped_range(self):
+        """Restore the default pedestal window and redraw."""
+        self._ped_start_var.set(str(PED_START))
+        self._ped_end_var.set(str(PED_END))
+        self._redraw()
 
     def _toggle_fft(self):
         self._fft_mode = not self._fft_mode
@@ -553,6 +602,8 @@ class WaveformViewerPanel:
         TICK_C  = "#6b7280"
         LABEL_C = "#374151"
 
+        ped_start, ped_end = self._get_ped_range()   # user-adjustable window
+
         for idx, ch in enumerate(self._channels):
             slot = idx
             if slot >= self._n_slots:
@@ -575,7 +626,7 @@ class WaveformViewerPanel:
 
             seg     = adc_flat[ch * self._n_samples: (ch + 1) * self._n_samples]
             voltage = seg * ADC_TO_MV
-            ped_adc = _pedestal(seg)
+            ped_adc = _pedestal(seg, ped_start, ped_end)
             ped_mv  = ped_adc * ADC_TO_MV
 
             if ch == TRIGGER_CH:
@@ -586,12 +637,16 @@ class WaveformViewerPanel:
                 q = _charge_pC(seg, ped_adc)
                 ax.set_title(f"CH{ch}  #{entry}  │  {q:+.3f} pC",
                              color=LABEL_C, fontsize=9, fontweight="bold", pad=4)
-                ax.axvspan(PED_START, PED_END, alpha=0.35, color=PED_SPAN_C, lw=0)
+                # Highlight the (now user-defined) pedestal window and the signal window
+                ax.axvspan(ped_start, ped_end, alpha=0.35, color=PED_SPAN_C, lw=0)
                 ax.axvspan(SIG_START, SIG_END, alpha=0.35, color=SIG_SPAN_C, lw=0)
                 ax.set_ylim(ped_mv - y_lo, ped_mv + y_hi)
 
             ax.plot(samples, voltage, color=WAVE, linewidth=0.7)
-            ax.axhline(ped_mv, color=PED_C, linewidth=1.0, linestyle="--", alpha=0.7)
+            # Average-pedestal line, labelled with its value in mV
+            ax.axhline(ped_mv, color=PED_C, linewidth=1.0, linestyle="--", alpha=0.8,
+                       label=f"ped {ped_mv:.2f} mV")
+            ax.legend(fontsize=7, framealpha=0.7, loc="upper right")
             ax.set_xlim(x_s, x_e)
             ax.tick_params(axis="both", colors=TICK_C, labelsize=8)
             for sp in ax.spines.values():
@@ -895,6 +950,9 @@ class WaveformViewerPanel:
         self._status.set(f"Searching for charge < {thresh} pC  (from entry {self._cur_entry + 1})…")
 
         start = self._cur_entry + 1
+        # Use the same pedestal window as the display so the search agrees with
+        # the charge shown on screen.
+        ped_start, ped_end = self._get_ped_range()
 
         def worker():
             found = -1
@@ -913,7 +971,7 @@ class WaveformViewerPanel:
                             if ch == TRIGGER_CH:
                                 continue
                             seg = adc_flat[ch * self._n_samples: (ch + 1) * self._n_samples].astype(np.float64)
-                            q = _charge_pC(seg, _pedestal(seg))
+                            q = _charge_pC(seg, _pedestal(seg, ped_start, ped_end))
                             if q < thresh:
                                 found = entry
                                 break
