@@ -84,6 +84,9 @@ class WaveformViewerPanel:
         self._avg_computing = False     # guard against concurrent compute
         self._avg_cancel   = False      # set True to abort an in-flight compute
         self._thresh = tk.StringVar(value="-0.5")
+        # Charge-search comparison operator. "|q|>" finds events with a real pulse
+        # of either polarity (magnitude above threshold) — i.e. "events with signal".
+        self._search_op = tk.StringVar(value="<")
 
         # User-adjustable pedestal window (defaults mirror Analysis.cpp constants).
         # Changing it moves the dashed average-pedestal line AND recomputes charge,
@@ -150,8 +153,12 @@ class WaveformViewerPanel:
 
         ttk.Separator(fb, orient="vertical").pack(side=tk.LEFT, fill=tk.Y, padx=10)
 
-        # Charge search
-        ttk.Label(fb, text="Jump: charge <", font=("Helvetica", 9)).pack(side=tk.LEFT)
+        # Charge search — operator selectable so you can find signal events of
+        # either polarity ( |q|> ), not only charge-below-threshold ( < ).
+        ttk.Label(fb, text="Jump: charge", font=("Helvetica", 9)).pack(side=tk.LEFT)
+        op_combo = ttk.Combobox(fb, textvariable=self._search_op, width=5, state="readonly",
+                                values=["<", ">", "|q|>"], justify="center")
+        op_combo.pack(side=tk.LEFT, padx=2)
         ttk.Entry(fb, textvariable=self._thresh, width=7, justify="center").pack(side=tk.LEFT, padx=2)
         ttk.Label(fb, text="pC", font=("Helvetica", 9)).pack(side=tk.LEFT)
         self._search_btn = tk.Button(fb, text="🔍 Search", command=self._start_search,
@@ -921,7 +928,10 @@ class WaveformViewerPanel:
             "  ⊙ Ped Center   Auto-fit Y to current event's actual signal spread\n"
             "  Apply    Apply manual changes\n\n"
             "Charge search\n"
-            "  Jump: charge <  [threshold] pC  →  🔍 Search\n"
+            "  Jump: charge  [< / > / |q|>]  [threshold] pC  →  🔍 Search\n"
+            "    <    : charge below threshold (e.g. overshoot / negative events)\n"
+            "    >    : charge above threshold\n"
+            "    |q|> : magnitude above threshold — finds SIGNAL events of either polarity\n"
             "  Searches forward from current event; ⏹ Cancel anytime\n\n"
             "✕ Clear   Returns to this guide screen (file stays on disk)"
         )
@@ -977,13 +987,25 @@ class WaveformViewerPanel:
             messagebox.showwarning("Invalid", "Enter a numeric pC threshold.")
             return
 
+        op = self._search_op.get()
+        # Build the match test + a human-readable description for the status line.
+        if op == ">":
+            match = lambda q: q > thresh
+            desc = f"charge > {thresh} pC"
+        elif op == "|q|>":
+            match = lambda q: abs(q) > thresh        # signal of either polarity
+            desc = f"|charge| > {thresh} pC"
+        else:  # "<"
+            match = lambda q: q < thresh
+            desc = f"charge < {thresh} pC"
+
         # Cancel any in-progress search
         self._search_id = object()
         token = self._search_id
 
         self._search_btn.config(text="⏹ Cancel", command=self._cancel_search,
                                 bg="#dc3545")
-        self._status.set(f"Searching for charge < {thresh} pC  (from entry {self._cur_entry + 1})…")
+        self._status.set(f"Searching for {desc}  (from entry {self._cur_entry + 1})…")
 
         start = self._cur_entry + 1
         # Use the same pedestal window as the display so the search agrees with
@@ -1008,7 +1030,7 @@ class WaveformViewerPanel:
                                 continue
                             seg = adc_flat[ch * self._n_samples: (ch + 1) * self._n_samples].astype(np.float64)
                             q = _charge_pC(seg, _pedestal(seg, ped_start, ped_end))
-                            if q < thresh:
+                            if match(q):
                                 found = entry
                                 break
                         if found >= 0:
@@ -1028,11 +1050,10 @@ class WaveformViewerPanel:
             def on_done():
                 self._reset_search_btn()
                 if found >= 0:
-                    self._status.set(
-                        f"Found charge < {thresh} pC at entry #{found}")
+                    self._status.set(f"Found {desc} at entry #{found}")
                     self._show_entry(found)
                 else:
-                    self._status.set(f"No more events with charge < {thresh} pC")
+                    self._status.set(f"No more events with {desc}")
 
             self.parent.after(0, on_done)
 
