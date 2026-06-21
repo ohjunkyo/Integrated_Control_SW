@@ -1595,6 +1595,31 @@ class App:
         self._daq_check_running = True
         threading.Thread(target=self._daq_check_loop, daemon=True).start()
 
+    def _daq_check_env(self, daq_path):
+        """Environment for running execute_DAQ_v2 -j.
+
+        The binary links the CAEN libs via RUNPATH, but RUNPATH does NOT cover
+        transitive deps (libCAENDigitizer → libCAENComm), so the loader falls
+        back to the system path where a stale 32-bit libCAENComm.so lives and
+        the binary fails to start ("wrong ELF class"). Inject the correct 64-bit
+        lib dir (<dirname(BasePath)>/lib) into LD_LIBRARY_PATH so the status
+        check works regardless of how the GUI itself was launched.
+        """
+        env = os.environ.copy()
+        extra = []
+        try:
+            lib_dir = os.path.join(os.path.dirname(daq_path.rstrip('/')), 'lib')
+            if os.path.isdir(lib_dir):
+                extra.append(lib_dir)
+        except Exception:
+            pass
+        if os.path.isdir('/opt/root/lib'):
+            extra.append('/opt/root/lib')
+        if extra:
+            existing = env.get('LD_LIBRARY_PATH', '')
+            env['LD_LIBRARY_PATH'] = ':'.join(extra + ([existing] if existing else []))
+        return env
+
     def _daq_check_loop(self):
         """Continuous background loop for DAQ connection checking with thread-safe compliance."""
         # Loop strictly boundaries on the control boolean variable safety flags
@@ -1607,10 +1632,13 @@ class App:
                         command = [os.path.join(daq_path, 'execute_DAQ_v2'), '-j']
                         result = subprocess.run(
                             command, capture_output=True, text=True,
-                            timeout=5, preexec_fn=os.setsid
+                            timeout=5, preexec_fn=os.setsid,
+                            env=self._daq_check_env(daq_path)
                         )
-                        if "Communication error" not in result.stderr:
-                            is_connected = True
+                        # execute_DAQ_v2 -j exits 0 when the digitizer is reachable
+                        # (or busy with an active run), non-zero otherwise. The exit
+                        # code is the reliable signal; stdout/stderr text is not.
+                        is_connected = (result.returncode == 0)
             except Exception:
                 pass
 
@@ -1622,29 +1650,6 @@ class App:
                 pass
 
             time.sleep(2.0)
-
-    def _run_daq_check_in_thread(self):
-        is_connected = False
-        try:
-            daq_path = self.config_manager.get_config_value('BasePath')
-            if daq_path:
-                command = [os.path.join(daq_path, 'execute_DAQ_v2'), '-j']
-                result = subprocess.run(
-                        command, capture_output=True, text=True,
-                        timeout=5, preexec_fn=os.setsid
-                        )
-                if "Communication error" not in result.stderr:
-                    is_connected = True
-        except Exception: pass
-        finally:
-            if hasattr(self, 'ui') and self.master.winfo_exists():
-              try:
-                  self.master.after(0, lambda: self.ui.update_daq_connection_status(is_connected))
-              except Exception:
-                pass
-
-        if self.master.winfo_exists():
-            self.master.after(2000, self.check_daq_connection)
 
     def update_data_directory_size(self):
 
