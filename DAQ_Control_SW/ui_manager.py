@@ -1204,23 +1204,27 @@ class UIManager:
     # ══════════════════════════════════════════════════════════════════════
 
     def _create_pmt_position_widget(self, parent):
-        """Compact, always-visible live PMT position panel for the left Control Panel.
+        """Always-visible read-only PMT position panel (horizontal layout).
 
-        SN2/SN3 (motorized): mini TOP (rotation compass) + SIDE (tilt) views, live
-        angles, and a moving / rotation-locked state. SN1 is monitor-only (no motor)
-        so it is shown as a simple label. Read-only by design — the only action is the
-        safe 'Go to 0°'; real moves stay in the Setup tab where the tilt→rot interlock
-        sequence is enforced. Updated from the motor monitoring thread via
-        update_pmt_position_widget() (master.after for thread safety).
+        SN1: monitor-only label. SN2/SN3: mini TOP compass + SIDE tilt view + angles + state.
+        No action buttons — display only. Updated via update_pmt_position_widget().
         """
         self.pmt_pos_widgets = {}
 
-        frame = ttk.LabelFrame(parent, text=" PMT position (live) ", padding=(8, 6))
+        frame = ttk.LabelFrame(parent, text=" PMT position (live) ", padding=(6, 4))
         frame.pack(fill=tk.X, pady=(0, 8), padx=2)
 
+        # Horizontal row: SN1 | SN2 | SN3
+        row = ttk.Frame(frame)
+        row.pack(fill=tk.X)
+
         # SN1 — monitor only (no motor)
-        ttk.Label(frame, text="SN1 · monitor (no motor)",
-                  font=("Helvetica", 9), foreground="#888").pack(anchor="w", pady=(0, 4))
+        sn1_col = ttk.Frame(row)
+        sn1_col.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 6))
+        ttk.Label(sn1_col, text="SN1", font=("Helvetica", 9, "bold")).pack(anchor="center")
+        ttk.Label(sn1_col, text="Monitor\n(No Motor)",
+                  font=("Helvetica", 8), foreground="#888",
+                  justify=tk.CENTER).pack(anchor="center")
 
         cfg = {}
         try:
@@ -1230,26 +1234,26 @@ class UIManager:
             cfg = {}
 
         for dev in (2, 3):
-            row = ttk.Frame(frame)
-            row.pack(fill=tk.X, pady=2)
+            col = ttk.Frame(row)
+            col.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 4 if dev == 2 else 0))
 
             bg = "#2d2d2d" if self.is_dark_mode else "white"
-            top_c = tk.Canvas(row, width=52, height=52, bg=bg, highlightthickness=0)
+
+            ttk.Label(col, text=f"SN{dev}", font=("Helvetica", 9, "bold")).pack(anchor="center")
+
+            canvases = ttk.Frame(col)
+            canvases.pack(anchor="center")
+            top_c = tk.Canvas(canvases, width=48, height=48, bg=bg, highlightthickness=0)
             top_c.pack(side=tk.LEFT, padx=(0, 2))
-            side_c = tk.Canvas(row, width=60, height=52, bg=bg, highlightthickness=0)
-            side_c.pack(side=tk.LEFT, padx=(0, 6))
+            side_c = tk.Canvas(canvases, width=56, height=48, bg=bg, highlightthickness=0)
+            side_c.pack(side=tk.LEFT)
 
-            info = ttk.Frame(row)
-            info.pack(side=tk.LEFT, fill=tk.X, expand=True)
-            name_lbl = ttk.Label(info, text=f"SN{dev}", font=("Helvetica", 10, "bold"))
-            name_lbl.pack(anchor="w")
-            ang_lbl = ttk.Label(info, text="Rot —° · Tilt —°", font=("Helvetica", 9))
-            ang_lbl.pack(anchor="w")
-            state_lbl = tk.Label(info, text="—", font=("Helvetica", 8, "bold"),
+            ang_lbl = ttk.Label(col, text="R—° T—°", font=("Helvetica", 8))
+            ang_lbl.pack(anchor="center")
+            state_lbl = tk.Label(col, text="—", font=("Helvetica", 7, "bold"),
                                  fg="#888", bg=bg)
-            state_lbl.pack(anchor="w", pady=(1, 0))
+            state_lbl.pack(anchor="center", pady=(1, 0))
 
-            # Initial draw from config so it isn't blank before monitoring starts.
             try:
                 rot0 = float(cfg.get(f'RotateAngle{dev}', "0") or 0)
                 tilt0 = float(cfg.get(f'TiltAngle{dev}', "0") or 0)
@@ -1258,35 +1262,13 @@ class UIManager:
 
             self.pmt_pos_widgets[dev] = {
                 "top": top_c, "side": side_c,
-                "name": name_lbl, "ang": ang_lbl, "state": state_lbl,
+                "ang": ang_lbl, "state": state_lbl,
                 "last_rot": rot0, "last_tilt": tilt0,
             }
 
             self._draw_pos_compass(top_c, rot0, "#1D9E75")
             self._draw_pos_sideview(side_c, tilt0)
-            ang_lbl.config(text=f"Rot {rot0:.0f}° · Tilt {tilt0:.0f}°")
-
-        btns = ttk.Frame(frame)
-        btns.pack(fill=tk.X, pady=(6, 0))
-        tk.Button(btns, text="⌂ Go to 0°", command=self._pmt_pos_go_zero,
-                  bg="#4f46e5", fg="white", font=("Helvetica", 9, "bold"),
-                  relief="flat", padx=6).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 3))
-        tk.Button(btns, text="⚙ Open Setup", command=self._pmt_pos_open_setup,
-                  bg="#374151", fg="white", font=("Helvetica", 9, "bold"),
-                  relief="flat", padx=6).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(3, 0))
-
-    def _pmt_pos_go_zero(self):
-        """Safe origin return — reuses the Setup tab's interlocked reset (tilt→rot)."""
-        try:
-            self.controller.auto_ui.confirm_and_reset_angles()
-        except Exception as e:
-            self.controller._log(f"[WARNING] Go to 0° failed: {e}")
-
-    def _pmt_pos_open_setup(self):
-        try:
-            self.notebook.select(self.pmt_setup_tab)
-        except Exception:
-            pass
+            ang_lbl.config(text=f"R{rot0:.0f}° T{tilt0:.0f}°")
 
     def _retheme_pmt_position_widget(self):
         """Recolor the position-widget canvases + state labels for the current theme,
@@ -1649,7 +1631,7 @@ class UIManager:
         data_paned_window.pack(fill=tk.BOTH, expand=True)
 
         left_data_frame = ttk.Frame(data_paned_window)
-        data_paned_window.add(left_data_frame, weight=3)
+        data_paned_window.add(left_data_frame, weight=2)
 
         self.data_notebook = ttk.Notebook(left_data_frame)
         self.data_notebook.pack(fill=tk.BOTH, expand=True, pady=5)
@@ -1669,9 +1651,9 @@ class UIManager:
         delete_button.pack(fill=tk.X, padx=5, pady=(5,0))
 
         right_info_frame = ttk.LabelFrame(data_paned_window, text="File Info", padding=10)
-        data_paned_window.add(right_info_frame, weight=1)
+        data_paned_window.add(right_info_frame, weight=2)
 
-        self.file_info_label = ttk.Label(right_info_frame, text="Select a file to see details.", justify=tk.LEFT, wraplength=250)
+        self.file_info_label = ttk.Label(right_info_frame, text="Select a file to see details.", justify=tk.LEFT, wraplength=350)
         self.file_info_label.pack(anchor=tk.NW)
 
     def on_move_selected_files(self):
