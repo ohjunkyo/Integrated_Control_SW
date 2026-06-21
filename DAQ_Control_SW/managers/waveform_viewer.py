@@ -75,6 +75,11 @@ class WaveformViewerPanel:
         self._n_slots      = 4          # active slot count (updated on load)
         self._ch_grid      = None       # reference to the channel grid frame
         self._fft_mode     = False      # False = time domain, True = FFT
+        self._fft_avg_mode = tk.BooleanVar(value=False)  # False=Single, True=Average
+        self._avg_from     = tk.StringVar(value="0")
+        self._avg_to       = tk.StringVar(value="1000")
+        self._avg_result   = None       # cached {ch: mag_array} after compute
+        self._avg_computing = False     # guard against concurrent compute
         self._thresh = tk.StringVar(value="-0.5")
 
         self._status = tk.StringVar(value="Load a RAW .root file to begin.")
@@ -90,8 +95,9 @@ class WaveformViewerPanel:
     def _build_ui(self, parent):
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(0, weight=0)
-        parent.rowconfigure(1, weight=0)
-        parent.rowconfigure(2, weight=1)
+        parent.rowconfigure(1, weight=0)   # FFT controls (hidden until FFT ON)
+        parent.rowconfigure(2, weight=0)   # per-channel axis bar
+        parent.rowconfigure(3, weight=1)   # canvas
 
         # ── Row 0: file bar ──────────────────────────────────────────────
         fb = ttk.Frame(parent, padding=(8, 6, 8, 2))
@@ -144,9 +150,43 @@ class WaveformViewerPanel:
                                      font=("Helvetica", 9, "bold"), relief="flat", padx=8)
         self._search_btn.pack(side=tk.LEFT, padx=(4, 0))
 
-        # ── Row 1: per-channel axis bar ───────────────────────────────────
+        # ── Row 1: FFT controls (hidden until FFT is ON) ─────────────────
+        self._fft_ctrl_frame = ttk.Frame(parent, padding=(8, 4, 8, 4))
+        # Not grid()-placed yet; shown via _toggle_fft_controls()
+        ttk.Label(self._fft_ctrl_frame, text="FFT Mode:",
+                  font=("Helvetica", 9, "bold")).pack(side=tk.LEFT)
+        ttk.Radiobutton(self._fft_ctrl_frame, text="Single event",
+                        variable=self._fft_avg_mode, value=False,
+                        command=self._on_fft_mode_change).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Radiobutton(self._fft_ctrl_frame, text="Average",
+                        variable=self._fft_avg_mode, value=True,
+                        command=self._on_fft_mode_change).pack(side=tk.LEFT, padx=(6, 0))
+
+        ttk.Separator(self._fft_ctrl_frame, orient="vertical").pack(side=tk.LEFT, fill=tk.Y, padx=10)
+
+        ttk.Label(self._fft_ctrl_frame, text="Event range  from:",
+                  font=("Helvetica", 9)).pack(side=tk.LEFT)
+        ttk.Entry(self._fft_ctrl_frame, textvariable=self._avg_from,
+                  width=7, justify="center").pack(side=tk.LEFT, padx=3)
+        ttk.Label(self._fft_ctrl_frame, text="to:",
+                  font=("Helvetica", 9)).pack(side=tk.LEFT)
+        ttk.Entry(self._fft_ctrl_frame, textvariable=self._avg_to,
+                  width=7, justify="center").pack(side=tk.LEFT, padx=3)
+
+        self._avg_compute_btn = tk.Button(
+            self._fft_ctrl_frame, text="Compute Avg FFT",
+            command=self._start_avg_fft,
+            bg="#7c3aed", fg="white", font=("Helvetica", 9, "bold"),
+            relief="flat", padx=10)
+        self._avg_compute_btn.pack(side=tk.LEFT, padx=(8, 0))
+
+        self._avg_status_lbl = ttk.Label(self._fft_ctrl_frame, text="",
+                                         font=("Helvetica", 9), foreground="#6b7280")
+        self._avg_status_lbl.pack(side=tk.LEFT, padx=(8, 0))
+
+        # ── Row 2: per-channel axis bar ───────────────────────────────────
         ab = ttk.Frame(parent, padding=(8, 2, 8, 4))
-        ab.grid(row=1, column=0, sticky="ew")
+        ab.grid(row=2, column=0, sticky="ew")
         ab.columnconfigure(0, weight=1)
 
         # Button strip (right)
@@ -173,7 +213,7 @@ class WaveformViewerPanel:
         # ── Row 2: matplotlib canvas ─────────────────────────────────────
         self._fig = Figure(facecolor=BG)
         self._canvas = FigureCanvasTkAgg(self._fig, master=parent)
-        self._canvas.get_tk_widget().grid(row=2, column=0, sticky="nsew", padx=4, pady=(0, 4))
+        self._canvas.get_tk_widget().grid(row=3, column=0, sticky="nsew", padx=4, pady=(0, 4))
 
         # Keyboard nav (only when this panel's parent is focused)
         parent.bind("<Left>",  lambda _: self._prev())
@@ -294,10 +334,91 @@ class WaveformViewerPanel:
         self._fft_mode = not self._fft_mode
         if self._fft_mode:
             self._fft_btn.config(bg="#4f46e5", fg="white")
+            self._fft_ctrl_frame.grid(row=1, column=0, sticky="ew")
         else:
             self._fft_btn.config(bg="#e5e7eb", fg="#374151")
+            self._fft_ctrl_frame.grid_remove()
+            self._avg_result = None   # clear cache when FFT turned off
         if self._tree:
             self._show_entry(self._cur_entry)
+
+    def _on_fft_mode_change(self):
+        """Called when Single ↔ Average radio is toggled."""
+        self._avg_result = None   # cached avg is invalid for the other mode
+        if self._tree:
+            self._show_entry(self._cur_entry)
+
+    def _start_avg_fft(self):
+        """Validate range and start background average-FFT computation."""
+        if not self._tree or self._avg_computing:
+            return
+        try:
+            ev_from = int(self._avg_from.get())
+            ev_to   = int(self._avg_to.get())
+        except ValueError:
+            self._avg_status_lbl.config(text="Invalid range", foreground="#dc3545")
+            return
+        if ev_from < 0 or ev_to <= ev_from:
+            self._avg_status_lbl.config(text="Bad range (from < to required)", foreground="#dc3545")
+            return
+        ev_to    = min(ev_to, self._n_entries)
+        n_events = ev_to - ev_from
+        if n_events < 2:
+            self._avg_status_lbl.config(text="Need at least 2 events", foreground="#dc3545")
+            return
+
+        self._avg_computing = True
+        self._avg_compute_btn.config(state="disabled")
+        self._avg_status_lbl.config(text=f"Computing 0/{n_events}…", foreground="#6b7280")
+        self._avg_result = None
+
+        def compute():
+            DT     = 2e-9
+            n      = self._n_samples
+            window = np.hanning(n)
+            # Accumulate power (|FFT|²) per channel; RMS average = sqrt(mean(power))
+            power_acc = {ch: np.zeros(n // 2 + 1, dtype=np.float64)
+                         for ch in self._channels}
+            count = 0
+            for ev in range(ev_from, min(ev_to, self._n_entries)):
+                try:
+                    adc_flat = self._tree["ADC"].array(
+                        entry_start=ev, entry_stop=ev + 1, library="np")[0]
+                except Exception:
+                    continue
+                for ch in self._channels:
+                    seg    = adc_flat[ch * n: (ch + 1) * n]
+                    ped    = float(np.mean(seg[PED_START:PED_END]))
+                    sig_mv = (seg - ped) * ADC_TO_MV
+                    mag    = np.abs(np.fft.rfft(sig_mv * window)) * 2.0 / n
+                    power_acc[ch] += mag ** 2
+                count += 1
+                if count % 100 == 0:
+                    p = count
+                    self._avg_status_lbl.master.after(
+                        0, lambda p=p: self._avg_status_lbl.config(
+                            text=f"Computing {p}/{n_events}…", foreground="#6b7280"))
+
+            result = {}
+            if count > 0:
+                for ch in self._channels:
+                    result[ch] = np.sqrt(power_acc[ch] / count)   # RMS amplitude [mV]
+
+            def finish():
+                self._avg_computing = False
+                self._avg_compute_btn.config(state="normal")
+                if count == 0:
+                    self._avg_status_lbl.config(text="No events read", foreground="#dc3545")
+                    return
+                self._avg_result = result
+                self._avg_status_lbl.config(
+                    text=f"Done — {count} events averaged", foreground="#16a34a")
+                if self._tree:
+                    self._show_entry(self._cur_entry)
+
+            self._avg_status_lbl.master.after(0, finish)
+
+        threading.Thread(target=compute, daemon=True).start()
 
     # ══════════════════════════════════════════════════════════════════════
     # Entry rendering
@@ -329,7 +450,14 @@ class WaveformViewerPanel:
 
     def _render(self, adc_flat: np.ndarray, entry: int):
         if self._fft_mode:
-            self._render_fft(adc_flat, entry)
+            if self._fft_avg_mode.get():
+                # Average mode: show cached result if available; else placeholder
+                if self._avg_result is not None:
+                    self._render_fft_avg(self._avg_result)
+                else:
+                    self._render_fft_avg_placeholder()
+            else:
+                self._render_fft(adc_flat, entry)
             return
         n_ch = len(self._channels)
         if n_ch == 0:
@@ -467,6 +595,88 @@ class WaveformViewerPanel:
             ax.set_xlim(0, FS_MHZ / 2)
             ax.set_xlabel("Frequency [MHz]", color=TICK_C, fontsize=8)
             ax.set_ylabel("Amplitude [mV]", color=TICK_C, fontsize=8)
+            ax.tick_params(axis="both", colors=TICK_C, labelsize=8)
+            for sp in ax.spines.values():
+                sp.set_edgecolor(SPINE_C)
+            ax.grid(True, color=GRID_C, linewidth=0.5)
+            ax.legend(fontsize=7, framealpha=0.7, loc="upper right")
+
+        try:
+            self._fig.tight_layout(pad=1.5)
+        except Exception:
+            pass
+        self._canvas.draw()
+        self._canvas.get_tk_widget().update_idletasks()
+
+    def _render_fft_avg_placeholder(self):
+        """Show a message prompting the user to click Compute."""
+        self._fig.clear()
+        self._fig.set_facecolor("#f9fafb")
+        ax = self._fig.add_subplot(1, 1, 1)
+        ax.set_facecolor("#f9fafb")
+        ax.text(0.5, 0.5,
+                "Click  'Compute Avg FFT'  to average the selected event range",
+                ha="center", va="center", fontsize=12, color="#6b7280",
+                transform=ax.transAxes)
+        ax.axis("off")
+        self._canvas.draw()
+
+    def _render_fft_avg(self, result: dict):
+        """Render the pre-computed RMS-average FFT spectrum for each channel."""
+        n_ch = len(self._channels)
+        if n_ch == 0:
+            return
+
+        DT     = 2e-9
+        FS_MHZ = 1.0 / DT / 1e6   # 500 MHz
+        n      = self._n_samples
+        freqs  = np.fft.rfftfreq(n, d=DT) / 1e6   # MHz
+
+        n_cols = min(2, n_ch)
+        n_rows = (n_ch + n_cols - 1) // n_cols
+
+        self._fig.clear()
+        self._fig.set_facecolor(BG)
+
+        TICK_C  = "#6b7280"
+        LABEL_C = "#374151"
+        AVG_C   = "#0891b2"   # cyan-blue for averaged spectrum
+
+        for idx, ch in enumerate(self._channels):
+            if idx >= self._n_slots:
+                break
+            mag = result.get(ch)
+            if mag is None:
+                continue
+
+            noise_floor = float(np.median(mag[1:]))
+            peak_bin    = int(np.argmax(mag[1:]) + 1)
+            peak_freq   = freqs[peak_bin]
+            peak_amp    = mag[peak_bin]
+
+            ax = self._fig.add_subplot(n_rows, n_cols, idx + 1)
+            ax.set_facecolor(BG)
+
+            ax.plot(freqs, mag, color=AVG_C, linewidth=0.9)
+            ax.axvline(peak_freq, color="#dc2626", linewidth=1.0,
+                       linestyle="--", alpha=0.8, label=f"peak {peak_freq:.1f} MHz")
+            ax.axhline(noise_floor, color="#9ca3af", linewidth=0.8,
+                       linestyle=":", alpha=0.7, label=f"noise ~{noise_floor*1e3:.1f} uV")
+
+            ax.annotate(f"{peak_freq:.1f} MHz\n{peak_amp*1e3:.2f} uV",
+                        xy=(peak_freq, peak_amp),
+                        xytext=(peak_freq + FS_MHZ * 0.04, peak_amp * 0.85),
+                        fontsize=7, color="#dc2626",
+                        arrowprops=dict(arrowstyle="-", color="#dc2626", lw=0.8))
+
+            label = "Trigger" if ch == TRIGGER_CH else f"{peak_freq:.1f} MHz peak"
+            n_ev = self._avg_to.get() + "–" + self._avg_from.get()
+            ax.set_title(f"CH{ch}  AVG FFT  │  {label}",
+                         color=LABEL_C, fontsize=9, fontweight="bold", pad=4)
+
+            ax.set_xlim(0, FS_MHZ / 2)
+            ax.set_xlabel("Frequency [MHz]", color=TICK_C, fontsize=8)
+            ax.set_ylabel("RMS Amplitude [mV]", color=TICK_C, fontsize=8)
             ax.tick_params(axis="both", colors=TICK_C, labelsize=8)
             for sp in ax.spines.values():
                 sp.set_edgecolor(SPINE_C)

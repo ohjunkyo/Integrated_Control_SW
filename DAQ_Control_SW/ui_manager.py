@@ -1699,23 +1699,44 @@ class UIManager:
         widget.config(state="normal")
 
         if '\r' in text:
-            # Handle carriage-return: \r means "overwrite current line"
-            # Split on \r and \n, processing each token
-            tokens = re.split(r'(\r|\n)', text)
-            for token in tokens:
-                if token == '\r':
-                    # Delete from start of widget's last line to end-of-content
-                    try:
-                        ls = widget.index("end-1c linestart")
-                        le = widget.index("end-1c")
-                        if ls != le:
-                            widget.delete(ls, "end-1c")
-                    except Exception:
-                        pass
-                elif token == '\n':
-                    widget.insert(tk.END, '\n', tag or ())
-                elif token:
-                    self._write_segment(widget, token, tag, pane)
+            # \r = overwrite current line (C++ progress: "Processing... 73%\r").
+            # text=False in Popen preserves raw \r; Python text=True would silently
+            # convert \r → \n and break this logic entirely.
+            #
+            # Strategy: collapse consecutive \r-terminated progress updates so only
+            # the LAST one per batch is visible — avoids N-line spam for N progress steps.
+            #
+            # 1. Split on \r\n first (Windows line endings → single newline)
+            text = text.replace('\r\n', '\n')
+
+            # 2. For remaining \r, keep only the LAST fragment before each \n
+            #    (or the last fragment overall) — discard intermediate progress lines.
+            lines_out = []
+            current = ""
+            for ch in text:
+                if ch == '\r':
+                    current = ""       # discard everything before this \r
+                elif ch == '\n':
+                    lines_out.append(current)
+                    lines_out.append('\n')
+                    current = ""
+                else:
+                    current += ch
+            # current holds the last \r-overwritten progress text (no trailing \n yet)
+            if current:
+                # Overwrite the widget's last line with the final progress value
+                try:
+                    ls = widget.index("end-1c linestart")
+                    le = widget.index("end-1c")
+                    if ls != le:
+                        widget.delete(ls, "end-1c")
+                except Exception:
+                    pass
+                lines_out.append(current)
+
+            combined = "".join(lines_out)
+            if combined:
+                self._write_segment(widget, combined, tag, pane)
         else:
             self._write_segment(widget, text, tag, pane)
 

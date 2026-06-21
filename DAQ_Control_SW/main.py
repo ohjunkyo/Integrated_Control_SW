@@ -594,10 +594,13 @@ class App:
         self._log(f"[INFO] Console job '{job_name}' [{slot}]: {cmd_str}")
 
         try:
+            # text=False: read raw bytes so \r from C++ progress lines (e.g. "73%\r")
+            # is NOT converted to \n by Python's universal-newlines mode.
+            # console_write handles \r explicitly to overwrite the current line.
             proc = subprocess.Popen(
                 argv, env=env,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1, start_new_session=True)
+                text=False, start_new_session=True)
         except Exception as e:
             self.ui.console_write(f"[ERROR] Failed to start job: {e}\n", "err", slot=slot)
             self.ui.console_set_status("✗ Failed to start", slot=slot, state="failed")
@@ -605,50 +608,50 @@ class App:
 
         self._console_procs[slot] = proc
 
-        # Per-slot output buffer: reader thread appends here; a periodic 120ms
-        # timer on the main thread drains it in one batch → prevents Tk event
-        # queue flooding that caused UI freezes on high-throughput output.
+        # Per-slot output buffer: reader thread appends decoded strings here;
+        # a periodic 120ms timer on the main thread drains them in one batch.
         if not hasattr(self, '_console_buffer'):
             self._console_buffer = {}
         self._console_buffer[slot] = []
 
-        _MAX_LINES_PER_TICK = 250  # cap per flush to keep UI responsive
+        _MAX_CHUNK = 32 * 1024  # bytes per flush — keeps UI responsive
 
         def flush_buffer():
             buf = self._console_buffer.get(slot)
             if buf:
-                if len(buf) > _MAX_LINES_PER_TICK:
-                    # Take first N lines; leave the rest for next tick
-                    lines = buf[:_MAX_LINES_PER_TICK]
-                    del buf[:_MAX_LINES_PER_TICK]
-                    self.ui.console_write("".join(lines), slot=slot)
-                    # Still busy — reschedule immediately to drain remaining
-                    self.master.after(0, flush_buffer)
-                    return
-                else:
-                    self.ui.console_write("".join(buf), slot=slot)
-                    buf.clear()
+                chunk = "".join(buf)
+                buf.clear()
+                self.ui.console_write(chunk, slot=slot)
             # Reschedule while process is alive
             if self._console_procs.get(slot) is proc and proc.poll() is None:
                 self.master.after(120, flush_buffer)
 
         def reader():
-            """Read stdout in background; batch lines into buffer for main-thread flush."""
+            """Read stdout bytes in background; preserves \\r for progress-line overwrite."""
             try:
-                for line in proc.stdout:
+                # read1() returns whatever is currently in the OS pipe buffer without
+                # blocking for a full line — essential for \\r-terminated progress lines
+                # (C++: std::cout << "Processing... 73%\\r" << std::flush).
+                while True:
+                    chunk = proc.stdout.read1(_MAX_CHUNK)
+                    if not chunk:
+                        break
+                    text = chunk.decode('utf-8', errors='replace')
                     buf = self._console_buffer.get(slot)
                     if buf is not None:
-                        buf.append(line)
+                        buf.append(text)
             except Exception:
                 pass
             finally:
                 code = proc.wait()
-                # Final flush then status update
                 def done():
+                    # Final drain
                     buf = self._console_buffer.get(slot, [])
                     if buf:
                         self.ui.console_write("".join(buf), slot=slot)
                         buf.clear()
+                    # Release slot so the user can re-run immediately
+                    self._console_procs[slot] = None
                     if code == 0:
                         self.ui.console_write(
                             f"===== {job_name} finished (exit 0) =====\n\n", "ok", slot=slot)
@@ -1778,6 +1781,7 @@ class App:
     def handle_ups_shutdown(self): self.ups_mgr.handle_ups_shutdown()
     def shutdown_ups_each(self, index): self.ups_mgr.shutdown_ups_each(index)
     def check_ups_alerts(self, watt, temp, batt, load, vin): self.ups_mgr.check_ups_alerts(watt, temp, batt, load, vin)
+    def unlock_ups_port(self): self.ups_mgr.unlock_ups_port()
     #################### UPS Monitoring ##############################
 
 
@@ -1793,10 +1797,11 @@ class App:
         if hasattr(self, 'ui') and hasattr(self.ui, 'daq_connected_flag'):
             status["DAQ"] = self.ui.daq_connected_flag
         # 2. Laser 상태
-        status["Laser"] = any(inst.is_connected() for inst in self.laser_mgr.laser_instances.values())
+        if hasattr(self, 'laser_mgr') and self.laser_mgr.laser_instances:
+            status["Laser"] = any(inst.is_connected() for inst in self.laser_mgr.laser_instances.values())
 
         # 3. UPS 상태 (시리얼 포트 체크)
-        if self.ups_mgr.ups_serial and self.ups_mgr.ups_serial.is_open:
+        if hasattr(self, 'ups_mgr') and self.ups_mgr.ups_serial and self.ups_mgr.ups_serial.is_open:
             if hasattr(self, 'ui'):
                 msg = self.ui.ups_vars["status_msg"].get()
                 if "Normal" in msg or "Battery" in msg:
