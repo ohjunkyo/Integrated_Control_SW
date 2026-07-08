@@ -26,7 +26,7 @@ const int NumSequences = 1;
 const int IntervalTime = 0;
 
 // -- Laser (Current, mA) --- //
-const std::string Laser = "165";
+const std::string Laser = "169";
 const std::string Wavelength = "405";
 
 // --- PMT configuration --- //
@@ -42,11 +42,11 @@ const std::string direction3 = "B";
 const std::string RotateAngle1 = "0";
 const std::string TiltAngle1 = "0";
 
-const std::string RotateAngle2 = "0";
-const std::string TiltAngle2 = "0";
+const std::string RotateAngle2 = "135.0";
+const std::string TiltAngle2 = "25.7";
 
-const std::string RotateAngle3 = "0";
-const std::string TiltAngle3 = "0";
+const std::string RotateAngle3 = "135.0";
+const std::string TiltAngle3 = "30.6";
 
 // --- High Voltage --- //
 const std::string HV1 = "1670";
@@ -54,13 +54,13 @@ const std::string HV2 = "1800";
 const std::string HV3 = "1770";
 
 // --- NOTE ---
-const std::string NOTE = "B2";
+const std::string NOTE = "Intensity adjusting";
 
 // --- Trigger Channel ---
 const int TriggerCh = 3;
 
 // --- Shift Information ---
-const std::string Shift_worker = "Yufei";
+const std::string Shift_worker = "Junkyo";
 const std::string Expert = "Junkyo";
 
 

@@ -45,6 +45,24 @@ in-app waveform/FFT viewer, so most day-to-day operation happens from one window
 ### Motorized PMT automation ("General Scan")
 * Schedules and runs automated tilt/rotation scans of the PMT stage, syncs the
   live hardware angles back into `config3.h`, and drives the DAQ at each point.
+* **Manual Run DAQ records real angles** — a manual DAQ run reads the live
+  stage angles (tilt/rotation) from the hardware and stores them in the run's
+  metadata, exactly like an automated scan point.
+* **Live injection-side indicator** — the Manual Control Panel shows which
+  cathode side the laser currently hits (`Injects: X+ / X− / Y+ / Y−`),
+  derived from cable direction (A–H) + rotation + tilt with the same sign
+  convention as the analysis code (`angle_convert.h`), verified for all
+  8 cable directions.
+* **Live PMT geometry diagrams** — per-PMT TOP VIEW (cable pins A–H, scan
+  axis, +X/+Y axes, cable arrow) and RIGHT SIDE VIEW (tilted dome + fixed
+  laser, KR→Hamamatsu angle conversion) redrawn in real time, plus an
+  always-visible mini position widget and a status-bar **⏳ MOVING** indicator
+  visible from any tab.
+* **Quick Setup with live angles** — Rot/Tilt fields for every PMT update live
+  from the motors; a **Scan History** tab lists past scans
+  (SUCCESS / ABORTED-ERROR) with a full configuration snapshot per run.
+* **Handover Notes** — an append-only shift-handover notepad in Quick Setup
+  (author + timestamp, full history table), stored as JSON Lines.
 
 ### Integrated Laser control (4 units)
 * Drives four Tamadenshi lasers (375 / 405 / 450 / 473 nm) over HID/USB,
@@ -67,8 +85,15 @@ in-app waveform/FFT viewer, so most day-to-day operation happens from one window
   **pedestal window** (updates the charge live).
 * **Single ↔ Average** toggle that works in both views:
   single/average **waveform** and single/average **FFT power spectrum**, with a
-  selectable event range, fast batched reads, a cancel button and progress.
-* Charge-threshold event search ("jump to charge &lt; X pC").
+  selectable event range (All / 1k / 10k quick buttons), fast batched reads,
+  a cancel button and progress.
+* **Adjustable signal-integration range** (start–end sample, matching
+  `prod_ntp_v7.C`'s `sigStart`) with one-click reset.
+* **Drag-zoom** with a rubber-band overlay on any subplot; right-click to
+  unzoom.
+* Event searches: charge-threshold ("jump to charge &lt; X pC"), **mV-peak
+  search** per channel, and a **noise scan** that flags events by FFT amplitude
+  at the known CAEN clock frequencies (50 / 62.5 / 100 / 125 MHz spurs).
 
 ### Monitoring, safety & usability
 * Real-time dashboard LEDs for DAQ / Laser / B-field / UPS connection status.
@@ -187,6 +212,21 @@ PMT(광증배관) 테스트의 전체 작업 흐름 — 데이터 수집·분석
 ### 모터 구동 PMT 자동화 ("General Scan")
 * PMT 스테이지의 틸트/회전 스캔을 예약·자동 실행하고, 라이브 각도를 `config3.h`에
   반영하며 각 지점에서 DAQ를 구동합니다.
+* **수동 Run DAQ의 실제 각도 기록** — 수동 DAQ 실행 시에도 하드웨어에서 라이브
+  스테이지 각도(틸트/회전)를 읽어 자동 스캔과 동일하게 런 메타데이터에 저장합니다.
+* **라이브 입사 위치 표시** — Manual Control Panel에 레이저가 현재 때리는 캐소드
+  면(`Injects: X+ / X− / Y+ / Y−`)을 표시합니다. 케이블 방향(A~H)+회전+틸트로부터
+  분석 코드(`angle_convert.h`)와 동일한 부호 규약으로 계산하며, 8개 케이블 방향
+  전체에 대해 검증되었습니다.
+* **라이브 PMT 기하 다이어그램** — PMT별 TOP VIEW(케이블 핀 A~H, 스캔축,
+  +X/+Y 축, 케이블 화살표)와 RIGHT SIDE VIEW(기울어진 돔 + 고정 레이저,
+  KR→Hamamatsu 각도 변환)를 실시간 갱신. 상시 표시되는 미니 위치 위젯과
+  어느 탭에서나 보이는 상태바 **⏳ MOVING** 인디케이터 포함.
+* **라이브 각도 Quick Setup** — 모든 PMT의 Rot/Tilt 값이 모터에서 실시간 갱신되고,
+  **Scan History** 탭에서 과거 스캔(SUCCESS / ABORTED-ERROR)과 런별 설정 스냅샷을
+  조회할 수 있습니다.
+* **Handover Notes** — Quick Setup의 교대 인수인계 노트(작성자+타임스탬프,
+  전체 히스토리 테이블). JSON Lines로 누적 저장됩니다.
 
 ### 통합 레이저 제어 (4대)
 * 4대의 Tamadenshi 레이저(375 / 405 / 450 / 473 nm)를 HID/USB로 구동하며,
@@ -207,9 +247,14 @@ PMT(광증배관) 테스트의 전체 작업 흐름 — 데이터 수집·분석
 * 채널별 파형에 pedestal 선·전하(pC)를 표시하고, **pedestal 구간**을 조정하면
   전하가 실시간 재계산됩니다.
 * 양쪽 뷰에서 동작하는 **Single ↔ Average** 토글: 단일/평균 **파형**과
-  단일/평균 **FFT 파워 스펙트럼**. 이벤트 범위 선택, 빠른 배치 읽기, 취소 버튼,
-  진행률 표시 지원.
-* 전하 임계 이벤트 검색("charge &lt; X pC 로 점프").
+  단일/평균 **FFT 파워 스펙트럼**. 이벤트 범위 선택(All / 1k / 10k 퀵 버튼),
+  빠른 배치 읽기, 취소 버튼, 진행률 표시 지원.
+* **신호 적분 구간 조절** (시작–끝 샘플, `prod_ntp_v7.C`의 `sigStart`와 동기) 및
+  원클릭 리셋.
+* **드래그 줌** — 러버밴드 오버레이로 확대, 우클릭으로 원복.
+* 이벤트 검색: 전하 임계("charge &lt; X pC 점프"), 채널별 **mV 피크 검색**,
+  CAEN 클럭 주파수(50 / 62.5 / 100 / 125 MHz 스퍼)의 FFT 진폭 기준 **노이즈
+  스캔**.
 
 ### 모니터링 · 안전 · 편의성
 * DAQ / Laser / B-field / UPS 연결 상태 실시간 대시보드 LED.

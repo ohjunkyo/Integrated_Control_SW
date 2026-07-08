@@ -1,8 +1,55 @@
 # managers/ui_automation.py
 import os
+import re
+import json
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
-from datetime import datetime, timezone, timedelta  
+from datetime import datetime, timezone, timedelta
+
+# Cable pin position (deg), mirrors angle_convert.h::PosMapAngle exactly.
+# Keep these two in sync -- this is the single verified sign source.
+_POS_MAP_ANGLE = {'E': 0, 'F': 45, 'G': 90, 'H': 135,
+                   'A': 180, 'B': 225, 'C': 270, 'D': 315}
+
+
+def _xy_rot_for_direction(cable):
+    """Port of angle_convert.h::GetXYRotForDirection."""
+    pm = _POS_MAP_ANGLE.get(cable.upper(), 180)
+    xm = ((pm - 90) % 180 + 180) % 180 - 90
+    ym = ((pm - 180) % 180 + 180) % 180 - 90
+    x_rot = xm + 180 if xm < 0 else xm
+    y_rot = ym + 180 if ym < 0 else ym
+    return x_rot, y_rot
+
+
+def injection_side_label(cable, rot, tilt):
+    """Which physical cathode side (X+/X-/Y+/Y-) the laser is currently hitting.
+
+    Port of angle_convert.h::GetHamamatsuAngle's sign logic (verified against the
+    R12860-22 bottom-view + rotation-system diagrams for all 8 cable directions).
+    Returns "" if rot doesn't match either scan axis for this cable, or tilt≈0.
+    """
+    if not cable or rot is None or tilt is None:
+        return ""
+    cable = cable.upper()
+    if cable not in _POS_MAP_ANGLE or abs(tilt) < 0.5:
+        return ""
+    x_rot, y_rot = _xy_rot_for_direction(cable)
+    rot_i = round(rot)
+    is_x = (rot_i == x_rot)
+    is_y = (rot_i == y_rot)
+    if not (is_x or is_y):
+        return ""
+
+    delta = ((180 - _POS_MAP_ANGLE[cable]) % 360 + 360) % 360
+    if is_x:
+        xflip = (delta + x_rot) % 360 == 180
+        side = "X-" if (xflip == (tilt > 0)) else "X+"
+    else:
+        yflip = (delta + y_rot) % 360 == 270
+        side = "Y+" if (yflip == (tilt > 0)) else "Y-"
+    return side
+
 
 class AutomationUI:
     def __init__(self, notebook, controller):
@@ -37,11 +84,14 @@ class AutomationUI:
         self.upper_notebook.add(info_tab, text=" 📋 Quick Setup ")
 
         self.qs_vars = {
-                "Shift_worker": tk.StringVar(), "Expert": tk.StringVar(), "NOTE": tk.StringVar(), 
+                "Shift_worker": tk.StringVar(), "Expert": tk.StringVar(), "NOTE": tk.StringVar(),
                 "Laser": tk.StringVar(), "Wavelength": tk.StringVar(),
-            "SN1": tk.StringVar(), "HV1": tk.StringVar(), "direction1": tk.StringVar(), "RotateAngle1": tk.StringVar(),
-            "SN2": tk.StringVar(), "HV2": tk.StringVar(), "direction2": tk.StringVar(), "RotateAngle2": tk.StringVar(),
-            "SN3": tk.StringVar(), "HV3": tk.StringVar(), "direction3": tk.StringVar(), "RotateAngle3": tk.StringVar()
+            "SN1": tk.StringVar(), "HV1": tk.StringVar(), "direction1": tk.StringVar(),
+            "RotateAngle1": tk.StringVar(), "TiltAngle1": tk.StringVar(),
+            "SN2": tk.StringVar(), "HV2": tk.StringVar(), "direction2": tk.StringVar(),
+            "RotateAngle2": tk.StringVar(), "TiltAngle2": tk.StringVar(),
+            "SN3": tk.StringVar(), "HV3": tk.StringVar(), "direction3": tk.StringVar(),
+            "RotateAngle3": tk.StringVar(), "TiltAngle3": tk.StringVar(),
         }
 
         setup_frame = ttk.LabelFrame(info_tab, text=" ⚙️ Quick Configuration (Edit & Save) ", padding=15)
@@ -62,9 +112,9 @@ class AutomationUI:
                                   ("Note:", "NOTE")])
         ttk.Separator(setup_frame, orient="horizontal").pack(fill=tk.X, pady=10)
         
-        make_row(setup_frame, 1, [("SN1:", "SN1"), ("Dir(A~H):", "direction1"), ("Rot(°):", "RotateAngle1"), ("HV1(V):", "HV1")])
-        make_row(setup_frame, 2, [("SN2:", "SN2"), ("Dir(A~H):", "direction2"), ("Rot(°):", "RotateAngle2"), ("HV2(V):", "HV2")])
-        make_row(setup_frame, 3, [("SN3:", "SN3"), ("Dir(A~H):", "direction3"), ("Rot(°):", "RotateAngle3"), ("HV3(V):", "HV3")])
+        make_row(setup_frame, 1, [("SN1:", "SN1"), ("Dir(A~H):", "direction1"), ("Rot(°):", "RotateAngle1"), ("Tilt(°):", "TiltAngle1"), ("HV1(V):", "HV1")])
+        make_row(setup_frame, 2, [("SN2:", "SN2"), ("Dir(A~H):", "direction2"), ("Rot(°):", "RotateAngle2"), ("Tilt(°):", "TiltAngle2"), ("HV2(V):", "HV2")])
+        make_row(setup_frame, 3, [("SN3:", "SN3"), ("Dir(A~H):", "direction3"), ("Rot(°):", "RotateAngle3"), ("Tilt(°):", "TiltAngle3"), ("HV3(V):", "HV3")])
 
         btn_frame = tk.Frame(info_tab)
         btn_frame.pack(fill=tk.X, pady=(15, 0))
@@ -74,8 +124,10 @@ class AutomationUI:
         tk.Button(btn_frame, text="⚙️ Open Global Config (Paths)", bg="#6c757d", fg="white", font=("Helvetica", 12, "bold"), 
                   height=2, command=self.controller.open_config).grid(row=0, column=0, sticky="ew", padx=5)
                   
-        tk.Button(btn_frame, text="💾 Save Settings", bg="#28a745", fg="white", font=("Helvetica", 12, "bold"), 
+        tk.Button(btn_frame, text="💾 Save Settings", bg="#28a745", fg="white", font=("Helvetica", 12, "bold"),
                   height=2, command=self.save_quick_setup).grid(row=0, column=1, sticky="ew", padx=5)
+
+        self._create_handover_notes(info_tab)
 
         dash_tab = ttk.Frame(self.upper_notebook, padding=10)
         self.upper_notebook.add(dash_tab, text=" 🎛️ Control Panel (Master) ")
@@ -344,13 +396,152 @@ class AutomationUI:
     def update_run_info(self):
         if not hasattr(self.controller, 'config_manager') or not self.controller.config_manager:
             return
-            
+
         cfg = self.controller.config_manager.get_all_variables()
         for key, var in self.qs_vars.items():
             if key in cfg:
-                var.set(str(cfg[key]).strip('"')) 
+                var.set(str(cfg[key]).strip('"'))
             else:
-                var.set("") 
+                var.set("")
+
+    def _handover_notes_path(self):
+        return os.path.join(self.controller.base_dir, "handover_notes.jsonl")
+
+    def _create_handover_notes(self, parent):
+        """Shift-handover notepad -- whoever is remotely operating the system can
+        leave a note for the next person (what's running, what to watch for).
+        Each save appends a new entry (JSON Lines file), so a full history is
+        kept and survives app restarts. Layout: note editor on the left, history
+        table on the right."""
+        frame = ttk.LabelFrame(parent, text=" \U0001F4DD Handover Notes (for the next shift) ", padding=10)
+        frame.pack(fill=tk.BOTH, expand=True, pady=(15, 0))
+        frame.columnconfigure(0, weight=1)
+        frame.columnconfigure(1, weight=1)
+        frame.rowconfigure(0, weight=1)
+
+        # ── Left: note editor ───────────────────────────────────────────────
+        left = tk.Frame(frame)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+
+        top = tk.Frame(left)
+        top.pack(fill=tk.X)
+        tk.Label(top, text="Your name:", font=("Helvetica", 11, "bold")).pack(side=tk.LEFT)
+        self.handover_author_var = tk.StringVar()
+        tk.Entry(top, textvariable=self.handover_author_var, width=14,
+                 font=("Helvetica", 11)).pack(side=tk.LEFT, padx=(4, 15))
+        self.handover_status_lbl = tk.Label(top, text="No notes yet", font=("Helvetica", 10, "bold"),
+                                            fg="#007ACC")
+        self.handover_status_lbl.pack(side=tk.LEFT, padx=(0, 15))
+
+        tk.Button(top, text="\U0001F4BE Save Note", bg="#17a2b8", fg="white",
+                  font=("Helvetica", 11, "bold"),
+                  command=self.save_handover_note).pack(side=tk.RIGHT)
+
+        self.handover_text = tk.Text(left, height=12, font=("Helvetica", 11), wrap=tk.WORD)
+        self.handover_text.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
+
+        # ── Right: history table ────────────────────────────────────────────
+        right = tk.Frame(frame)
+        right.grid(row=0, column=1, sticky="nsew")
+        right.rowconfigure(1, weight=1)
+        right.columnconfigure(0, weight=1)
+
+        tk.Label(right, text="History", font=("Helvetica", 11, "bold")).grid(
+            row=0, column=0, sticky="w", pady=(0, 4))
+
+        style = ttk.Style()
+        style.configure("Handover.Treeview", rowheight=48, font=("Helvetica", 10))
+        style.configure("Handover.Treeview.Heading", font=("Helvetica", 10, "bold"))
+
+        cols = ("time", "author", "note")
+        self.handover_tree = ttk.Treeview(right, columns=cols, show="headings",
+                                          style="Handover.Treeview", height=10)
+        self.handover_tree.heading("time", text="Time")
+        self.handover_tree.heading("author", text="Author")
+        self.handover_tree.heading("note", text="Note")
+        self.handover_tree.column("time", width=130, anchor="w")
+        self.handover_tree.column("author", width=80, anchor="w")
+        self.handover_tree.column("note", width=260, anchor="w")
+        self.handover_tree.grid(row=1, column=0, sticky="nsew")
+
+        vsb = ttk.Scrollbar(right, orient="vertical", command=self.handover_tree.yview)
+        self.handover_tree.configure(yscrollcommand=vsb.set)
+        vsb.grid(row=1, column=1, sticky="ns")
+
+        self.load_handover_note()
+
+    def load_handover_note(self):
+        """Populate the history table from the JSONL file, newest entry first."""
+        path = self._handover_notes_path()
+        entries = []
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entries.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            self.controller._log(f"[WARNING] Failed to load handover notes: {e}")
+            return
+
+        if hasattr(self, "handover_tree"):
+            self.handover_tree.delete(*self.handover_tree.get_children())
+            for entry in reversed(entries):
+                preview = entry.get("note", "").replace("\n", " ")
+                if len(preview) > 60:
+                    preview = preview[:57] + "..."
+                self.handover_tree.insert("", tk.END, values=(
+                    entry.get("time", ""), entry.get("author", ""), preview))
+
+        if entries:
+            last = entries[-1]
+            self.handover_status_lbl.config(
+                text=f"Last updated: {last.get('time','')} by {last.get('author','')}")
+
+    def save_handover_note(self):
+        path = self._handover_notes_path()
+        author = self.handover_author_var.get().strip() or "unknown"
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        body = self.handover_text.get("1.0", tk.END).strip()
+        if not body:
+            messagebox.showwarning("Empty Note", "Write a note before saving.")
+            return
+        try:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"time": ts, "author": author, "note": body}) + "\n")
+            self.handover_status_lbl.config(text=f"Last updated: {ts} by {author}")
+            self.handover_text.delete("1.0", tk.END)
+            self.load_handover_note()
+            self.controller._log(f"[INFO] Handover note saved by {author}.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save handover note: {e}")
+
+    def update_quick_setup_live(self, dev_num, tilt, rot):
+        """Keep Quick Setup's Rot/Tilt fields showing the live hardware angle for
+        SN2/SN3 instead of a stale config3.h snapshot (only refreshed on config
+        load otherwise). Called from the same motor-monitoring poll that feeds
+        update_sn_display, so no extra hardware reads."""
+        if dev_num not in (2, 3) or tilt is None or rot is None:
+            return
+        rot_key, tilt_key = f"RotateAngle{dev_num}", f"TiltAngle{dev_num}"
+        if rot_key not in self.qs_vars or tilt_key not in self.qs_vars:
+            return
+
+        def _apply():
+            if getattr(self.controller, '_shutting_down', False):
+                return
+            try:
+                self.qs_vars[rot_key].set(f"{rot:.1f}")
+                self.qs_vars[tilt_key].set(f"{tilt:.1f}")
+            except tk.TclError:
+                pass
+        self.notebook.after(0, _apply)
 
     def save_quick_setup(self):
         if not hasattr(self.controller, 'config_manager') or not self.controller.config_manager:
@@ -527,17 +718,21 @@ class AutomationUI:
         t_str = f"{tilt:.1f}" if tilt is not None else "Err"
         r_str = f"{rot:.1f}" if rot is not None else "Err"
 
+        cable = self.controller.config_manager.get_config_value(f"direction{dev_num}") or ""
+        side = injection_side_label(cable, rot, tilt)
+        side_str = f", Injects: {side}" if side else ""
+
         if hasattr(self, 'sn_labels') and sn in self.sn_labels:
             # Guard against the widget being destroyed before this queued callback
             # fires (e.g. during app shutdown) → avoids TclError "invalid command name".
             tilt_locked = (tilt is not None and abs(tilt) > 0.5)
 
-            def _apply_sn(sn=sn, t_str=t_str, r_str=r_str, dev=dev_num, locked=tilt_locked):
+            def _apply_sn(sn=sn, t_str=t_str, r_str=r_str, side_str=side_str, dev=dev_num, locked=tilt_locked):
                 if getattr(self.controller, '_shutting_down', False):
                     return
                 try:
                     self.sn_labels[sn].config(
-                        text=f"{sn} | Status -> Tilt: {t_str}°, Rot: {r_str}°")
+                        text=f"{sn} | Status -> Tilt: {t_str}°, Rot: {r_str}°{side_str}")
                     # Enforce rotation interlock: disable Move Rot when tilt != 0
                     if dev in getattr(self, 'manual_rot_buttons', {}):
                         btn_rot, lock_lbl = self.manual_rot_buttons[dev]
@@ -557,9 +752,14 @@ class AutomationUI:
         status_text = self.sn_labels[sn].cget("text")
 
         try:
-            parts = status_text.split("Tilt: ")[1].split(", Rot: ")
-            tilt_val = float(parts[0].replace("°", ""))
-            rot_val = float(parts[1].replace("°", ""))
+            # Regex instead of split() -- the label may have trailing text after
+            # Rot (e.g. ", Injects: X+"), which broke split(", Rot: ")[1] parsing.
+            m_tilt = re.search(r'Tilt:\s*(-?[\d.]+)\s*°', status_text)
+            m_rot = re.search(r'Rot:\s*(-?[\d.]+)\s*°', status_text)
+            if not m_tilt or not m_rot:
+                raise ValueError(f"could not parse status text: {status_text!r}")
+            tilt_val = float(m_tilt.group(1))
+            rot_val = float(m_rot.group(1))
 
             self.update_config_angles(sn, tilt_val, rot_val)
 
@@ -577,7 +777,6 @@ class AutomationUI:
 
     def update_config_angles(self, sn, tilt, rot):
         try:
-            import re
             config_path = "/home/precalkor/Integrated_Control_SW/DAQ_Control_SW/config3.h"
             
             with open(config_path, 'r', encoding='utf-8') as f:

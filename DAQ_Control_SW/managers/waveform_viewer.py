@@ -28,7 +28,11 @@ IMPEDANCE      = 50.0           # Ohm
 TIME_PER_SAMPLE = 2.0           # ns per sample
 TRIGGER_CH     = 3
 PED_START, PED_END = 100, 300
-SIG_START, SIG_END = 610, 660
+SIG_START, SIG_END = 595, 645  # shifted 15 samples earlier total (cable shortened -> signal arrives sooner; matches prod_ntp_v7.C's sigStart)
+
+# Known CAEN V1730 internal clock frequencies (MHz) — appear as coherent spurs
+NOISE_FREQS_MHZ = [50.0, 62.5, 100.0, 125.0]
+NOISE_FREQ_LABELS = {50.0: "PLL ref", 62.5: "Cntr read", 100.0: "2× PLL", 125.0: "Trig clk"}
 
 # ── Light theme colours ───────────────────────────────────────────────────
 BG      = "white"
@@ -43,7 +47,8 @@ SIG_SPAN_C = "#fee2e2"   # light red for signal region
 
 
 def _pedestal(adc: np.ndarray, ped_start: int = PED_START, ped_end: int = PED_END) -> float:
-    return float(np.mean(adc[ped_start:ped_end]))
+    sl = adc[ped_start:ped_end]
+    return float(np.mean(sl)) if len(sl) > 0 else 0.0
 
 
 def _charge_pC(adc: np.ndarray, ped: float,
@@ -88,11 +93,26 @@ class WaveformViewerPanel:
         # of either polarity (magnitude above threshold) — i.e. "events with signal".
         self._search_op = tk.StringVar(value="<")
 
+        # mV peak search
+        self._mv_thresh  = tk.StringVar(value="5.0")
+        self._mv_search_ch = tk.IntVar(value=0)   # which channel to search (radio)
+
+        # Noise scan (FFT amplitude at known clock frequencies)
+        self._noise_freq_var = tk.StringVar(value="All")
+        self._noise_amp_var  = tk.StringVar(value="10")  # uV threshold
+        self._noise_scan_id  = None
+        self._noise_scan_win = None
+
+        # Drag-zoom state per subplot (axis index → [x0, y0, press_data_coord])
+        self._drag_start = None   # (ax, x0_data, y0_data, axis: 'x'|'y'|'xy')
+
         # User-adjustable pedestal window (defaults mirror Analysis.cpp constants).
         # Changing it moves the dashed average-pedestal line AND recomputes charge,
         # since charge = Σ(pedestal − adc) over the signal window.
         self._ped_start_var = tk.StringVar(value=str(PED_START))
         self._ped_end_var   = tk.StringVar(value=str(PED_END))
+        self._sig_start_var = tk.StringVar(value=str(SIG_START))
+        self._sig_end_var   = tk.StringVar(value=str(SIG_END))
 
         self._status = tk.StringVar(value="Load a RAW .root file to begin.")
         self._file_lbl = tk.StringVar(value="—")
@@ -139,15 +159,17 @@ class WaveformViewerPanel:
         self._total_lbl = ttk.Label(fb, text="/ —", font=("Helvetica", 10))
         tk.Button(fb, text="⏮", command=lambda: self._goto(0),
                   bg="#343a40", fg="white", relief="flat", padx=6).pack(side=tk.LEFT)
-        tk.Button(fb, text="◀", command=self._prev,
-                  bg="#343a40", fg="white", relief="flat", padx=8).pack(side=tk.LEFT, padx=(2, 0))
+        btn_prev = tk.Button(fb, text="◀", bg="#343a40", fg="white", relief="flat", padx=8)
+        btn_prev.pack(side=tk.LEFT, padx=(2, 0))
+        self._bind_hold(btn_prev, self._prev)
         e = ttk.Entry(fb, textvariable=self._entry_var, width=8, justify="center",
                       font=("Helvetica", 10, "bold"))
         e.pack(side=tk.LEFT, padx=4)
         e.bind("<Return>", lambda _: self._goto_var())
         self._total_lbl.pack(side=tk.LEFT)
-        tk.Button(fb, text="▶", command=self._next,
-                  bg="#343a40", fg="white", relief="flat", padx=8).pack(side=tk.LEFT, padx=(4, 0))
+        btn_next = tk.Button(fb, text="▶", bg="#343a40", fg="white", relief="flat", padx=8)
+        btn_next.pack(side=tk.LEFT, padx=(4, 0))
+        self._bind_hold(btn_next, self._next)
         tk.Button(fb, text="⏭", command=lambda: self._goto(max(0, self._n_entries - 1)),
                   bg="#343a40", fg="white", relief="flat", padx=6).pack(side=tk.LEFT, padx=(2, 0))
 
@@ -166,53 +188,93 @@ class WaveformViewerPanel:
                                      font=("Helvetica", 9, "bold"), relief="flat", padx=8)
         self._search_btn.pack(side=tk.LEFT, padx=(4, 0))
 
+        # mV search widgets are placed in Row 1 (fft_ctrl_frame) to avoid overflow
+
         # ── Row 1: averaging controls (always visible; apply to BOTH the
         #    time-domain waveform and the FFT spectrum) ────────────────────
         self._fft_ctrl_frame = ttk.Frame(parent, padding=(8, 4, 8, 4))
         self._fft_ctrl_frame.grid(row=1, column=0, sticky="ew")
-        ttk.Label(self._fft_ctrl_frame, text="Display:",
+
+        # Two stacked rows so the controls never overflow horizontally:
+        #   top → display / averaging   |   bottom → jump & scan searches
+        ctrl_top = ttk.Frame(self._fft_ctrl_frame)
+        ctrl_top.pack(side=tk.TOP, fill=tk.X)
+        ctrl_bot = ttk.Frame(self._fft_ctrl_frame)
+        ctrl_bot.pack(side=tk.TOP, fill=tk.X, pady=(4, 0))
+
+        ttk.Label(ctrl_top, text="Display:",
                   font=("Helvetica", 9, "bold")).pack(side=tk.LEFT)
-        ttk.Radiobutton(self._fft_ctrl_frame, text="Single event",
+        ttk.Radiobutton(ctrl_top, text="Single event",
                         variable=self._fft_avg_mode, value=False,
                         command=self._on_fft_mode_change).pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Radiobutton(self._fft_ctrl_frame, text="Average",
+        ttk.Radiobutton(ctrl_top, text="Average",
                         variable=self._fft_avg_mode, value=True,
                         command=self._on_fft_mode_change).pack(side=tk.LEFT, padx=(6, 0))
 
-        ttk.Separator(self._fft_ctrl_frame, orient="vertical").pack(side=tk.LEFT, fill=tk.Y, padx=10)
+        ttk.Separator(ctrl_top, orient="vertical").pack(side=tk.LEFT, fill=tk.Y, padx=10)
 
-        ttk.Label(self._fft_ctrl_frame, text="Event range  from:",
+        ttk.Label(ctrl_top, text="Event range  from:",
                   font=("Helvetica", 9)).pack(side=tk.LEFT)
-        self._avg_from_entry = ttk.Entry(self._fft_ctrl_frame, textvariable=self._avg_from,
+        self._avg_from_entry = ttk.Entry(ctrl_top, textvariable=self._avg_from,
                                          width=7, justify="center")
         self._avg_from_entry.pack(side=tk.LEFT, padx=3)
-        ttk.Label(self._fft_ctrl_frame, text="to:",
+        ttk.Label(ctrl_top, text="to:",
                   font=("Helvetica", 9)).pack(side=tk.LEFT)
-        self._avg_to_entry = ttk.Entry(self._fft_ctrl_frame, textvariable=self._avg_to,
+        self._avg_to_entry = ttk.Entry(ctrl_top, textvariable=self._avg_to,
                                        width=7, justify="center")
         self._avg_to_entry.pack(side=tk.LEFT, padx=3)
 
         # Quick presets — save typing for common ranges.
-        tk.Button(self._fft_ctrl_frame, text="All", command=self._avg_range_all,
+        tk.Button(ctrl_top, text="All", command=self._avg_range_all,
                   bg="#e5e7eb", fg="#374151", font=("Helvetica", 8, "bold"),
                   relief="flat", padx=6).pack(side=tk.LEFT, padx=(4, 0))
-        tk.Button(self._fft_ctrl_frame, text="1k", command=lambda: self._avg_range_quick(1000),
+        tk.Button(ctrl_top, text="1k", command=lambda: self._avg_range_quick(1000),
                   bg="#e5e7eb", fg="#374151", font=("Helvetica", 8, "bold"),
                   relief="flat", padx=6).pack(side=tk.LEFT, padx=(2, 0))
-        tk.Button(self._fft_ctrl_frame, text="10k", command=lambda: self._avg_range_quick(10000),
+        tk.Button(ctrl_top, text="10k", command=lambda: self._avg_range_quick(10000),
                   bg="#e5e7eb", fg="#374151", font=("Helvetica", 8, "bold"),
                   relief="flat", padx=6).pack(side=tk.LEFT, padx=(2, 0))
 
         self._avg_compute_btn = tk.Button(
-            self._fft_ctrl_frame, text="Compute Average",
+            ctrl_top, text="Compute Average",
             command=self._start_avg_fft,
             bg="#7c3aed", fg="white", font=("Helvetica", 9, "bold"),
             relief="flat", padx=10)
         self._avg_compute_btn.pack(side=tk.LEFT, padx=(8, 0))
 
-        self._avg_status_lbl = ttk.Label(self._fft_ctrl_frame, text="",
+        self._avg_status_lbl = ttk.Label(ctrl_top, text="",
                                          font=("Helvetica", 9), foreground="#6b7280")
         self._avg_status_lbl.pack(side=tk.LEFT, padx=(8, 0))
+
+        # mV peak search — bottom row
+        ttk.Label(ctrl_bot, text="Jump: peak >", font=("Helvetica", 9)).pack(side=tk.LEFT)
+        ttk.Entry(ctrl_bot, textvariable=self._mv_thresh,
+                  width=6, justify="center").pack(side=tk.LEFT, padx=2)
+        ttk.Label(ctrl_bot, text="mV  ch:", font=("Helvetica", 9)).pack(side=tk.LEFT, padx=(2, 0))
+        self._mv_ch_frame = ttk.Frame(ctrl_bot)
+        self._mv_ch_frame.pack(side=tk.LEFT, padx=2)
+        self._mv_search_btn = tk.Button(ctrl_bot, text="🔍 Find",
+                                        command=self._start_mv_search,
+                                        bg="#0891b2", fg="white",
+                                        font=("Helvetica", 9, "bold"), relief="flat", padx=8)
+        self._mv_search_btn.pack(side=tk.LEFT, padx=(4, 0))
+
+        # Noise scan — scan all events by FFT amplitude at CAEN clock frequencies
+        ttk.Separator(ctrl_bot, orient="vertical").pack(side=tk.LEFT, fill=tk.Y, padx=10)
+        ttk.Label(ctrl_bot, text="Noise scan:", font=("Helvetica", 9)).pack(side=tk.LEFT)
+        self._noise_freq_combo = ttk.Combobox(
+            ctrl_bot, textvariable=self._noise_freq_var, width=6, state="readonly",
+            values=["All"] + [str(f) for f in NOISE_FREQS_MHZ])
+        self._noise_freq_combo.pack(side=tk.LEFT, padx=(4, 2))
+        ttk.Label(ctrl_bot, text="MHz >", font=("Helvetica", 9)).pack(side=tk.LEFT)
+        ttk.Entry(ctrl_bot, textvariable=self._noise_amp_var,
+                  width=5, justify="center").pack(side=tk.LEFT, padx=2)
+        ttk.Label(ctrl_bot, text="uV", font=("Helvetica", 9)).pack(side=tk.LEFT)
+        self._noise_scan_btn = tk.Button(
+            ctrl_bot, text="📡 Scan",
+            command=self._start_noise_scan,
+            bg="#065f46", fg="white", font=("Helvetica", 9, "bold"), relief="flat", padx=8)
+        self._noise_scan_btn.pack(side=tk.LEFT, padx=(4, 0))
 
         # ── Row 2: per-channel axis bar ───────────────────────────────────
         ab = ttk.Frame(parent, padding=(8, 2, 8, 4))
@@ -238,12 +300,23 @@ class WaveformViewerPanel:
                   bg="#e5e7eb", fg="#374151", font=("Helvetica", 9, "bold"),
                   relief="flat", padx=5).pack(side=tk.LEFT, padx=(0, 10))
 
+        ttk.Label(btn_strip, text="Signal range:", font=("Helvetica", 9, "bold")).pack(side=tk.LEFT)
+        sig_s_entry = ttk.Entry(btn_strip, textvariable=self._sig_start_var,
+                                width=6, justify="center")
+        sig_s_entry.pack(side=tk.LEFT, padx=(4, 1))
+        ttk.Label(btn_strip, text="–", font=("Helvetica", 9)).pack(side=tk.LEFT)
+        sig_e_entry = ttk.Entry(btn_strip, textvariable=self._sig_end_var,
+                                width=6, justify="center")
+        sig_e_entry.pack(side=tk.LEFT, padx=(1, 4))
+        sig_s_entry.bind("<Return>", lambda _: self._redraw())
+        sig_e_entry.bind("<Return>", lambda _: self._redraw())
+        tk.Button(btn_strip, text="↺", command=self._reset_sig_range,
+                  bg="#e5e7eb", fg="#374151", font=("Helvetica", 9, "bold"),
+                  relief="flat", padx=5).pack(side=tk.LEFT, padx=(0, 10))
+
         tk.Button(btn_strip, text="⊙ Ped Center", command=self._ped_center,
                   bg="#4f46e5", fg="white", font=("Helvetica", 9, "bold"),
                   relief="flat", padx=8).pack(side=tk.LEFT, padx=(0, 4))
-        tk.Button(btn_strip, text="Apply", command=self._redraw,
-                  bg="#374151", fg="white", font=("Helvetica", 9, "bold"),
-                  relief="flat", padx=8).pack(side=tk.LEFT)
 
         # Status label (below buttons)
         ttk.Label(ab, textvariable=self._status,
@@ -260,6 +333,12 @@ class WaveformViewerPanel:
         self._fig = Figure(facecolor=BG)
         self._canvas = FigureCanvasTkAgg(self._fig, master=parent)
         self._canvas.get_tk_widget().grid(row=3, column=0, sticky="nsew", padx=4, pady=(0, 4))
+
+        # Drag-zoom with rubber-band feedback; right-click to unzoom
+        self._drag_rect_patch = None   # live Rectangle overlay during drag
+        self._canvas.mpl_connect("button_press_event",   self._drag_press)
+        self._canvas.mpl_connect("motion_notify_event",  self._drag_motion)
+        self._canvas.mpl_connect("button_release_event", self._drag_release)
 
         # Keyboard nav (only when this panel's parent is focused)
         parent.bind("<Left>",  lambda _: self._prev())
@@ -322,27 +401,52 @@ class WaveformViewerPanel:
                 n = tree.num_entries
                 rec_len = int(tree["RecordLength"].array(
                     entry_start=0, entry_stop=1, library="np")[0])
+                post_trigger = int(tree["PostTrigger"].array(
+                    entry_start=0, entry_stop=1, library="np")[0])
                 keys = [k.split(";")[0] for k in tree.keys()]
                 channels = [i for i in range(8) if f"OffsetValue{i}" in keys]
+
+                # Detect dark mode from InfoTree (same logic as prod_ntp_v7.C)
+                dark_mode = False
+                try:
+                    info = f["InfoTree"]
+                    run_mode = str(info["RunMode"].array(library="np")[0])
+                    if run_mode.strip().lower() in ("dark",):
+                        dark_mode = True
+                except Exception:
+                    pass
+
+                trg_point = int(rec_len * (1.0 - post_trigger / 100.0))
+                sig_s = trg_point if dark_mode else SIG_START
+                sig_e = min(sig_s + 50, rec_len)
+
                 self.parent.after(0, lambda: self._on_loaded(
-                    path, tree, n, rec_len, channels))
+                    path, tree, n, rec_len, channels, sig_s, sig_e))
             except Exception as exc:
                 self.parent.after(0, lambda e=exc: self._status.set(f"Error: {e}"))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_loaded(self, path, tree, n_entries, n_samples, channels):
+    def _on_loaded(self, path, tree, n_entries, n_samples, channels, sig_s=SIG_START, sig_e=SIG_END):
         import os
         self._tree = tree
         self._n_entries = n_entries
         self._n_samples = n_samples
         self._channels  = channels
         self._cur_entry = 0
+        self._sig_start_var.set(str(sig_s))
+        self._sig_end_var.set(str(sig_e))
         self._file_lbl.set(os.path.basename(path))
         self._total_lbl.config(text=f"/ {n_entries - 1}")
         self._status.set(
             f"{n_entries:,} entries  •  {len(channels)} ch  •  {n_samples} samples/ch"
-            f"  •  sig [{SIG_START}–{SIG_END}]")
+            f"  •  sig [{sig_s}–{sig_e}]")
+        # Clear cached averages — they are keyed to the old file's sample count
+        self._avg_result  = None
+        self._avg_wave    = None
+        self._avg_cancel  = False
+        self._avg_computing = False
+
         # Rebuild per-channel axis controls to match actual channel count
         n_slots = min(len(channels), 8)
         for slot, ch in enumerate(channels[:n_slots]):
@@ -353,6 +457,7 @@ class WaveformViewerPanel:
             self._slot_x_s[slot].set("")
             self._slot_x_e[slot].set("")
         self._build_slot_controls(n_slots)
+        self._rebuild_mv_ch_radios(channels)
         self._show_entry(0)
 
     # ══════════════════════════════════════════════════════════════════════
@@ -364,6 +469,161 @@ class WaveformViewerPanel:
 
     def _prev(self):
         if self._tree: self._show_entry(self._cur_entry - 1)
+
+    def _bind_hold(self, btn: tk.Button, action, initial_ms: int = 400, repeat_ms: int = 80):
+        """Press-and-hold auto-repeat: fires action once on click, then repeatedly after a delay."""
+        _job = [None]
+
+        def _cancel():
+            if _job[0]:
+                btn.after_cancel(_job[0])
+                _job[0] = None
+
+        def _repeat():
+            action()
+            _job[0] = btn.after(repeat_ms, _repeat)
+
+        def _press(_):
+            action()
+            _cancel()
+            _job[0] = btn.after(initial_ms, _repeat)
+
+        def _release(_):
+            _cancel()
+
+        btn.bind("<ButtonPress-1>",   _press)
+        btn.bind("<ButtonRelease-1>", _release)
+
+    def _rebuild_mv_ch_radios(self, channels):
+        """Rebuild mV-search channel radio buttons to match loaded file's channels."""
+        for w in self._mv_ch_frame.winfo_children():
+            w.destroy()
+        pmt_channels = [ch for ch in channels if ch != TRIGGER_CH]
+        if not pmt_channels:
+            pmt_channels = channels
+        if self._mv_search_ch.get() not in pmt_channels:
+            self._mv_search_ch.set(pmt_channels[0] if pmt_channels else 0)
+        for ch in pmt_channels:
+            ttk.Radiobutton(self._mv_ch_frame, text=f"CH{ch}",
+                            variable=self._mv_search_ch, value=ch).pack(side=tk.LEFT)
+
+    # ── Drag-zoom (ROOT-style: drag on plot to set axis range) ────────────
+
+    def _drag_press(self, event):
+        """Left-drag starts zoom selection; right-click resets axis."""
+        if event.inaxes is None:
+            return
+        ax = event.inaxes
+
+        if event.button == 3:
+            # Right-click → unzoom: reset this subplot's axis vars to defaults
+            axes = self._fig.get_axes()
+            try:
+                idx = axes.index(ax)
+            except ValueError:
+                return
+            if not self._fft_mode and idx < len(self._channels):
+                self._slot_x_s[idx].set("")
+                self._slot_x_e[idx].set("")
+                self._slot_y_lo[idx].set(5.0)
+                self._slot_y_hi[idx].set(5.0)
+                self._redraw()
+            elif self._fft_mode:
+                DT = 2e-9
+                ax.set_xlim(0, 1.0 / DT / 1e6 / 2)
+                self._canvas.draw_idle()
+            return
+
+        if event.button != 1 or event.xdata is None:
+            return
+        self._drag_start = (ax, event.xdata, event.ydata)
+        # Create rubber-band rectangle overlay
+        from matplotlib.patches import Rectangle
+        self._drag_rect_patch = Rectangle(
+            (event.xdata, event.ydata), 0, 0,
+            linewidth=1.2, edgecolor="#2563eb", facecolor="#2563eb",
+            alpha=0.15, zorder=10)
+        ax.add_patch(self._drag_rect_patch)
+        self._canvas.draw_idle()
+
+    def _drag_motion(self, event):
+        """Update rubber-band rectangle as mouse moves."""
+        if self._drag_start is None or self._drag_rect_patch is None:
+            return
+        ax0, x0, y0 = self._drag_start
+        if event.inaxes is not ax0 or event.xdata is None:
+            return
+        x1, y1 = event.xdata, event.ydata
+        x_lo, x_hi = sorted([x0, x1])
+        y_lo, y_hi = sorted([y0, y1])
+        self._drag_rect_patch.set_xy((x_lo, y_lo))
+        self._drag_rect_patch.set_width(x_hi - x_lo)
+        self._drag_rect_patch.set_height(y_hi - y_lo)
+        self._canvas.draw_idle()
+
+    def _drag_release(self, event):
+        """Apply zoom from drag release position."""
+        # Remove rubber band regardless
+        if self._drag_rect_patch is not None:
+            try:
+                self._drag_rect_patch.remove()
+            except Exception:
+                pass
+            self._drag_rect_patch = None
+
+        if self._drag_start is None or event.button != 1:
+            self._drag_start = None
+            self._canvas.draw_idle()
+            return
+
+        ax0, x0, y0 = self._drag_start
+        self._drag_start = None
+
+        if event.inaxes is not ax0 or event.xdata is None or event.ydata is None:
+            self._canvas.draw_idle()
+            return
+
+        x1, y1 = event.xdata, event.ydata
+        dx, dy = abs(x1 - x0), abs(y1 - y0)
+        if dx < 1e-9 and dy < 1e-9:
+            self._canvas.draw_idle()
+            return
+
+        x_lo, x_hi = sorted([x0, x1])
+        y_lo, y_hi = sorted([y0, y1])
+
+        axes = self._fig.get_axes()
+        try:
+            idx = axes.index(ax0)
+        except ValueError:
+            return
+
+        if self._fft_mode:
+            if dx > 1e-9:
+                ax0.set_xlim(x_lo, x_hi)
+                self._canvas.draw_idle()
+            return
+
+        if idx < len(self._channels):
+            if dx > 1e-9:
+                self._slot_x_s[idx].set(str(int(round(x_lo))))
+                self._slot_x_e[idx].set(str(int(round(x_hi))))
+            if dy > 1e-9 and idx < self._n_slots:
+                try:
+                    raw = self._tree["ADC"].array(
+                        entry_start=self._cur_entry,
+                        entry_stop=self._cur_entry + 1, library="np")
+                    ch = self._channels[idx]
+                    s = np.asarray(raw[0]).astype(np.float64)
+                    seg_v = s[ch * self._n_samples:(ch + 1) * self._n_samples]
+                    ped_mv = float(np.mean(seg_v[PED_START:PED_END])) * ADC_TO_MV
+                except Exception:
+                    ped_mv = (y_lo + y_hi) / 2
+                lo = round(max(0.1, ped_mv - y_lo), 2)
+                hi = round(max(0.1, y_hi - ped_mv), 2)
+                self._slot_y_lo[idx].set(lo)
+                self._slot_y_hi[idx].set(hi)
+            self._redraw()
 
     def _goto(self, n: int):
         if self._tree: self._show_entry(n)
@@ -396,6 +656,26 @@ class WaveformViewerPanel:
         """Restore the default pedestal window and redraw."""
         self._ped_start_var.set(str(PED_START))
         self._ped_end_var.set(str(PED_END))
+        self._redraw()
+
+    def _get_sig_range(self):
+        """Return the current (start, end) signal window from the UI, clamped to valid bounds."""
+        try:
+            ss = int(self._sig_start_var.get())
+            se = int(self._sig_end_var.get())
+        except (ValueError, tk.TclError):
+            return SIG_START, SIG_END
+        n = self._n_samples or (SIG_END + 1)
+        ss = max(0, min(ss, n - 1))
+        se = max(0, min(se, n))
+        if se <= ss:
+            return SIG_START, SIG_END
+        return ss, se
+
+    def _reset_sig_range(self):
+        """Restore the default signal window and redraw."""
+        self._sig_start_var.set(str(SIG_START))
+        self._sig_end_var.set(str(SIG_END))
         self._redraw()
 
     def _toggle_fft(self):
@@ -640,6 +920,7 @@ class WaveformViewerPanel:
         LABEL_C = "#374151"
 
         ped_start, ped_end = self._get_ped_range()   # user-adjustable window
+        sig_start, sig_end = self._get_sig_range()
 
         for idx, ch in enumerate(self._channels):
             slot = idx
@@ -656,12 +937,14 @@ class WaveformViewerPanel:
             x_s_str = self._slot_x_s[slot].get().strip()
             x_e_str = self._slot_x_e[slot].get().strip()
             x_s = int(x_s_str) if x_s_str else 0
-            x_e = int(x_e_str) if x_e_str else self._n_samples
 
             ax = self._fig.add_subplot(n_rows, n_cols, idx + 1)
             ax.set_facecolor(BG)
 
             seg     = adc_flat[ch * self._n_samples: (ch + 1) * self._n_samples]
+            n_seg   = len(seg)                  # actual sample count (matches file's RecordLength)
+            samples = np.arange(n_seg)
+            x_e     = int(x_e_str) if x_e_str else n_seg
             voltage = seg * ADC_TO_MV
             ped_adc = _pedestal(seg, ped_start, ped_end)
             ped_mv  = ped_adc * ADC_TO_MV
@@ -672,12 +955,11 @@ class WaveformViewerPanel:
                              color=LABEL_C, fontsize=9, fontweight="bold", pad=4)
                 ax.set_ylim(ped_mv - 100, ped_mv + 200)
             else:
-                q = _charge_pC(seg, ped_adc)
+                q = _charge_pC(seg, ped_adc, sig_start, sig_end)
                 ax.set_title(f"CH{ch}  {tag}  │  {q:+.3f} pC",
                              color=LABEL_C, fontsize=9, fontweight="bold", pad=4)
-                # Highlight the (now user-defined) pedestal window and the signal window
                 ax.axvspan(ped_start, ped_end, alpha=0.35, color=PED_SPAN_C, lw=0)
-                ax.axvspan(SIG_START, SIG_END, alpha=0.35, color=SIG_SPAN_C, lw=0)
+                ax.axvspan(sig_start, sig_end, alpha=0.35, color=SIG_SPAN_C, lw=0)
                 ax.set_ylim(ped_mv - y_lo, ped_mv + y_hi)
 
             ax.plot(samples, voltage, color=WAVE, linewidth=0.7)
@@ -846,6 +1128,13 @@ class WaveformViewerPanel:
                         fontsize=7, color="#dc2626",
                         arrowprops=dict(arrowstyle="-", color="#dc2626", lw=0.8))
 
+            # Mark known CAEN internal clock frequencies
+            y_max = ax.get_ylim()[1] if ax.get_ylim()[1] > 0 else float(np.max(mag))
+            for f_mhz, f_lbl in NOISE_FREQ_LABELS.items():
+                ax.axvline(f_mhz, color="#f59e0b", linewidth=0.8, linestyle=":", alpha=0.6)
+                ax.text(f_mhz, y_max * 0.97, f_lbl, rotation=90,
+                        fontsize=6, color="#b45309", va="top", ha="right", alpha=0.8)
+
             label = "Trigger" if ch == TRIGGER_CH else f"{peak_freq:.1f} MHz peak"
             ax.set_title(f"CH{ch}  AVG FFT  │  {label}",
                          color=LABEL_C, fontsize=9, fontweight="bold", pad=4)
@@ -869,7 +1158,6 @@ class WaveformViewerPanel:
     def _build_slot_controls(self, n_slots: int):
         """Rebuild the per-channel axis control grid for n_slots channels."""
         self._n_slots = n_slots
-        # Destroy old widgets
         for w in self._ch_grid.winfo_children():
             w.destroy()
         n_cols = 2 if n_slots > 1 else 1
@@ -883,17 +1171,27 @@ class WaveformViewerPanel:
                       font=("Helvetica", 9, "bold"),
                       foreground="#1d4ed8", width=4).pack(side=tk.LEFT)
             ttk.Label(sf, text="Y –", font=("Helvetica", 9)).pack(side=tk.LEFT)
-            ttk.Entry(sf, textvariable=self._slot_y_lo[slot],
-                      width=5, justify="center").pack(side=tk.LEFT, padx=1)
+            ey_lo = ttk.Entry(sf, textvariable=self._slot_y_lo[slot], width=5, justify="center")
+            ey_lo.pack(side=tk.LEFT, padx=1)
             ttk.Label(sf, text="/+", font=("Helvetica", 9)).pack(side=tk.LEFT)
-            ttk.Entry(sf, textvariable=self._slot_y_hi[slot],
-                      width=5, justify="center").pack(side=tk.LEFT, padx=(1, 4))
+            ey_hi = ttk.Entry(sf, textvariable=self._slot_y_hi[slot], width=5, justify="center")
+            ey_hi.pack(side=tk.LEFT, padx=(1, 4))
             ttk.Label(sf, text="mV  X", font=("Helvetica", 9)).pack(side=tk.LEFT)
-            ttk.Entry(sf, textvariable=self._slot_x_s[slot],
-                      width=5, justify="center").pack(side=tk.LEFT, padx=(2, 1))
+            ex_s = ttk.Entry(sf, textvariable=self._slot_x_s[slot], width=5, justify="center")
+            ex_s.pack(side=tk.LEFT, padx=(2, 1))
             ttk.Label(sf, text="–", font=("Helvetica", 9)).pack(side=tk.LEFT)
-            ttk.Entry(sf, textvariable=self._slot_x_e[slot],
-                      width=5, justify="center").pack(side=tk.LEFT, padx=1)
+            ex_e = ttk.Entry(sf, textvariable=self._slot_x_e[slot], width=5, justify="center")
+            ex_e.pack(side=tk.LEFT, padx=1)
+            # Enter in any axis entry triggers redraw
+            for entry_w in (ey_lo, ey_hi, ex_s, ex_e):
+                entry_w.bind("<Return>", lambda _: self._redraw())
+
+        # Apply button — placed inline after the slot grid, clearly visible
+        apply_frame = ttk.Frame(self._ch_grid, padding=(8, 0, 0, 0))
+        apply_frame.grid(row=0, column=n_cols, rowspan=2, sticky="w")
+        tk.Button(apply_frame, text="✓ Apply", command=self._redraw,
+                  bg="#16a34a", fg="white", font=("Helvetica", 9, "bold"),
+                  relief="flat", padx=10, pady=3).pack(side=tk.LEFT)
 
     def _clear(self):
         """Reset panel to the initial guide screen without losing nothing on disk."""
@@ -1008,9 +1306,10 @@ class WaveformViewerPanel:
         self._status.set(f"Searching for {desc}  (from entry {self._cur_entry + 1})…")
 
         start = self._cur_entry + 1
-        # Use the same pedestal window as the display so the search agrees with
+        # Use the same pedestal/signal windows as the display so the search agrees with
         # the charge shown on screen.
         ped_start, ped_end = self._get_ped_range()
+        sig_start, sig_end = self._get_sig_range()
 
         def worker():
             found = -1
@@ -1029,7 +1328,7 @@ class WaveformViewerPanel:
                             if ch == TRIGGER_CH:
                                 continue
                             seg = adc_flat[ch * self._n_samples: (ch + 1) * self._n_samples].astype(np.float64)
-                            q = _charge_pC(seg, _pedestal(seg, ped_start, ped_end))
+                            q = _charge_pC(seg, _pedestal(seg, ped_start, ped_end), sig_start, sig_end)
                             if match(q):
                                 found = entry
                                 break
@@ -1067,6 +1366,210 @@ class WaveformViewerPanel:
     def _reset_search_btn(self):
         self._search_btn.config(text="🔍 Search", command=self._start_search,
                                 bg="#fd7e14")
+
+    # ── mV peak search ────────────────────────────────────────────────────
+
+    def _start_mv_search(self):
+        """Find next event where selected channel has a peak deviation > threshold mV."""
+        if self._tree is None:
+            messagebox.showwarning("No File", "Load a file first.")
+            return
+        try:
+            mv_thr = float(self._mv_thresh.get())
+        except ValueError:
+            messagebox.showwarning("Invalid", "Enter a numeric mV threshold.")
+            return
+        ch_target = self._mv_search_ch.get()
+        if ch_target not in self._channels:
+            messagebox.showwarning("Channel", f"CH{ch_target} not in this file.")
+            return
+
+        # Cancel any in-progress search
+        self._search_id = object()
+        token = self._search_id
+        desc = f"peak > {mv_thr} mV on CH{ch_target}"
+        self._mv_search_btn.config(text="⏹ Cancel", command=self._cancel_mv_search,
+                                   bg="#dc3545")
+        self._status.set(f"Searching for {desc}…")
+
+        start = self._cur_entry + 1
+        ped_start, ped_end = self._get_ped_range()
+        n = self._n_samples
+
+        def worker():
+            found = -1
+            BATCH = 1000
+            try:
+                for b_start in range(start, self._n_entries, BATCH):
+                    if self._search_id is not token:
+                        return
+                    b_end = min(b_start + BATCH, self._n_entries)
+                    adcs = self._tree["ADC"].array(
+                        entry_start=b_start, entry_stop=b_end, library="np")
+                    for i, adc_flat in enumerate(adcs):
+                        seg = adc_flat[ch_target * n:(ch_target + 1) * n].astype(np.float64)
+                        ped_mv = float(np.mean(seg[ped_start:ped_end])) * ADC_TO_MV
+                        voltage = seg * ADC_TO_MV
+                        peak_dev = float(np.max(np.abs(voltage - ped_mv)))
+                        if peak_dev > mv_thr:
+                            found = b_start + i
+                            break
+                    if found >= 0:
+                        break
+                    if (b_start // BATCH) % 10 == 0:
+                        pct = 100 * b_start / self._n_entries
+                        self.parent.after(0, lambda p=pct, b=b_start: self._status.set(
+                            f"Searching… {b:,}/{self._n_entries:,}  ({p:.0f}%)"))
+            except Exception as exc:
+                self.parent.after(0, lambda e=exc: self._status.set(f"Search error: {e}"))
+                self.parent.after(0, self._reset_mv_search_btn)
+                return
+
+            def on_done():
+                self._reset_mv_search_btn()
+                if found >= 0:
+                    self._status.set(f"Found {desc} at entry #{found}")
+                    self._show_entry(found)
+                else:
+                    self._status.set(f"No more events with {desc}")
+
+            self.parent.after(0, on_done)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _cancel_mv_search(self):
+        self._search_id = object()
+        self._status.set("Search cancelled.")
+        self._reset_mv_search_btn()
+
+    def _reset_mv_search_btn(self):
+        self._mv_search_btn.config(text="🔍 Find", command=self._start_mv_search,
+                                   bg="#0891b2")
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Noise scan — find events with high FFT amplitude at clock frequencies
+    # ══════════════════════════════════════════════════════════════════════
+
+    def _start_noise_scan(self):
+        if self._tree is None:
+            messagebox.showwarning("No File", "Load a file first.")
+            return
+        try:
+            amp_thr_uv = float(self._noise_amp_var.get())
+        except ValueError:
+            messagebox.showwarning("Invalid", "Enter a numeric uV threshold.")
+            return
+
+        freq_sel = self._noise_freq_var.get()
+        if freq_sel == "All":
+            target_freqs = NOISE_FREQS_MHZ
+        else:
+            try:
+                target_freqs = [float(freq_sel)]
+            except ValueError:
+                target_freqs = NOISE_FREQS_MHZ
+
+        self._noise_scan_id = object()
+        token = self._noise_scan_id
+        self._noise_scan_btn.config(text="⏹ Stop", command=self._cancel_noise_scan,
+                                    bg="#dc3545")
+        self._status.set(f"Noise scan: looking for >{amp_thr_uv} uV at {freq_sel} MHz…")
+
+        n = self._n_samples
+        DT = 2e-9
+        freqs_arr = np.fft.rfftfreq(n, d=DT) / 1e6  # MHz
+        # Find bin indices for each target frequency
+        target_bins = [int(np.argmin(np.abs(freqs_arr - f))) for f in target_freqs]
+        window = np.hanning(n).astype(np.float64)
+        n_total = self._n_entries
+        BATCH = 500
+
+        def worker():
+            results = []  # list of (event_idx, freq_mhz, amp_uv)
+            try:
+                for b_start in range(0, n_total, BATCH):
+                    if self._noise_scan_id is not token:
+                        break
+                    b_end = min(b_start + BATCH, n_total)
+                    block = self._tree["ADC"].array(
+                        entry_start=b_start, entry_stop=b_end, library="np")
+                    block = np.asarray(block, dtype=np.float64)
+                    block = block.reshape(b_end - b_start, -1, n)
+
+                    pmt_chs = [ch for ch in self._channels if ch != TRIGGER_CH]
+                    for i in range(block.shape[0]):
+                        ev = b_start + i
+                        for ch in pmt_chs:
+                            seg = block[i, ch, :]
+                            ped = float(seg[PED_START:PED_END].mean())
+                            sig_mv = (seg - ped) * ADC_TO_MV
+                            mag = np.abs(np.fft.rfft(sig_mv * window)) * 2.0 / n
+                            for f_mhz, b_idx in zip(target_freqs, target_bins):
+                                amp_uv = mag[b_idx] * 1e3
+                                if amp_uv > amp_thr_uv:
+                                    results.append((ev, ch, f_mhz, amp_uv))
+                                    break  # one hit per event is enough
+
+                    if (b_start // BATCH) % 4 == 0:
+                        pct = 100 * b_start // n_total
+                        self.parent.after(0, lambda p=pct, b=b_start: self._status.set(
+                            f"Noise scan: {b:,}/{n_total:,} ({p}%)…"))
+            except Exception as exc:
+                self.parent.after(0, lambda e=exc: self._status.set(f"Scan error: {e}"))
+
+            def finish():
+                self._reset_noise_scan_btn()
+                self._status.set(f"Noise scan done — {len(results)} events found")
+                self._show_noise_results(results, amp_thr_uv, freq_sel)
+            self.parent.after(0, finish)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _cancel_noise_scan(self):
+        self._noise_scan_id = object()
+        self._status.set("Noise scan cancelled.")
+        self._reset_noise_scan_btn()
+
+    def _reset_noise_scan_btn(self):
+        self._noise_scan_btn.config(text="📡 Scan", command=self._start_noise_scan,
+                                    bg="#065f46")
+
+    def _show_noise_results(self, results, amp_thr_uv, freq_sel):
+        """Show scan results in a small popup; clicking an entry jumps to that event."""
+        if self._noise_scan_win and self._noise_scan_win.winfo_exists():
+            self._noise_scan_win.destroy()
+
+        win = tk.Toplevel(self.parent)
+        self._noise_scan_win = win
+        win.title(f"Noise Scan — >{amp_thr_uv} uV @ {freq_sel} MHz")
+        win.geometry("360x400")
+
+        ttk.Label(win, text=f"{len(results)} events  |  click to jump",
+                  font=("Helvetica", 9, "italic"), foreground="#6b7280").pack(pady=(6, 2))
+
+        frame = ttk.Frame(win)
+        frame.pack(fill=tk.BOTH, expand=True, padx=6, pady=4)
+
+        sb = ttk.Scrollbar(frame, orient=tk.VERTICAL)
+        lb = tk.Listbox(frame, yscrollcommand=sb.set, font=("Courier", 9),
+                        selectmode=tk.SINGLE, activestyle="dotbox")
+        sb.config(command=lb.yview)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+        lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        sorted_results = sorted(results, key=lambda x: -x[3])  # sort by amp desc
+        for ev, ch, f_mhz, amp_uv in sorted_results:
+            lb.insert(tk.END, f"#{ev:7d}  CH{ch}  {f_mhz:6.1f} MHz  {amp_uv:7.1f} uV")
+
+        def on_select(event):
+            sel = lb.curselection()
+            if sel:
+                ev = sorted_results[sel[0]][0]
+                self._goto(ev)
+
+        lb.bind("<<ListboxSelect>>", on_select)
+        tk.Button(win, text="Close", command=win.destroy,
+                  bg="#6b7280", fg="white", relief="flat", padx=10).pack(pady=6)
 
     # ══════════════════════════════════════════════════════════════════════
     # Public: load a file path directly (called from main.py run_waveform)

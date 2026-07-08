@@ -211,7 +211,7 @@ class AutomationManager:
             match = re.search(r'_([0-9]{3})\.root', f)
             if match:
                 num = int(match.group(1))
-                if num < 800:
+                if num < 700:
                     max_block = max(max_block, (num // 100) * 100)
 
         self.current_scan_block = max_block + 100 if max_block >= 0 else 0
@@ -438,8 +438,8 @@ class AutomationManager:
                         daq_started = False
                         while startup_wait < 15:
                             if not self.is_running: return
-                            check = subprocess.run(['pgrep', '-x', 'execute_DAQ_v2'], capture_output=True)
-                            if check.returncode == 0:
+                            check = subprocess.run('pgrep -x execute_DAQ_v2 | xargs -r ps -o args= -p 2>/dev/null | grep -v -- "-j"', shell=True, capture_output=True, text=True)
+                            if check.stdout.strip():
                                 daq_started = True; break
                             time.sleep(1); startup_wait += 1
 
@@ -480,8 +480,8 @@ class AutomationManager:
                                     self.controller._log(f"[WARNING] Watchdog filesystem race caught: {ex}")
                                     pass
 
-                            check_proc = subprocess.run(['pgrep', '-x', 'execute_DAQ_v2'], capture_output=True)
-                            if check_proc.returncode != 0:
+                            check_proc = subprocess.run('pgrep -x execute_DAQ_v2 | xargs -r ps -o args= -p 2>/dev/null | grep -v -- "-j"', shell=True, capture_output=True, text=True)
+                            if not check_proc.stdout.strip():
                                 self.controller._log(f"[INFO] DAQ finished in {elapsed}s.")
                                 break
                             time.sleep(1); elapsed += 1

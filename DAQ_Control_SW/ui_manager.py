@@ -1,5 +1,33 @@
 # ui_manager.py
 import tkinter as tk
+
+
+class _Tooltip:
+    """Simple hover tooltip for any widget."""
+    def __init__(self, widget, text):
+        self._widget = widget
+        self._text = text
+        self._tip = None
+        widget.bind("<Enter>", self._show)
+        widget.bind("<Leave>", self._hide)
+
+    def _show(self, _event=None):
+        x = self._widget.winfo_rootx() + 20
+        y = self._widget.winfo_rooty() + self._widget.winfo_height() + 4
+        self._tip = tk.Toplevel(self._widget)
+        self._tip.wm_overrideredirect(True)
+        self._tip.wm_geometry(f"+{x}+{y}")
+        lbl = tk.Label(self._tip, text=self._text, justify=tk.LEFT,
+                       background="#ffffe0", relief=tk.SOLID, borderwidth=1,
+                       font=("Helvetica", 9), wraplength=260)
+        lbl.pack()
+
+    def _hide(self, _event=None):
+        if self._tip:
+            self._tip.destroy()
+            self._tip = None
+
+
 from tkinter import ttk, scrolledtext, messagebox, font
 import os
 import json
@@ -1024,6 +1052,13 @@ class UIManager:
         elif 135 <= norm_angle < 225: anchor = "e"
         elif 225 <= norm_angle < 315: anchor = "n"
         else: anchor = "w"
+        # Keep the "Cable" label inside the 300px-wide canvas. With anchor "e"
+        # the text extends left of ctx (clips at x<0 for left-pointing cables);
+        # with "w" it extends right. Clamp the anchor point accordingly.
+        CW, lbl_w, pad = 300, 42, 3
+        if anchor == "e":   ctx = max(ctx, pad + lbl_w)
+        elif anchor == "w": ctx = min(ctx, CW - pad - lbl_w)
+        else:               ctx = max(pad + lbl_w / 2, min(CW - pad - lbl_w / 2, ctx))
         canvas.create_text(ctx, cty, text="Cable", font=("Helvetica", 10, "bold"),
                            fill="red", anchor=anchor)
 
@@ -1094,7 +1129,10 @@ class UIManager:
         pos_deg = -0.0049 * kr * kr + 1.7515 * kr - 0.0402
         pos_deg = max(0.0, min(90.0, pos_deg))      # 반원(0~90°) 범위로 클램프
         sign = -1.0 if tilt_angle < 0 else 1.0
-        th = math.radians(sign * pos_deg)           # 반원이 기우는 각도
+        # Screen lean is MIRRORED (viewed from the E side): tilt(+) must land the
+        # laser spot on the RIGHT-labeled pin side (e.g. cable A X-scan -> X+ = G),
+        # so the dome apex leans LEFT for tilt(+). Verified against angle_convert.h.
+        th = math.radians(-sign * pos_deg)          # 반원이 기우는 각도(화면 기준)
 
         # 돔 로컬좌표(lx: 지름방향, ly: 높이 위쪽 +) → 화면. th 만큼 회전.
         upx, upy = math.sin(th), -math.cos(th)      # 꼭대기 방향
@@ -1124,8 +1162,12 @@ class UIManager:
         canvas.create_polygon(*pts, fill=bulb_fill, outline="#5a7fa5", width=2)
 
         # ── Cable direction labels at the two ends of the visible arc ──────
-        # LEFT end of diameter (a=180) → physical top-view angle 90°  (North)
-        # RIGHT end of diameter (a=0)  → physical top-view angle 270° (South)
+        # "RIGHT SIDE VIEW" = viewer stands on the East (E) side of the top
+        # view, looking West along the A-E axis. From there the top-view
+        # North (G, 90°) appears on the viewer's RIGHT and South (C, 270°)
+        # on the LEFT. A/E point toward/away from the viewer (hidden).
+        # LEFT end of diameter (a=180)  → physical top-view angle 270° (C)
+        # RIGHT end of diameter (a=0)   → physical top-view angle 90°  (G)
         if pos_map_angles:
             def _nearest_pin(target_physical):
                 target_std = target_physical - pin_offset
@@ -1135,8 +1177,8 @@ class UIManager:
                     if d < best_d:
                         best_d, best = d, ch
                 return best
-            pin_left  = _nearest_pin(90)   # left end  = North in top-view
-            pin_right = _nearest_pin(270)  # right end = South in top-view
+            pin_left  = _nearest_pin(270)  # left end  = South (C) in top-view
+            pin_right = _nearest_pin(90)   # right end = North (G) in top-view
             lx_l, ly_l = to_screen(-Rb, 0)   # a=180 → left end
             lx_r, ly_r = to_screen( Rb, 0)   # a=0   → right end
             canvas.create_text(lx_l - 10, ly_l, text=pin_left,
@@ -1309,7 +1351,7 @@ class UIManager:
         pos_deg = -0.0049 * kr * kr + 1.7515 * kr - 0.0402
         pos_deg = max(0.0, min(90.0, pos_deg))
         sign = -1.0 if tilt_deg < 0 else 1.0
-        th = math.radians(sign * pos_deg)
+        th = math.radians(-sign * pos_deg)   # mirrored, same convention as full side view
 
         upx, upy = math.sin(th), -math.cos(th)
         rxh, ryh = math.cos(th), math.sin(th)
@@ -1452,31 +1494,70 @@ class UIManager:
 
         ttk.Label(frame, text="1. Operation Category:", font=("Helvetica", 10, "bold")).pack(anchor=tk.W)
         
-        rb_auto = ttk.Radiobutton(frame, text=" General Scan (Auto Control)", 
+        row_auto = ttk.Frame(frame)
+        row_auto.pack(anchor=tk.W, padx=10, pady=2)
+        rb_auto = ttk.Radiobutton(row_auto, text=" General Scan (Auto Control)",
                                   variable=self.run_mode, value="auto",
                                   command=self.controller.handle_mode_change)
-        rb_auto.pack(anchor=tk.W, padx=10, pady=2)
+        rb_auto.pack(side=tk.LEFT)
+        lbl_auto_tip = tk.Label(row_auto, text="?", fg="white", bg="#555555",
+                                font=("Helvetica", 8, "bold"), cursor="question_arrow",
+                                padx=3, pady=0, relief=tk.FLAT)
+        lbl_auto_tip.pack(side=tk.LEFT, padx=(4, 0))
+        _Tooltip(lbl_auto_tip,
+                 "Automated multi-angle scan.\n"
+                 "The system rotates PMTs and runs DAQ\n"
+                 "sequentially. Run numbers: 000–699 (7 blocks).")
 
-        rb_manual = ttk.Radiobutton(frame, text=" Manual Mode (Laser/Dark Selection)", 
+        row_manual = ttk.Frame(frame)
+        row_manual.pack(anchor=tk.W, padx=10, pady=2)
+        rb_manual = ttk.Radiobutton(row_manual, text=" Manual Mode (Laser/Dark Selection)",
                                     variable=self.run_mode, value="manual",
                                     command=self.controller.handle_mode_change)
-        rb_manual.pack(anchor=tk.W, padx=10, pady=2)
+        rb_manual.pack(side=tk.LEFT)
+        lbl_manual_tip = tk.Label(row_manual, text="?", fg="white", bg="#555555",
+                                  font=("Helvetica", 8, "bold"), cursor="question_arrow",
+                                  padx=3, pady=0, relief=tk.FLAT)
+        lbl_manual_tip.pack(side=tk.LEFT, padx=(4, 0))
+        _Tooltip(lbl_manual_tip,
+                 "Manual single run: choose Laser or Dark mode below.\n"
+                 "Rotation motors are NOT controlled automatically.")
 
         ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=10)
 
         ttk.Label(frame, text="2. Manual Sub-selection:", font=("Helvetica", 10)).pack(anchor=tk.W)
-        
+
         self.manual_type_var = tk.StringVar(value="laser")
-        
-        self.rb_laser = ttk.Radiobutton(frame, text=" Laser & External trigger (0)", 
+
+        row_laser = ttk.Frame(frame)
+        row_laser.pack(anchor=tk.W, padx=25)
+        self.rb_laser = ttk.Radiobutton(row_laser, text=" Laser & External trigger (0)",
                                         variable=self.manual_type_var, value="laser",
                                         command=self.controller.handle_mode_change)
-        self.rb_laser.pack(anchor=tk.W, padx=25)
+        self.rb_laser.pack(side=tk.LEFT)
+        lbl_laser_tip = tk.Label(row_laser, text="?", fg="white", bg="#555555",
+                                 font=("Helvetica", 8, "bold"), cursor="question_arrow",
+                                 padx=3, pady=0, relief=tk.FLAT)
+        lbl_laser_tip.pack(side=tk.LEFT, padx=(4, 0))
+        _Tooltip(lbl_laser_tip,
+                 "Laser run with external trigger input.\n"
+                 "Run numbers: 800–849.\n"
+                 "Used for QE / gain measurements with laser light.")
 
-        self.rb_dark = ttk.Radiobutton(frame, text=" Dark & Self trigger (1)", 
+        row_dark = ttk.Frame(frame)
+        row_dark.pack(anchor=tk.W, padx=25)
+        self.rb_dark = ttk.Radiobutton(row_dark, text=" Dark & Self trigger (1)",
                                        variable=self.manual_type_var, value="dark",
                                        command=self.controller.handle_mode_change)
-        self.rb_dark.pack(anchor=tk.W, padx=25)
+        self.rb_dark.pack(side=tk.LEFT)
+        lbl_dark_tip = tk.Label(row_dark, text="?", fg="white", bg="#555555",
+                                font=("Helvetica", 8, "bold"), cursor="question_arrow",
+                                padx=3, pady=0, relief=tk.FLAT)
+        lbl_dark_tip.pack(side=tk.LEFT, padx=(4, 0))
+        _Tooltip(lbl_dark_tip,
+                 "Dark run: PMT self-trigger, no laser.\n"
+                 "Run numbers: 700–749.\n"
+                 "Rate Scan analysis runs automatically after DAQ finishes.")
         ######## updated 6.10 
         ttk.Label(frame, text="Output Format:").pack(anchor=tk.W, pady=(10, 0))
         fmt_root_radio = ttk.Radiobutton(frame, text="ROOT (.root)", variable=self.file_format, value="root", command=self.controller.update_latest_run_number)
@@ -1508,7 +1589,9 @@ class UIManager:
                             frame, text=config['label'],
                             command=lambda cmd=config['command']: self.controller.handle_button_click(cmd)
                             )
-                    btn.pack(pady=5, fill=tk.X, expand=True) 
+                    btn.pack(pady=5, fill=tk.X, expand=True)
+                    if config.get('disabled', False):
+                        btn.config(state="disabled")
                     self.buttons[config['command']] = btn
 
         except (FileNotFoundError, json.JSONDecodeError) as e:
@@ -1955,13 +2038,16 @@ class UIManager:
         sub_nb.add(daq_frame, text="⚫ DAQ Stream")
         self._build_console_pane(daq_frame, "daq", mono)
 
-        ana_frame = ttk.Frame(sub_nb)
-        sub_nb.add(ana_frame, text="⚫ Analysis / Produce")
-        self._build_console_pane(ana_frame, "analysis", mono)
-
-        contour_frame = ttk.Frame(sub_nb)
-        sub_nb.add(contour_frame, text="⚫ Contour")
-        self._build_console_pane(contour_frame, "contour", mono)
+    def ensure_console_pane(self, slot):
+        """Lazily create a sub-tab/pane the first time a parallel slot is used
+        (produce_1/2/3, analysis_1/2/3). Each parallel job gets its own output tab."""
+        if slot in self.console_panes:
+            return
+        mono = self._pick_mono_font()
+        frame = ttk.Frame(self.console_subnb)
+        label = self._SLOT_LABELS.get(slot, slot)
+        self.console_subnb.add(frame, text=f"⚫ {label}")
+        self._build_console_pane(frame, slot, mono)
 
     # 터미널 ANSI SGR → Tk 텍스트 색상 매핑 (어두운 콘솔에서 읽기 좋은 톤)
     ANSI_RE = re.compile(r'\x1b\[([0-9;]*)m')
@@ -2245,10 +2331,24 @@ class UIManager:
         "idle":    ("● Idle",    "#808080", "⚫", False),
     }
     _SLOT_LABELS = {
-        "daq":      "DAQ Stream",
-        "analysis": "Analysis / Produce",
-        "contour":  "Contour",
+        "daq":        "DAQ Stream",
+        "analysis":   "Rate Scan",
+        "contour":    "Contour",
+        "produce_1":  "Produce 1",
+        "produce_2":  "Produce 2",
+        "produce_3":  "Produce 3",
+        "analysis_1": "Analysis 1",
+        "analysis_2": "Analysis 2",
+        "analysis_3": "Analysis 3",
+        "contour_1":  "Contour 1",
+        "contour_2":  "Contour 2",
+        "contour_3":  "Contour 3",
     }
+
+    # Produce / Analysis / Contour each run in parallel across these slots (max 3 concurrent).
+    PRODUCE_SLOTS  = ("produce_1", "produce_2", "produce_3")
+    ANALYSIS_SLOTS = ("analysis_1", "analysis_2", "analysis_3")
+    CONTOUR_SLOTS  = ("contour_1", "contour_2", "contour_3")
 
     def console_set_status(self, text, slot="analysis", state="idle"):
         """Update status label color + sub-tab label + outer tab indicator."""

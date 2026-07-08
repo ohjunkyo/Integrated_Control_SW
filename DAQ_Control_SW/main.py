@@ -1,4 +1,8 @@
 # main.py
+import warnings
+warnings.filterwarnings("ignore", message="Mean of empty slice", category=RuntimeWarning)
+warnings.filterwarnings("ignore", message="invalid value encountered in scalar divide", category=RuntimeWarning)
+
 import tkinter as tk
 from PIL import Image, ImageTk
 from tkinter import ttk, filedialog, messagebox
@@ -207,8 +211,16 @@ class App:
 
         self.elapsed_time_var = tk.StringVar()
         self.clock_var = tk.StringVar()
+        self.moving_indicator_var = tk.StringVar()
 
         ttk.Label(self.status_bar, textvariable=self.clock_var).pack(side=tk.LEFT, padx=10)
+        # Visible from every tab (status_bar is a direct child of master, not the
+        # notebook) so a rotation move is never invisible regardless of which
+        # panel the operator is looking at -- whether triggered by "Reset angle"
+        # or a manual Move Tilt/Rot click.
+        self.moving_lbl = tk.Label(self.status_bar, textvariable=self.moving_indicator_var,
+                                   font=("Helvetica", 10, "bold"), fg="#dc3545")
+        self.moving_lbl.pack(side=tk.LEFT, padx=20)
         ttk.Label(self.status_bar, textvariable=self.elapsed_time_var).pack(side=tk.RIGHT, padx=10)
 
         self._update_status_bar()
@@ -228,6 +240,11 @@ class App:
             self.auto_ui.update_sn_display(dev_num, tilt, rot)
         except Exception:
             pass
+        if hasattr(self.auto_ui, 'update_quick_setup_live'):
+            try:
+                self.auto_ui.update_quick_setup_live(dev_num, tilt, rot)
+            except Exception:
+                pass
         if hasattr(self, 'ui') and hasattr(self.ui, 'update_helper_live'):
             try:
                 self.ui.update_helper_live(dev_num, tilt, rot)
@@ -238,6 +255,29 @@ class App:
                 self.ui.update_pmt_position_widget(dev_num, tilt, rot)
             except Exception:
                 pass
+        self._update_moving_indicator()
+
+    def _update_moving_indicator(self):
+        """Status-bar indicator so a rotation move (Reset angle, manual Move
+        Tilt/Rot, or an auto-scan step) is visible from any tab -- otherwise
+        only the changing angle number hints that something is happening."""
+        if not hasattr(self, 'moving_indicator_var') or not hasattr(self, 'rot_mgr'):
+            return
+        moving = getattr(self.rot_mgr, 'is_moving', {})
+        names = []
+        if moving.get(2):
+            names.append(getattr(self.auto_ui, 'sn2_val', 'SN2'))
+        if moving.get(3):
+            names.append(getattr(self.auto_ui, 'sn3_val', 'SN3'))
+
+        def _apply():
+            if getattr(self, '_shutting_down', False):
+                return
+            try:
+                self.moving_indicator_var.set(f"⏳ MOVING: {', '.join(names)}" if names else "")
+            except tk.TclError:
+                pass
+        self.master.after(0, _apply)
 
     def request_control_unlock(self):
         """비밀번호 확인 후 제어권 활성화 및 자동화 UI 연동"""
@@ -564,7 +604,7 @@ class App:
         dlg.wait_window()
         return None if cancelled[0] else result
 
-    def _run_job_in_console(self, command, job_name="Job", env=None, slot="analysis"):
+    def _run_job_in_console(self, command, job_name="Job", env=None, slot="analysis", on_complete=None):
         """배치형 외부 작업(DAQ/Produce/Analysis 등)을 별도 터미널 대신 UI Console
         탭에서 실행하고 stdout/stderr 를 실시간으로 스트리밍한다.
 
@@ -673,6 +713,8 @@ class App:
                         self.ui.console_write(
                             f"===== {job_name} finished (exit 0) =====\n\n", "ok", slot=slot)
                         self.ui.console_set_status("✓ Done", slot=slot, state="done")
+                        if on_complete:
+                            on_complete()
                     else:
                         self.ui.console_write(
                             f"===== {job_name} FAILED (exit {code}) =====\n\n", "err", slot=slot)
@@ -898,6 +940,35 @@ class App:
         else:
             mode = "laser"
 
+        # Block Dark DAQ if any laser LD is still ON
+        if category == "manual" and mode == "dark":
+            lasers_on = []
+            if hasattr(self, 'laser_mgr'):
+                for wl, inst in self.laser_mgr.laser_instances.items():
+                    try:
+                        if inst.is_connected() and \
+                           self.ui.laser_tabs_data[wl]["ld_status"].get() == "ON":
+                            lasers_on.append(wl)
+                    except Exception:
+                        pass
+            if lasers_on:
+                if messagebox.askyesno(
+                        "Laser ON — Dark DAQ Blocked",
+                        f"Laser(s) currently ON: {', '.join(str(w) for w in lasers_on)}\n\n"
+                        f"Dark mode requires the laser to be OFF.\n\n"
+                        f"Turn laser(s) OFF now and continue?",
+                        icon="warning"):
+                    for wl in lasers_on:
+                        try:
+                            self.laser_mgr.set_laser_ld_safe(wl, False)
+                            self._log(f"[INFO] Dark DAQ: laser {wl} LD turned OFF.")
+                        except Exception as e:
+                            messagebox.showerror("Error", f"Failed to turn off laser {wl}:\n{e}")
+                            return
+                else:
+                    self._log("[WARNING] Dark DAQ cancelled: laser still ON.")
+                    return
+
         start_block = "0"
 
         if is_auto_running:
@@ -912,7 +983,7 @@ class App:
             if is_dummy:
                 start_block = "900"
             elif category == "manual":
-                start_block = "800" if mode == "dark" else "850"
+                start_block = "700" if mode == "dark" else "800"
             else:
                 if hasattr(self, 'auto_mgr') and hasattr(self.auto_mgr, 'current_scan_block'):
                     start_block = str(self.auto_mgr.current_scan_block)
@@ -928,7 +999,26 @@ class App:
             command.extend([str(r2), str(tilt), str(r3), str(tilt)])
             self._log(f"[INFO] Injecting live angles to DAQ -> R2:{r2}, T2:{tilt}, R3:{r3}, T3:{tilt}")
         else:
-            command.extend(["0", "0", "0", "0"])
+            # Manual "Run DAQ" click (no explicit angles) — previously hardcoded
+            # "0","0","0","0" here, which meant RunInfo recorded angle=0 regardless
+            # of where the PMTs were actually positioned. Read the real hardware
+            # angles per-device instead so manual runs get correct metadata too.
+            t2 = r2v = t3 = r3v = None
+            if hasattr(self, 'rot_mgr'):
+                try:
+                    t2, r2v = self.rot_mgr.read_angles(2)
+                    t3, r3v = self.rot_mgr.read_angles(3)
+                except Exception as e:
+                    self._log(f"[WARNING] Manual DAQ: could not read live angles: {e}")
+            # ADC_test7.cpp's --rot2/--tilt2/... options are ints (boost::program_options);
+            # read_angles() returns floats (e.g. 135.0), so round before str() or the
+            # DAQ binary aborts with "invalid_option_value" (as seen in practice).
+            t2 = int(round(t2)) if t2 is not None else 0
+            r2v = int(round(r2v)) if r2v is not None else 0
+            t3 = int(round(t3)) if t3 is not None else 0
+            r3v = int(round(r3v)) if r3v is not None else 0
+            command.extend([str(r2v), str(t2), str(r3v), str(t3)])
+            self._log(f"[INFO] Manual DAQ using live angles -> R2:{r2v}, T2:{t2}, R3:{r3v}, T3:{t3}")
 
         command.append(start_block)
 
@@ -953,8 +1043,12 @@ class App:
         else:
             if category == "manual":
                 current_env["SCAN_START_DATE"] = ""
-            # 별도 터미널 대신 UI Console 탭에서 실행(출력 실시간 스트리밍, 잔여 터미널 없음).
-            self._run_job_in_console(command, job_name="DAQ", env=current_env, slot="daq")
+            # [DEVELOP] auto Rate Scan after dark DAQ — disabled pending field validation
+            # auto_rate = (category == "manual" and mode == "dark")
+            self._run_job_in_console(
+                command, job_name="DAQ", env=current_env, slot="daq",
+                on_complete=None)
+                # on_complete=(lambda: self.run_rate_scan(thr_min=0.5, thr_max=5.0)) if auto_rate else None)
 
     def run_produce(self):
         selected_files = self.ui.get_selected_file_paths()
@@ -998,12 +1092,97 @@ class App:
             all_commands_list.append(" ".join(command_parts))
 
         final_command_string = " && ".join(all_commands_list)
-        self._run_job_in_console([final_command_string], job_name="Produce")
 
-    def run_rate_scan(self):
-        """Dark-mode threshold scan: sweep the software threshold over a single
-        self-triggered dark RAW run and plot Rate [kHz] vs Threshold [mV] per
-        channel (RateScan_v7.C). Output PNG is viewable in the Image Viewer."""
+        # Produce runs in parallel across up to 3 slots so different files can be
+        # processed at different times without blocking each other.
+        slot = self._acquire_produce_slot()
+        if slot is None:
+            messagebox.showinfo(
+                "Produce Busy",
+                "3 Produce jobs are already running concurrently.\n\n"
+                "Please wait for one to finish before starting another.")
+            return
+        self.ui.ensure_console_pane(slot)
+        self._run_job_in_console([final_command_string], job_name="Produce", slot=slot)
+
+    def _acquire_parallel_slot(self, slots):
+        """Return the first free slot among `slots`, or None if all are busy."""
+        if not hasattr(self, '_console_procs'):
+            self._console_procs = {}
+        for slot in slots:
+            proc = self._console_procs.get(slot)
+            if proc is None or proc.poll() is not None:
+                return slot
+        return None
+
+    def _acquire_produce_slot(self):
+        """Return the first free produce slot (produce_1/2/3), or None if all 3 are busy."""
+        return self._acquire_parallel_slot(
+            getattr(self.ui, 'PRODUCE_SLOTS', ("produce_1", "produce_2", "produce_3")))
+
+    def _acquire_analysis_slot(self):
+        """Return the first free analysis slot (analysis_1/2/3), or None if all 3 are busy."""
+        return self._acquire_parallel_slot(
+            getattr(self.ui, 'ANALYSIS_SLOTS', ("analysis_1", "analysis_2", "analysis_3")))
+
+    def _acquire_contour_slot(self):
+        """Return the first free contour slot (contour_1/2/3), or None if all 3 are busy."""
+        return self._acquire_parallel_slot(
+            getattr(self.ui, 'CONTOUR_SLOTS', ("contour_1", "contour_2", "contour_3")))
+
+    def _ask_rate_scan_range(self):
+        """Show a dialog asking for threshold range. Returns (thr_min, thr_max) or None if cancelled."""
+        import tkinter as tk
+        dialog = tk.Toplevel(self.master)
+        dialog.title("Rate Scan Range")
+        dialog.resizable(False, False)
+        dialog.grab_set()
+
+        tk.Label(dialog, text="Threshold scan range [mV]", font=("Helvetica", 11, "bold")).grid(
+            row=0, column=0, columnspan=2, padx=20, pady=(15, 5))
+        tk.Label(dialog, text="Note: Hardware self-trigger fires at ~3 mV.\n"
+                              "Values below that are undersampled.", foreground="gray",
+                 font=("Helvetica", 9)).grid(row=1, column=0, columnspan=2, padx=20, pady=(0, 10))
+
+        tk.Label(dialog, text="Min [mV]:").grid(row=2, column=0, sticky="e", padx=10, pady=4)
+        var_min = tk.StringVar(value="0.5")
+        tk.Entry(dialog, textvariable=var_min, width=8).grid(row=2, column=1, sticky="w", padx=10)
+
+        tk.Label(dialog, text="Max [mV]:").grid(row=3, column=0, sticky="e", padx=10, pady=4)
+        var_max = tk.StringVar(value="5.0")
+        tk.Entry(dialog, textvariable=var_max, width=8).grid(row=3, column=1, sticky="w", padx=10)
+
+        result = [None]
+        def ok():
+            try:
+                lo = float(var_min.get())
+                hi = float(var_max.get())
+                if lo >= hi or lo < 0:
+                    raise ValueError
+                result[0] = (lo, hi)
+                dialog.destroy()
+            except ValueError:
+                tk.messagebox.showerror("Invalid Input", "Enter valid numbers where Min < Max and Min >= 0.", parent=dialog)
+
+        btn_frame = tk.Frame(dialog)
+        btn_frame.grid(row=4, column=0, columnspan=2, pady=12)
+        tk.Button(btn_frame, text="Run", width=8, command=ok).pack(side=tk.LEFT, padx=6)
+        tk.Button(btn_frame, text="Cancel", width=8, command=dialog.destroy).pack(side=tk.LEFT, padx=6)
+
+        dialog.wait_window()
+        return result[0]
+
+    def run_rate_scan(self, thr_min=None, thr_max=None):
+        """Dark-mode threshold scan (RateScan_v7.C).
+        If thr_min/thr_max are None (manual button click), prompts the user for range.
+        When called automatically after Dark DAQ, defaults 0.5~5.0 mV are used."""
+        auto_mode = (thr_min is not None and thr_max is not None)
+        if not auto_mode:
+            result = self._ask_rate_scan_range()
+            if result is None:
+                return
+            thr_min, thr_max = result
+
         selected_files = self.ui.get_selected_file_paths()
         daq_path = self._get_daq_path()
         if not daq_path: return
@@ -1012,7 +1191,6 @@ class App:
         script = os.path.join(daq_path, 'RateScan_v7.C')
         config_path = self.config_manager.filepath
 
-        # Operate on RAW files (the scan re-reads waveforms directly).
         runs_to_process = []
         if selected_files:
             pattern = re.compile(r'(\d+)(?=[^\d]*\.root$)')
@@ -1037,10 +1215,12 @@ class App:
         all_commands_list = []
         for run_num, f_path in runs_to_process:
             f_path_arg = f"\\\"{f_path}\\\"" if f_path else "\"\""
-            command_parts = [helper, script, config_path, run_num, f_path_arg]
+            command_parts = [helper, script, config_path, run_num, f_path_arg,
+                             str(thr_min), str(thr_max)]
             all_commands_list.append(" ".join(command_parts))
 
         final_command_string = " && ".join(all_commands_list)
+        self.ui.ensure_console_pane("analysis")
         self._run_job_in_console([final_command_string], job_name="Rate Scan", slot="analysis")
 
     def run_analysis(self):
@@ -1089,7 +1269,17 @@ class App:
             all_commands_list.append(" ".join(command_parts))
 
         final_command_string = " && ".join(all_commands_list)
-        self._run_job_in_console([final_command_string], job_name="Analysis")
+
+        # Analysis runs in parallel across up to 3 slots, like Produce.
+        slot = self._acquire_analysis_slot()
+        if slot is None:
+            messagebox.showinfo(
+                "Analysis Busy",
+                "3 Analysis jobs are already running concurrently.\n\n"
+                "Please wait for one to finish before starting another.")
+            return
+        self.ui.ensure_console_pane(slot)
+        self._run_job_in_console([final_command_string], job_name="Analysis", slot=slot)
 
     def run_waveform(self):
         """Open the embedded Waveform Inspection panel.
@@ -1200,7 +1390,17 @@ class App:
             all_commands_list.append(" ".join(command_parts))
 
         final_command_string = " && ".join(all_commands_list)
-        self._run_job_in_console([final_command_string], job_name="Contour", slot="contour")
+
+        # Contour runs in parallel across up to 3 slots, like Produce/Analysis.
+        slot = self._acquire_contour_slot()
+        if slot is None:
+            messagebox.showinfo(
+                "Contour Busy",
+                "3 Contour jobs are already running concurrently.\n\n"
+                "Please wait for one to finish before starting another.")
+            return
+        self.ui.ensure_console_pane(slot)
+        self._run_job_in_console([final_command_string], job_name="Contour", slot=slot)
 
     def run_uniformity(self):
         """Draw_Uniformity_Norm_v7(tag, run_start, run_end): builds per-PMT uniformity summary
@@ -1253,6 +1453,16 @@ class App:
         ttk.Label(dlg, text="Run end    (e.g. 99)").grid(row=4, column=0, sticky="w", padx=12, pady=3)
         ttk.Entry(dlg, textvariable=end_var, width=18).grid(row=4, column=1, padx=12, pady=3)
 
+        # Channel selection (which PMTs to draw in the combined plots)
+        ch_vars = {0: tk.BooleanVar(value=True),
+                   1: tk.BooleanVar(value=True),
+                   2: tk.BooleanVar(value=True)}
+        ttk.Label(dlg, text="Channels").grid(row=5, column=0, sticky="w", padx=12, pady=3)
+        ch_frame = ttk.Frame(dlg)
+        ch_frame.grid(row=5, column=1, sticky="w", padx=12, pady=3)
+        for c in (0, 1, 2):
+            ttk.Checkbutton(ch_frame, text=f"CH{c}", variable=ch_vars[c]).pack(side=tk.LEFT, padx=(0, 8))
+
         def _go():
             tag = tag_var.get().strip()
             try:
@@ -1263,11 +1473,16 @@ class App:
             if not tag:
                 messagebox.showerror("Invalid input", "Date tag is required.", parent=dlg)
                 return
+            chsel = ",".join(str(c) for c in (0, 1, 2) if ch_vars[c].get())
+            if not chsel:
+                messagebox.showerror("Invalid input", "Select at least one channel.", parent=dlg)
+                return
             dlg.destroy()
             helper = os.path.join(self.base_dir, 'run_cpp_script_v2.sh')
             config_path = self.config_manager.filepath
             tag_arg = f'\\\"{tag}\\\"'
-            cmd = " ".join([helper, script, config_path, tag_arg, str(rs), str(re_)])
+            chsel_arg = f'\\\"{chsel}\\\"'
+            cmd = " ".join([helper, script, config_path, tag_arg, str(rs), str(re_), chsel_arg])
             self._execute_in_new_terminal([cmd])
             self._log(f"[INFO] Uniformity analysis: tag={tag}, runs {rs}-{re_}")
             messagebox.showinfo("Uniformity Analysis",
@@ -1277,7 +1492,7 @@ class App:
             self.ui.open_image_viewer()
 
         btns = ttk.Frame(dlg)
-        btns.grid(row=5, column=0, columnspan=2, pady=10)
+        btns.grid(row=6, column=0, columnspan=2, pady=10)
         ttk.Button(btns, text="Run", command=_go).pack(side=tk.LEFT, padx=5)
         ttk.Button(btns, text="Cancel", command=dlg.destroy).pack(side=tk.LEFT, padx=5)
 
@@ -1338,10 +1553,26 @@ class App:
             if tg in preset:
                 lb.selection_set(i)
 
+        # Channel selection (which PMTs to overlay)
+        ch_vars = {0: tk.BooleanVar(value=True),
+                   1: tk.BooleanVar(value=True),
+                   2: tk.BooleanVar(value=True)}
+        ch_outer = ttk.Frame(dlg)
+        ch_outer.pack(padx=10, pady=(6, 0))
+        ttk.Label(ch_outer, text="Channels:").pack(side=tk.LEFT, padx=(0, 6))
+        for c in (0, 1, 2):
+            ttk.Checkbutton(ch_outer, text=f"CH{c}", variable=ch_vars[c]).pack(side=tk.LEFT, padx=(0, 8))
+
+        chan_cfg_path = os.path.join(uni_dir, 'overlay_channels.txt')
+
         def _go():
             sel = [tags[i] for i in lb.curselection()]
             if not sel:
                 messagebox.showwarning("No selection", "Select at least one dataset.", parent=dlg)
+                return
+            chsel = [c for c in (0, 1, 2) if ch_vars[c].get()]
+            if not chsel:
+                messagebox.showwarning("No channel", "Select at least one channel.", parent=dlg)
                 return
             try:
                 os.makedirs(uni_dir, exist_ok=True)
@@ -1349,8 +1580,10 @@ class App:
                     f.write("# Overlay tag list (edited from the GUI). One 'tag' or 'tag,Label' per line.\n")
                     for tg in sel:
                         f.write(tg + "\n")
+                with open(chan_cfg_path, 'w') as f:
+                    f.write(",".join(str(c) for c in chsel) + "\n")
             except Exception as e:
-                messagebox.showerror("Error", f"Could not write overlay_tags.txt:\n{e}", parent=dlg)
+                messagebox.showerror("Error", f"Could not write overlay config:\n{e}", parent=dlg)
                 return
             dlg.destroy()
             helper = os.path.join(self.base_dir, 'run_cpp_script_v2.sh')
@@ -1603,8 +1836,8 @@ class App:
                 if is_dummy:
                     start_block = 900
                 elif category == "manual":
-                    manual_mode = self.ui.run_mode.get()
-                    start_block = 800 if manual_mode == "dark" else 850
+                    manual_mode = self.ui.manual_type_var.get() if hasattr(self.ui, 'manual_type_var') else "dark"
+                    start_block = 700 if manual_mode == "dark" else 800
                 else:
                     if hasattr(self, 'auto_mgr') and hasattr(self.auto_mgr, 'current_scan_block'):
                         start_block = self.auto_mgr.current_scan_block
@@ -2002,7 +2235,10 @@ class App:
             lbl_status.config(text="Disconnecting Lasers...")
             progress['value'] = 60
             shutdown_win.update()
-            self.save_app_config()
+            try:
+                self.save_app_config()
+            except Exception as e:
+                self._log(f"[WARNING] Error saving config on exit: {e}")
             if hasattr(self, 'laser_mgr'):
                 for wl, inst in self.laser_mgr.laser_instances.items():
                     if inst.is_connected():
@@ -2030,7 +2266,17 @@ class App:
             progress['value'] = 100
             shutdown_win.update()
             self._log("[INFO] Goodbye!")
-            self.master.after(500, self.master.destroy)
+            self.master.after(500, _terminate)
+
+        def _terminate():
+            # Destroy the GUI, then force-exit the process. os._exit guarantees the
+            # OS process dies even if a library/daemon thread would otherwise keep
+            # the interpreter alive — so the launcher's poll() correctly sees it gone.
+            try:
+                self.master.destroy()
+            except Exception:
+                pass
+            os._exit(0)
 
         self.master.after(100, step1_motors)
 

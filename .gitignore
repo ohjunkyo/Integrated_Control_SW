@@ -24,3 +24,7 @@ venv/
 
 # Claude Code internal files
 .claude/
+
+# Runtime state (not source)
+DAQ_Control_SW/handover_notes.jsonl
+*.swp

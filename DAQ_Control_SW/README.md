@@ -38,6 +38,13 @@ This software provides a wide range of features.
 																						   * **Pan**: Explore specific parts of an image in detail by dragging with the mouse and using horizontal/vertical scrollbars (includes pan sensitivity control). (패닝(Pan): 마우스 드래그 및 가로/세로 스크롤바로 이미지의 원하는 부분을 세밀하게 탐색할 수 있습니다. (패닝 민감도 조절 기능 포함))
 																																																																	   * **Fit to Screen**: Optimizes the image size to fit the current viewer dimensions. (화면 맞춤: 이미지를 현재 뷰어 크기에 최적화하여 보여줍니다.)
 
+#### **PMT Automation & Geometry (PMT 자동화 · 기하)**
+* **General Scan**: Scheduled automatic tilt/rotation scans; live hardware angles are synced into `config3.h` and each point's real angles are stored with the run — including manual `Run DAQ` clicks. (General Scan: 예약 자동 틸트/회전 스캔. 라이브 각도를 `config3.h`에 동기화하고, 수동 Run DAQ를 포함해 각 지점의 실제 각도를 런과 함께 저장합니다.)
+* **Injection-side indicator**: The Manual Control Panel shows the cathode side the laser hits (`Injects: X+/X−/Y+/Y−`), using the same verified sign convention as the analysis (`angle_convert.h`, all 8 cable directions). (입사면 표시: Manual Control Panel에 레이저가 때리는 캐소드 면을 표시하며, 분석 코드와 동일하게 검증된 부호 규약을 사용합니다.)
+* **Live geometry diagrams**: Per-PMT TOP VIEW (pins A–H, scan axis, cable arrow) and RIGHT SIDE VIEW (tilted dome, KR→Hamamatsu conversion), a mini always-visible position widget, and a status-bar **MOVING** indicator. (라이브 기하 다이어그램: PMT별 TOP/RIGHT SIDE VIEW, 상시 미니 위치 위젯, 상태바 MOVING 인디케이터)
+* **Scan History**: Past scans (SUCCESS / ABORTED-ERROR) with a full per-run configuration snapshot. (스캔 히스토리: 과거 스캔과 런별 설정 스냅샷)
+* **Handover Notes**: Append-only shift-handover notepad (author, timestamp, history table; JSON Lines). (인수인계 노트: 작성자·타임스탬프·히스토리 테이블, JSON Lines 누적 저장)
+
 #### **Usability (사용자 편의성)**
 * **Change Config File Path**: Specify and save the location of the `config3.h` file directly from the 'File' menu in the GUI. (설정 파일 경로 변경: GUI의 'File' 메뉴를 통해 `config3.h` 파일의 위치를 직접 지정하고 저장할 수 있습니다.)
 * **Path Shortcuts**: Displays key directory paths and allows opening a terminal at that location with a button click. (경로 바로가기: 주요 디렉토리 경로를 표시하고, 버튼 클릭으로 해당 경로에서 바로 터미널을 열 수 있습니다.)
@@ -127,9 +134,9 @@ The roles of the main files are as follows. (주요 파일의 역할은 다음�
 	**`managers/` (integrated subsystems — 통합 서브시스템):**
 	* `laser_manager.py`: 4-unit laser control, interlock watchdog, USB-disconnect handling, telemetry logging. (레이저 4대 제어, 인터락 워치독, USB 단선 처리, 텔레메트리 로깅)
 	* `ups_manager.py`: OMRON UPS auto-detect, live monitoring, port lock, gated shutdown. (OMRON UPS 자동 탐지·모니터링·포트 잠금·게이트 종료)
-	* `rotation_manager.py` / `rotation_control.py`: Motorized PMT tilt/rotation automation ("General Scan") and the low-level stage driver. (모터 구동 PMT 틸트/회전 자동화와 저수준 스테이지 드라이버)
-	* `ui_automation.py`: UI for the General Scan / scheduling tab. (General Scan / 예약 탭 UI)
-	* `waveform_viewer.py`: Embedded uproot waveform & FFT viewer (single/average, pedestal range, charge search). (내장 uproot 파형·FFT 뷰어)
+	* `rotation_manager.py` / `rotation_control.py`: Motorized PMT tilt/rotation automation ("General Scan"), scan-history snapshots, and the low-level stage driver. (모터 구동 PMT 틸트/회전 자동화, 스캔 히스토리 스냅샷, 저수준 스테이지 드라이버)
+	* `ui_automation.py`: General Scan / scheduling / Quick Setup / Scan History / Handover Notes UI, plus the laser injection-side (`X+/X−/Y+/Y−`) calculator mirroring the analysis code's `angle_convert.h`. (General Scan · 예약 · Quick Setup · Scan History · 인수인계 노트 UI 및 분석 코드 `angle_convert.h`와 동일한 레이저 입사면(`X+/X−/Y+/Y−`) 계산기)
+	* `waveform_viewer.py`: Embedded uproot waveform & FFT viewer — single/average, pedestal & signal-integration ranges, drag-zoom, charge / mV-peak / clock-noise event searches. (내장 uproot 파형·FFT 뷰어 — 단일/평균, pedestal·신호 적분 구간, 드래그 줌, 전하/mV 피크/클럭 노이즈 이벤트 검색)
 	* `control_access.py`: Lock/unlock access control gating dangerous actions. (위험 동작을 막는 잠금/해제 제어)
 
 	* `start.sh` / `build.sh`: Run-from-source / PyInstaller build helpers. (소스 실행 / 빌드 헬퍼)

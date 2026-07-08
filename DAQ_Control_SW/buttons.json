@@ -37,9 +37,10 @@
     },
     {
         "frame": "scripts",
-        "label": "6b. Dark Rate Scan (Threshold)",
+        "label": "6b. Dark Rate Scan (Threshold) [DEVELOP]",
         "command": "run_rate_scan",
-        "style": "Normal.TButton"
+        "style": "Normal.TButton",
+        "disabled": true
     },
     {
         "frame": "scripts",

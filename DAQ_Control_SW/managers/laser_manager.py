@@ -291,7 +291,6 @@ class LaserManager:
 
     def set_laser_ld_safe(self, target_wl, state):
         if state is True and not getattr(getattr(self.app, 'access_mgr', None), 'unlocked', True):
-            from tkinter import messagebox
             messagebox.showwarning(
                 "🔒 System Locked",
                 "Controls are locked.\n\nPlease click 'Unlock Controls' (top banner) before turning on the Laser.")
