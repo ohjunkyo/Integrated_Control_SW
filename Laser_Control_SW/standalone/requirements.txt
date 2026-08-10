@@ -1,0 +1,2 @@
+# Only the driver + CLI need this one package.
+hidapi>=0.14.0
