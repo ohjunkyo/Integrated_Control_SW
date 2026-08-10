@@ -3,3 +3,8 @@ venv/
 log/
 __pycache__/
 *.pyc
+laser_gui_config.json
+
+# Build output of make_installer.sh -- regenerate it rather than commit a
+# 40K base64 blob that changes wholesale on every source edit.
+laser_control_installer.sh

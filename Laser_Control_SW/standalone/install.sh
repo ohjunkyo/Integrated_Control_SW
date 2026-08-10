@@ -1,67 +1,123 @@
 #!/usr/bin/env bash
-# One-time setup for the standalone Tamadenshi laser driver on a fresh Linux PC.
+# One-time setup for the standalone Tamadenshi laser control software.
 #
-#   ./install.sh          # system packages + venv + udev rules
-#   ./install.sh --no-sudo   # skip anything needing root (udev, apt)
+#   ./install.sh              full install (system deps, venv, udev, shortcut)
+#   ./install.sh --no-sudo    skip everything needing root (apt, udev rules)
+#   ./install.sh --no-gui     driver + CLI only, skip matplotlib/pandas/tk
 #
-# Everything lands inside this directory (venv/, log/); nothing is written to
-# your home directory or anywhere else on the system except the udev rule.
+# Safe to re-run. Everything lands inside this directory (venv/, log/) except
+# the udev rule and the desktop shortcut.
 
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 USE_SUDO=1
-[[ "${1:-}" == "--no-sudo" ]] && USE_SUDO=0
+WITH_GUI=1
+for arg in "$@"; do
+    case "$arg" in
+        --no-sudo) USE_SUDO=0 ;;
+        --no-gui)  WITH_GUI=0 ;;
+        -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+        *) echo "Unknown option: $arg" >&2; exit 1 ;;
+    esac
+done
 
-echo "=== Tamadenshi laser driver -- standalone setup ==="
-echo "Install directory: $HERE"
+# Root cannot be asked for a password non-interactively in every environment,
+# and running the whole install as root would leave a root-owned venv the
+# normal user cannot update. Bail early rather than half-install.
+if [[ $EUID -eq 0 && $USE_SUDO -eq 1 ]]; then
+    echo "Do not run install.sh as root -- it will create a root-owned venv." >&2
+    echo "Run it as your normal user; it calls sudo only where needed." >&2
+    exit 1
+fi
+
+echo "=================================================="
+echo " Tamadenshi Laser Control -- standalone setup"
+echo "=================================================="
+echo " Install directory : $HERE"
+echo " GUI components    : $([[ $WITH_GUI -eq 1 ]] && echo yes || echo no)"
+echo " Use sudo          : $([[ $USE_SUDO -eq 1 ]] && echo yes || echo no)"
 echo
 
 # --- 1. system packages ---------------------------------------------------
+echo "[1/5] System packages..."
 if [[ $USE_SUDO -eq 1 ]] && command -v apt-get >/dev/null 2>&1; then
-    echo "[1/4] Installing system packages (python3, venv, libusb, libudev)..."
+    PKGS=(python3 python3-venv python3-pip
+          libhidapi-hidraw0 libhidapi-libusb0 libudev-dev libusb-1.0-0-dev)
+    # tkinter is a system package, never a pip one -- installing it here is the
+    # difference between the GUI starting and dying on `import tkinter`.
+    [[ $WITH_GUI -eq 1 ]] && PKGS+=(python3-tk)
     sudo apt-get update -qq
-    # libhidapi-* lets pip use a prebuilt backend; libudev/libusb dev headers
-    # are needed if pip has to compile hidapi from source instead.
-    sudo apt-get install -y python3 python3-venv python3-pip \
-        libhidapi-hidraw0 libhidapi-libusb0 libudev-dev libusb-1.0-0-dev
+    sudo apt-get install -y "${PKGS[@]}"
+    echo "      done."
 else
-    echo "[1/4] Skipping system packages (no sudo or non-apt distro)."
-    echo "      Ensure these exist: python3, python3-venv, libhidapi, libudev."
+    echo "      skipped (no sudo, or non-apt distro)."
+    echo "      Ensure these exist: python3, python3-venv, libhidapi, libudev"
+    [[ $WITH_GUI -eq 1 ]] && echo "      ...and python3-tk for the GUI."
 fi
 echo
 
 # --- 2. python environment ------------------------------------------------
-echo "[2/4] Creating virtualenv in $HERE/venv ..."
+echo "[2/5] Python virtualenv in $HERE/venv ..."
 python3 -m venv "$HERE/venv"
 "$HERE/venv/bin/pip" install --quiet --upgrade pip
-"$HERE/venv/bin/pip" install --quiet -r "$HERE/requirements.txt"
+if [[ $WITH_GUI -eq 1 ]]; then
+    "$HERE/venv/bin/pip" install --quiet -r "$HERE/requirements.txt"
+else
+    "$HERE/venv/bin/pip" install --quiet hidapi
+fi
 echo "      done."
 echo
 
 # --- 3. udev rules --------------------------------------------------------
+echo "[3/5] USB permissions (udev)..."
 if [[ $USE_SUDO -eq 1 ]]; then
-    echo "[3/4] Installing udev rules (USB access without root)..."
     sudo cp "$HERE/99-tamadenshi.rules" /etc/udev/rules.d/
     sudo udevadm control --reload-rules
     sudo udevadm trigger
     echo "      done."
 else
-    echo "[3/4] Skipping udev rules -- you will need to run as root, or install"
-    echo "      99-tamadenshi.rules manually. See the file's header."
+    echo "      skipped -- install 99-tamadenshi.rules manually or run as root."
 fi
 echo
 
-# --- 4. smoke test --------------------------------------------------------
-echo "[4/4] Looking for attached boards..."
+# --- 4. launchers ---------------------------------------------------------
+echo "[4/5] Launchers..."
+chmod +x "$HERE/run_gui.sh" "$HERE/laser_cli.py" "$HERE/laser_gui.py" 2>/dev/null || true
+if [[ $WITH_GUI -eq 1 ]]; then
+    DESKTOP_DIR="$HOME/.local/share/applications"
+    mkdir -p "$DESKTOP_DIR"
+    cat > "$DESKTOP_DIR/laser-control.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Laser Control
+Comment=Tamadenshi LD board control
+Exec=$HERE/run_gui.sh
+Path=$HERE
+Terminal=false
+Categories=Science;Utility;
+EOF
+    chmod +x "$DESKTOP_DIR/laser-control.desktop"
+    update-desktop-database "$DESKTOP_DIR" 2>/dev/null || true
+    echo "      Application menu entry: 'Laser Control'"
+fi
+echo "      Shell:  $HERE/run_gui.sh"
+echo
+
+# --- 5. smoke test --------------------------------------------------------
+echo "[5/5] Looking for attached boards..."
 "$HERE/venv/bin/python" "$HERE/laser_cli.py" list || true
 echo
-echo "=== Setup complete ==="
+
+echo "=================================================="
+echo " Setup complete"
+echo "=================================================="
 echo
-echo "IMPORTANT: unplug and replug the laser's USB cable now, so the new udev"
-echo "rule applies to it. Then:"
+echo " IMPORTANT: unplug and replug the laser's USB cable now, so the new"
+echo "            udev rule applies to it."
 echo
-echo "    $HERE/venv/bin/python $HERE/laser_cli.py status"
+[[ $WITH_GUI -eq 1 ]] && echo " Start the GUI :  $HERE/run_gui.sh"
+echo " Command line  :  $HERE/venv/bin/python $HERE/laser_cli.py status"
 echo
-echo "Logs are written to: ${LASER_LOG_DIR:-$HERE/log}"
-echo "Change that anytime with:  export LASER_LOG_DIR=/your/path"
+echo " Logs go to    :  ${LASER_LOG_DIR:-$HERE/log}"
+echo " Change with   :  export LASER_LOG_DIR=/your/path"

@@ -1,43 +1,78 @@
-# Tamadenshi LD Board — Standalone Linux Driver
+# Tamadenshi LD Board — Standalone Linux Control Software
 
 Self-contained control software for the Tamadenshi (Tama Electric) pico-second
-laser diode board. Copy this one directory to any Linux PC and it runs — no
-dependency on `Integrated_Control_SW`, no absolute paths, no config files
-elsewhere on the machine.
+laser diode board — GUI, CLI, and driver library. Copy this one directory to
+any Linux PC and it runs: no dependency on `Integrated_Control_SW`, no absolute
+paths, nothing written outside the install directory.
 
 ```
 standalone/
-├── laser_driver.py       # the driver library (import this from your own code)
-├── laser_cli.py          # command-line front end
-├── 99-tamadenshi.rules   # udev rule for non-root USB access
-├── install.sh            # one-time setup
+├── laser_driver.py       driver library (import this from your own code)
+├── laser_cli.py          command-line front end
+├── laser_gui.py          tkinter GUI
+├── run_gui.sh            GUI launcher (uses the venv)
+├── install.sh            one-time setup
+├── make_installer.sh     builds the single-file distributable
+├── 99-tamadenshi.rules   udev rule for non-root USB access
 ├── requirements.txt
-└── log/                  # CSV drift logs (created on first write)
+└── log/                  CSV drift logs (created on first write)
 ```
 
-## Install
+## Deploying to another PC (one file)
+
+Build a self-extracting installer:
 
 ```bash
-scp -r standalone/ user@newpc:~/laser
+./make_installer.sh
 ```
+
+That produces **`laser_control_installer.sh`** (~40 KB) — hand over that single
+file. On the target PC:
 
 ```bash
-cd ~/laser && ./install.sh
+chmod +x laser_control_installer.sh && ./laser_control_installer.sh
 ```
 
-Then **unplug and replug the laser's USB cable** so the new udev rule applies.
+It unpacks to `~/laser_control` and runs the full setup. Options:
 
-If you cannot use sudo, run `./install.sh --no-sudo` and either install
-`99-tamadenshi.rules` yourself later or run the CLI as root.
+| Option | Effect |
+|---|---|
+| `--dir /opt/laser` | Install somewhere else |
+| `--no-gui` | Driver + CLI only (skips matplotlib/pandas/tk) |
+| `--no-sudo` | Skip apt and udev steps |
+| `--extract-only` | Unpack without running setup |
 
-## Use
+An existing install is never silently overwritten — it asks, and keeps `log/`
+and `venv/`.
+
+### Or install from this directory directly
+
+```bash
+./install.sh
+```
+
+**After either route: unplug and replug the laser's USB cable** so the new udev
+rule applies to it.
+
+## Running the GUI
+
+```bash
+./run_gui.sh
+```
+
+`install.sh` also adds a **"Laser Control"** entry to the application menu.
+
+The GUI shows live LD/TEC state, temperature, bias/pulse setpoints, pulse
+width, and the photodiode reading; it controls the LD, TEC, trigger source,
+internal frequency, drive currents, and pulse width, and plots any saved CSV.
+
+> **Only one process can hold the USB device.** If the main `Integrated_Control_SW`
+> app is running and connected, this GUI cannot connect, and vice versa.
+
+## Running the CLI
 
 ```bash
 source venv/bin/activate
-```
-
-```bash
-./laser_cli.py list
 ```
 
 | Command | What it does |
@@ -54,28 +89,26 @@ source venv/bin/activate
 Anything that changes what the hardware emits asks for confirmation. Pass `-y`
 to skip that in scripts.
 
-With several boards attached, select one with `--index N`:
+## Selecting a board
 
-```bash
-./laser_cli.py --index 1 status
-```
-
-**These boards report no serial number** (`list` shows `(none)` and the generic
-product string "Simple HID Device Demo" for every one), so `--serial` is not
-usable in practice and the USB path is the only thing that distinguishes them.
-The path reflects which physical port a board is plugged into — e.g.
-`1-3.4.1:1.0` … `1-3.4.4:1.0` for a four-board hub — so **write down which
-wavelength is in which port** and keep the cabling fixed. Index order follows
-enumeration, not port number, and can change across reboots, so scripts should
-address boards by path instead:
+With one board attached, nothing to do — it is picked automatically. With
+several, the GUI offers a dropdown and the CLI takes a selector:
 
 ```bash
 ./laser_cli.py --path 1-3.4.1:1.0 status
 ```
 
+**These boards report no serial number** — `list` shows `(none)` and the
+generic product string "Simple HID Device Demo" for every one, so the USB path
+is the only thing that distinguishes them. The path reflects which physical
+port a board is plugged into (e.g. `1-3.4.1:1.0` … `1-3.4.4:1.0` for a
+four-board hub), so **write down which wavelength is in which port** and keep
+the cabling fixed. `--index` is enumeration order and can change across
+reboots; prefer `--path` in scripts.
+
 ## Logging
 
-`monitor` appends a CSV row every 10 seconds **while the LD is on** to
+The driver appends a CSV row every 10 seconds **while the LD is on** to
 `log/laser_data_YYYYMMDD.csv`:
 
 ```
@@ -85,8 +118,8 @@ timestamp,ld_on,tec_on,temp_c,bias_ma,pulse_ma,pulse_width_ps,pd_raw,pd_current
 Point that somewhere else with `export LASER_LOG_DIR=/data/laser_logs`.
 
 `pd_current` is **blank** rather than zero when the board's photodiode is dead
-(see the hardware note below), so a drift fit reading this file skips those rows
-instead of fitting a flat fake line.
+(see below), so a drift fit reading this file skips those rows instead of
+fitting a flat fake line.
 
 ## Using the driver from your own code
 
@@ -110,7 +143,8 @@ device unbound until the cable is replugged.
 **Combined current limit.** Bias and pulse current share one physical drive
 path, so the manual's 200 mA ceiling applies to their **sum**. `set_currents()`
 enforces this; the individual `set_bias_current()` / `set_pulse_current()`
-setters cannot see the total, so prefer `set_currents()`.
+setters cannot see the total, so prefer `set_currents()`. The GUI shows a
+running total and both front ends refuse an over-limit write.
 
 **Photodiode monitor.** `pd_current` is the only genuinely *measured* optical
 quantity — `bias` and `pulse` are DAC setpoints echoed back, and read the
@@ -146,9 +180,19 @@ Replug the cable, or rebind it:
 sudo udevadm trigger --subsystem-match=usb --action=add
 ```
 
+**GUI won't connect but the CLI works (or vice versa)** — the other one still
+holds the device. Only one process at a time.
+
+**`ImportError: No module named tkinter`** — that is a system package, not a
+pip one:
+
+```bash
+sudo apt install python3-tk
+```
+
 **Pulse-width read fails intermittently** — the board sometimes returns a stale
 response when polled right after another command. The driver rejects
 out-of-range values rather than caching garbage; just retry.
 
 **`ImportError: No module named hid`** — activate the venv (`source
-venv/bin/activate`), or `pip install hidapi`.
+venv/bin/activate`), or re-run `./install.sh`.
