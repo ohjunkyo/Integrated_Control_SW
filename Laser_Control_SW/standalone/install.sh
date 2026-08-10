@@ -31,17 +31,47 @@ if [[ $EUID -eq 0 && $USE_SUDO -eq 1 ]]; then
     exit 1
 fi
 
+# udev, apt and .desktop files are all Linux-only. Without this check the
+# script dies at step 3 on macOS with "cp: /etc/udev/rules.d: No such file or
+# directory" -- after already having built a venv, so it fails halfway.
+OS="$(uname -s)"
+case "$OS" in
+    Linux)  PLATFORM=linux ;;
+    Darwin) PLATFORM=macos ;;
+    *)      PLATFORM=other ;;
+esac
+
 echo "=================================================="
 echo " Tamadenshi Laser Control -- standalone setup"
 echo "=================================================="
+echo " Platform          : $OS"
 echo " Install directory : $HERE"
 echo " GUI components    : $([[ $WITH_GUI -eq 1 ]] && echo yes || echo no)"
 echo " Use sudo          : $([[ $USE_SUDO -eq 1 ]] && echo yes || echo no)"
 echo
 
+if [[ $PLATFORM != linux ]]; then
+    echo "  NOTE: this software targets Linux. On $OS the Python parts install"
+    echo "        and the driver may work, but USB permission setup and the"
+    echo "        application-menu entry are Linux-specific and are skipped."
+    echo
+fi
+
+# A venv inside a cloud-synced folder gets slow and uploads thousands of files.
+case "$HERE" in
+    *Dropbox*|*"Google Drive"*|*OneDrive*|*iCloud*)
+        echo "  WARNING: this directory looks cloud-synced. The virtualenv"
+        echo "           created here will be large and slow to sync. Consider"
+        echo "           installing to a local path instead:"
+        echo "               ./install.sh --dir ~/laser_control   (installer)"
+        echo "           or copy this folder out of the synced directory first."
+        echo
+        ;;
+esac
+
 # --- 1. system packages ---------------------------------------------------
 echo "[1/5] System packages..."
-if [[ $USE_SUDO -eq 1 ]] && command -v apt-get >/dev/null 2>&1; then
+if [[ $USE_SUDO -eq 1 && $PLATFORM == linux ]] && command -v apt-get >/dev/null 2>&1; then
     PKGS=(python3 python3-venv python3-pip
           libhidapi-hidraw0 libhidapi-libusb0 libudev-dev libusb-1.0-0-dev)
     # tkinter is a system package, never a pip one -- installing it here is the
@@ -50,6 +80,17 @@ if [[ $USE_SUDO -eq 1 ]] && command -v apt-get >/dev/null 2>&1; then
     sudo apt-get update -qq
     sudo apt-get install -y "${PKGS[@]}"
     echo "      done."
+elif [[ $PLATFORM == macos ]]; then
+    if command -v brew >/dev/null 2>&1; then
+        echo "      Homebrew found -- installing hidapi."
+        brew list hidapi >/dev/null 2>&1 || brew install hidapi
+        [[ $WITH_GUI -eq 1 ]] && { brew list python-tk >/dev/null 2>&1 || \
+            echo "      For the GUI you may also need: brew install python-tk"; }
+        echo "      done."
+    else
+        echo "      skipped -- Homebrew not found."
+        echo "      Install it from https://brew.sh then: brew install hidapi"
+    fi
 else
     echo "      skipped (no sudo, or non-apt distro)."
     echo "      Ensure these exist: python3, python3-venv, libhidapi, libudev"
@@ -71,7 +112,10 @@ echo
 
 # --- 3. udev rules --------------------------------------------------------
 echo "[3/5] USB permissions (udev)..."
-if [[ $USE_SUDO -eq 1 ]]; then
+if [[ $PLATFORM != linux ]]; then
+    # macOS grants HID access to user processes directly; there is no udev.
+    echo "      skipped -- udev is Linux-only ($OS needs no equivalent step)."
+elif [[ $USE_SUDO -eq 1 ]]; then
     sudo cp "$HERE/99-tamadenshi.rules" /etc/udev/rules.d/
     sudo udevadm control --reload-rules
     sudo udevadm trigger
@@ -84,7 +128,7 @@ echo
 # --- 4. launchers ---------------------------------------------------------
 echo "[4/5] Launchers..."
 chmod +x "$HERE/run_gui.sh" "$HERE/laser_cli.py" "$HERE/laser_gui.py" 2>/dev/null || true
-if [[ $WITH_GUI -eq 1 ]]; then
+if [[ $WITH_GUI -eq 1 && $PLATFORM == linux ]]; then
     DESKTOP_DIR="$HOME/.local/share/applications"
     mkdir -p "$DESKTOP_DIR"
     cat > "$DESKTOP_DIR/laser-control.desktop" <<EOF
@@ -113,9 +157,11 @@ echo "=================================================="
 echo " Setup complete"
 echo "=================================================="
 echo
-echo " IMPORTANT: unplug and replug the laser's USB cable now, so the new"
-echo "            udev rule applies to it."
-echo
+if [[ $PLATFORM == linux ]]; then
+    echo " IMPORTANT: unplug and replug the laser's USB cable now, so the new"
+    echo "            udev rule applies to it."
+    echo
+fi
 [[ $WITH_GUI -eq 1 ]] && echo " Start the GUI :  $HERE/run_gui.sh"
 echo " Command line  :  $HERE/venv/bin/python $HERE/laser_cli.py status"
 echo
