@@ -30,6 +30,7 @@ FILES=(
     99-tamadenshi.rules
     laser_env.sh.example
     README.md
+    설치방법.txt
 )
 
 echo "Staging files..."
