@@ -28,6 +28,7 @@ FILES=(
     install.sh
     requirements.txt
     99-tamadenshi.rules
+    laser_env.sh.example
     README.md
 )
 

@@ -5,6 +5,11 @@
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Optional per-machine settings (LASER_LOG_DIR, ...). Sourced here rather than
+# left to the user's shell profile because the desktop launcher starts the GUI
+# without a login shell, so an `export` in ~/.bashrc would never reach it.
+[[ -f "$HERE/laser_env.sh" ]] && source "$HERE/laser_env.sh"
+
 if [[ -x "$HERE/venv/bin/python" ]]; then
     PY="$HERE/venv/bin/python"
 else

@@ -115,7 +115,14 @@ The driver appends a CSV row every 10 seconds **while the LD is on** to
 timestamp,ld_on,tec_on,temp_c,bias_ma,pulse_ma,pulse_width_ps,pd_raw,pd_current
 ```
 
-Point that somewhere else with `export LASER_LOG_DIR=/data/laser_logs`.
+**You do not have to configure this** — the directory is created on first
+write inside the install directory (`~/laser_control/log/` after the installer).
+
+To put it elsewhere permanently, copy `laser_env.sh.example` to `laser_env.sh`
+and set `LASER_LOG_DIR` there. `run_gui.sh` sources that file, so it reaches the
+GUI even when launched from the desktop menu — where an `export` in `~/.bashrc`
+never would. For the CLI, `source laser_env.sh` yourself, or just
+`export LASER_LOG_DIR=/data/laser_logs` in that shell.
 
 `pd_current` is **blank** rather than zero when the board's photodiode is dead
 (see below), so a drift fit reading this file skips those rows instead of
