@@ -37,13 +37,6 @@
     },
     {
         "frame": "scripts",
-        "label": "6b. Dark Rate Scan (Threshold) [DEVELOP]",
-        "command": "run_rate_scan",
-        "style": "Normal.TButton",
-        "disabled": true
-    },
-    {
-        "frame": "scripts",
         "label": "7. Uniformity (tag, runs)",
         "command": "run_uniformity",
         "style": "Normal.TButton"
@@ -60,11 +53,17 @@
         "command": "open_image_viewer",
         "style": "Normal.TButton"
     },
-    { 
-        "frame": "view", 
-        "label": "SUKAP Connection (Cisco)", 
-        "command": "run_cisco", 
-        "style": "Normal.TButton" 
+    {
+        "frame": "view",
+        "label": "SUKAP Connection (Cisco)",
+        "command": "run_cisco",
+        "style": "Normal.TButton"
+    },
+    {
+        "frame": "view",
+        "label": "Data Log (Web)",
+        "command": "open_data_log",
+        "style": "Normal.TButton"
     }
 
 

@@ -3,6 +3,13 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import re
 import os
+import subprocess
+try:
+    import customtkinter as ctk
+    CTK_AVAILABLE = True
+except Exception:
+    ctk = None
+    CTK_AVAILABLE = False
 
 class ConfigManager:
     def __init__(self, filepath):
@@ -88,36 +95,49 @@ class ConfigManager:
             return [('error', f"Failed to read or parse file: {e}")]
 
     def create_ui_entries(self, parent_frame):
+        """Build one label+entry per config var. When customtkinter is
+        available the entries are laid out in a TWO-COLUMN grid (halves the
+        window height) with CTk widgets; otherwise it falls back to the old
+        single-column ttk rows. Returns {var_name: entry}; entry.get() works
+        the same for both widget types."""
         entries = {}
+        items = []
         try:
             with open(self.filepath, 'r') as f:
                 content = f.read()
-
             pattern = re.compile(r'const\s+(std::string|int)\s+([A-Za-z0-9_]+)\s*=\s*(.*?);')
-            matches = pattern.finditer(content)
-
-            for match in matches:
+            for match in pattern.finditer(content):
                 var_name = match.group(2)
                 raw_val = match.group(3).strip()
-                
-                if raw_val.startswith('"') and raw_val.endswith('"'):
-                    value = raw_val[1:-1]
-                else:
-                    value = raw_val
-
+                value = raw_val[1:-1] if (raw_val.startswith('"') and raw_val.endswith('"')) else raw_val
                 if var_name.strip() and value is not None:
-                    frame = ttk.Frame(parent_frame)
-                    frame.pack(fill=tk.X, padx=5, pady=2)
-
-                    label = ttk.Label(frame, text=f"{var_name}:", width=15)
-                    label.pack(side=tk.LEFT)
-
-                    entry = ttk.Entry(frame)
-                    entry.pack(side=tk.RIGHT, fill=tk.X, expand=True)
-                    entry.insert(0, value)
-                    entries[var_name] = entry
+                    items.append((var_name, value))
         except FileNotFoundError:
-            ttk.Label(parent_frame, text=f"{self.filepath} not found.").pack()
+            (ctk.CTkLabel if CTK_AVAILABLE else ttk.Label)(
+                parent_frame, text=f"{self.filepath} not found.").pack()
+            return entries
+
+        if CTK_AVAILABLE:
+            # Two columns of (label, entry) pairs -> grid columns (0,1) and (2,3).
+            parent_frame.grid_columnconfigure((1, 3), weight=1)
+            for i, (var_name, value) in enumerate(items):
+                col = (i % 2) * 2
+                row = i // 2
+                ctk.CTkLabel(parent_frame, text=f"{var_name}:", anchor="e").grid(
+                    row=row, column=col, sticky="e", padx=(8, 6), pady=4)
+                entry = ctk.CTkEntry(parent_frame, width=190)
+                entry.grid(row=row, column=col + 1, sticky="ew", padx=(0, 14), pady=4)
+                entry.insert(0, value)
+                entries[var_name] = entry
+        else:
+            for var_name, value in items:
+                frame = ttk.Frame(parent_frame)
+                frame.pack(fill=tk.X, padx=5, pady=2)
+                ttk.Label(frame, text=f"{var_name}:", width=15).pack(side=tk.LEFT)
+                entry = ttk.Entry(frame)
+                entry.pack(side=tk.RIGHT, fill=tk.X, expand=True)
+                entry.insert(0, value)
+                entries[var_name] = entry
 
         return entries
 
@@ -144,11 +164,50 @@ class ConfigManager:
                 else:
                     new_lines.append(line)
 
-            with open(self.filepath, 'w') as f:
+            # Atomic write: config3.h is the single source of truth read
+            # concurrently by the shell DAQ launcher (parse_config) and several
+            # Python paths. An in-place open('w') that's interrupted mid-write
+            # (crash, watchdog kill, full disk) leaves a truncated config that
+            # breaks every subsequent run. Write a temp file then os.replace().
+            tmp = self.filepath + ".tmp"
+            with open(tmp, 'w') as f:
                 f.writelines(new_lines)
-                
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, self.filepath)
+
             self.reload()
 
+            rebuild_warning = self._rebuild_daq_binary()
+
             messagebox.showinfo("Success", "Configuration saved successfully.")
+            if rebuild_warning:
+                messagebox.showwarning("DAQ Binary Rebuild Failed", rebuild_warning)
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save config file: {e}")
+
+    def _rebuild_daq_binary(self):
+        """config3.h's values (SN1/SN2/direction/HV/...) are compiled directly
+        into execute_DAQ_v2 as C++ const std::string literals -- the raw DAQ
+        binary never re-reads the header at runtime. Without a rebuild here,
+        every Quick Configuration save silently has zero effect on the next
+        run's RunInfo (e.g. a swapped PMT's SN keeps showing the old serial).
+        Runs 'make' in ADC_test synchronously since a run must not be started
+        against a binary mid-rebuild. Returns None on success (nothing shown
+        to the user -- the rebuild is meant to be invisible plumbing), or a
+        warning string on failure since a failed rebuild silently leaves the
+        binary on stale config values.
+        """
+        adc_test_dir = "/home/precalkor/ADC/ADC_test"
+        try:
+            result = subprocess.run(
+                ["make"], cwd=adc_test_dir,
+                capture_output=True, text=True, timeout=60
+            )
+            if result.returncode == 0:
+                return None
+            else:
+                return ("The DAQ binary (execute_DAQ_v2) failed to rebuild -- it still "
+                        "has the OLD config values until this is fixed.\n\n" + result.stderr[-500:])
+        except Exception as e:
+            return f"Could not rebuild the DAQ binary automatically: {e}"

@@ -27,6 +27,14 @@ class RotationManager:
 
         self.is_monitoring = False
 
+        # Persistent Modbus TCP connections, one per device, reused across
+        # calls instead of connect()+close() on every single command/poll.
+        # The old per-call reconnect pattern hammered the stage's embedded
+        # Modbus server with a fresh TCP handshake every 0.5-1s from the
+        # background monitor thread alone — the suspected root cause of the
+        # comm timeouts that hung General Scan and Reset Angle (2026-07-12/13).
+        self._clients = {2: None, 3: None}
+
         self.is_moving = {2: False, 3: False}
         self.target_angles = {
             2: {"tilt": None, "rot": None},
@@ -52,10 +60,58 @@ class RotationManager:
                 cfg = json.load(f)
             client = ModbusTcpClient(host=cfg["connection"]["host"], port=502, timeout=3)
             return client, cfg
-        except Exception as e: 
+        except Exception as e:
             self.controller._log(f"ERROR: Failed to load {cfg_file}: {e}")
             return None, None
-    
+
+    def _get_persistent_client(self, dev_num):
+        """Like _get_config_and_client, but reuses one long-lived TCP
+        connection per device instead of reconnecting on every call. Returns
+        (client, cfg), or (None, cfg-or-None) on failure."""
+        cfg_file = f"config_dev{dev_num}.json"
+        cfg_path = os.path.join(self.controller.base_dir, cfg_file)
+        if os.path.exists(cfg_path):
+            try:
+                with open(cfg_path, 'r', encoding='utf-8') as f:
+                    cfg = json.load(f)
+            except Exception as e:
+                self.controller._log(f"ERROR: Failed to load {cfg_file}: {e}")
+                return None, None
+        elif dev_num in self.devices:
+            cfg = {"connection": {"host": self.devices[dev_num]["host"], "unit": self.devices[dev_num]["unit"]}}
+        else:
+            self.controller._log(f"ERROR: No default settings for Dev {dev_num}.")
+            return None, None
+
+        client = self._clients.get(dev_num)
+        if client is not None and client.is_socket_open():
+            return client, cfg
+
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
+
+        client = ModbusTcpClient(host=cfg["connection"]["host"], port=502, timeout=3)
+        if not client.connect():
+            self._clients[dev_num] = None
+            return None, cfg
+        self._clients[dev_num] = client
+        return client, cfg
+
+    def _invalidate_client(self, dev_num):
+        """Drop the cached connection for dev_num after a Modbus error, so
+        the next call opens a fresh socket instead of reusing a possibly-bad
+        one."""
+        client = self._clients.get(dev_num)
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
+        self._clients[dev_num] = None
+
     def _pack_32bit(self, value):
         scaled_val = int(round(float(value) * 250.0))
         b = struct.pack(">i", scaled_val)
@@ -77,9 +133,9 @@ class RotationManager:
     def move_rotation(self, dev_num, tilt, rot):
         """Hardware Control Sequence."""
         if not self.controller.access_mgr.unlocked: return
-        client, cfg = self._get_config_and_client(dev_num)
-        if not client or not client.connect(): return
-        
+        client, cfg = self._get_persistent_client(dev_num)
+        if not client: return
+
         try:
             unit = cfg["connection"]["unit"]
             if tilt != 'x': self._pulse_trigger(client, unit, self.addr["stop_tilt"])
@@ -94,11 +150,35 @@ class RotationManager:
                 client.write_registers(self.addr["write_rot"], self._pack_32bit(rot), unit=unit)
                 self._pulse_trigger(client, unit, self.addr["move_rot"])
                 self.controller._log(f"Device {dev_num} Rotation command sent: {rot} deg")
-        finally:
-            client.close()
+        except Exception as e:
+            self.controller._log(f"ERROR: Modbus Rotation Error (Dev {dev_num}): {e}")
+            self._invalidate_client(dev_num)
 
-    def move_tilt_only(self, dev_num, tilt, skip_lock=False): 
+    def _angle_in_range(self, axis_label, value, skip_lock):
+        """Reject a move outside the axis' safe range.
+
+        TILT is bounded by auto_mgr.scan_range [-55, 55]; ROTATION by
+        auto_mgr.rot_range [0, 135] -- they are DIFFERENT mechanical limits.
+        Applying the tilt range to rotation used to silently reject any
+        rotation > 55deg: the motor never started, and the stall watchdog
+        then raised a false 'MECHANICAL BLOCKAGE' abort (seen 2026-07-24 on
+        Device 3 during a Repeat-Angles recheck at rot offset 45deg)."""
+        if axis_label == "rotation":
+            rng = self.controller.auto_mgr.rot_range
+        else:
+            rng = self.controller.auto_mgr.scan_range
+        if rng["start"] <= value <= rng["end"]:
+            return True
+        msg = (f"Requested {axis_label} {value}° is outside the allowed range "
+               f"[{rng['start']}°, {rng['end']}°].")
+        self.controller._log(f"ERROR: {msg}")
+        if not skip_lock:
+            messagebox.showerror("Angle Out of Range", msg)
+        return False
+
+    def move_tilt_only(self, dev_num, tilt, skip_lock=False):
         if not skip_lock and not self.controller.access_mgr.unlocked: return
+        if not self._angle_in_range("tilt", tilt, skip_lock): return
 
         if self.is_moving[dev_num]:
             self.controller._log(f"WARNING: Device {dev_num} is already moving! Command ignored.")
@@ -106,8 +186,8 @@ class RotationManager:
         self.is_moving[dev_num] = True
         self.target_angles[dev_num] = {"tilt": tilt, "rot": None}
 
-        client, cfg = self._get_config_and_client(dev_num)
-        if not client or not client.connect():
+        client, cfg = self._get_persistent_client(dev_num)
+        if not client:
             # Connection failed: release the lock, otherwise the device stays "moving"
             # forever and every later command is silently ignored.
             self.is_moving[dev_num] = False
@@ -123,11 +203,11 @@ class RotationManager:
             self.controller._log(f"Device {dev_num} TILT ONLY command sent: {tilt} deg")
         except Exception as e:
             self.controller._log(f"ERROR: Modbus Tilt Error (Dev {dev_num}): {e}")
-        finally:
-            client.close()
+            self._invalidate_client(dev_num)
 
-    def move_rot_only(self, dev_num, rot, skip_lock=False): 
+    def move_rot_only(self, dev_num, rot, skip_lock=False):
         if not skip_lock and not self.controller.access_mgr.unlocked: return
+        if not self._angle_in_range("rotation", rot, skip_lock): return
 
         if self.is_moving[dev_num]:
             self.controller._log(f"WARNING: Device {dev_num} is already moving! Command ignored.")
@@ -150,8 +230,8 @@ class RotationManager:
             return
 
 
-        client, cfg = self._get_config_and_client(dev_num)
-        if not client or not client.connect():
+        client, cfg = self._get_persistent_client(dev_num)
+        if not client:
             # Connection failed: release the lock to avoid a permanent "moving" deadlock.
             self.is_moving[dev_num] = False
             self.target_angles[dev_num] = {"tilt": None, "rot": None}
@@ -166,8 +246,7 @@ class RotationManager:
             self.controller._log(f"Device {dev_num} ROTATION ONLY command sent: {rot} deg")
         except Exception as e:
             self.controller._log(f"ERROR: Modbus Rot Error (Dev {dev_num}): {e}")
-        finally:
-            client.close()
+            self._invalidate_client(dev_num)
 
     def _fast_pulse_trigger(self, client, unit, address):
         """A faster pulse trigger specifically for STOP commands to avoid mechanical delay."""
@@ -181,8 +260,8 @@ class RotationManager:
         self.target_angles[dev_num] = {"tilt": None, "rot": None}
         self.controller._log(f"[INFO] Device {dev_num} Lock released due to STOP command.")
 
-        client, cfg = self._get_config_and_client(dev_num)
-        if not client or not client.connect(): return
+        client, cfg = self._get_persistent_client(dev_num)
+        if not client: return
 
         try:
             unit = cfg["connection"]["unit"]
@@ -192,8 +271,7 @@ class RotationManager:
             self.controller._log(f"[INFO] Device {dev_num} Hardware STOP command sent rapidly.")
         except Exception as e:
             self.controller._log(f"[ERROR] Modbus Stop Error (Dev {dev_num}): {e}")
-        finally:
-            client.close()
+            self._invalidate_client(dev_num)
 
     """
     def read_angles(self, dev_num):
@@ -225,8 +303,8 @@ class RotationManager:
         """
     def read_angles(self, dev_num):
         """Read actual Tilt and Rotation angles from hardware in a single Modbus request."""
-        client, cfg = self._get_config_and_client(dev_num)
-        if not client or not client.connect():
+        client, cfg = self._get_persistent_client(dev_num)
+        if not client:
             return None, None
 
         tilt_deg, rot_deg = None, None
@@ -246,9 +324,7 @@ class RotationManager:
                 tilt_deg = tilt_raw / 250.0
 
         except Exception as e:
-            pass  
-        finally:
-            client.close()
+            self._invalidate_client(dev_num)
 
         return tilt_deg, rot_deg
     def start_monitoring(self, update_callback):

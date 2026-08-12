@@ -1,12 +1,21 @@
 import sys, json, os, time, signal, sqlite3, csv
 from datetime import datetime, timedelta 
-from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QGridLayout, QLabel, QPushButton, QDialog, QComboBox, QDoubleSpinBox, QTabWidget, QDateTimeEdit, QFileDialog, QCheckBox, QFrame
+from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton, QDialog, QComboBox, QDoubleSpinBox, QTabWidget, QDateTimeEdit, QFileDialog, QCheckBox, QFrame, QGroupBox, QScrollArea, QSizePolicy
 from PyQt5.QtCore import QTimer, Qt, pyqtSignal, QDateTime
 from PyQt5.QtGui import QFont, QIcon
 import pyqtgraph as pg
 import numpy as np
 from worker_manager import WorkerManager
 from database_manager import DatabaseManager
+
+# Dark Box #1/#2 were swapped in config_precal.json's arduino_settings.sensors
+# on 2026-07-27 17:42 (pin 2 was mislabeled "Dark Box #1", pin 3 "Dark Box #2" --
+# physically it's the other way around). Data logged BEFORE this timestamp has
+# the two swapped; data logged AFTER is correct. Drawn as a vertical marker on
+# the T/H Overlay History plot (see load_and_plot_data) so a time range that
+# straddles the fix is never misread as one continuous, consistently-labeled
+# series.
+DARKBOX_RELABEL_TS = datetime(2026, 7, 27, 17, 42, 0).timestamp()
 
 class HVControlPanel(QDialog):
     control_signal = pyqtSignal(str, int, int, str, object)
@@ -132,38 +141,84 @@ class MonitoringApp(QMainWindow):
 
     def setup_ui(self):
         self.setWindowTitle(self.config['ui_options']['window_title']); self.setGeometry(100, 100, 1800, 950)
-        #self.setStyleSheet(f"background-color: {self.styles['background_color']};")
+        # Flat, neutral-dark design system (accent-blue on charcoal) shared by
+        # both tabs -- one palette so buttons/checkboxes/date pickers/cards
+        # read as one system instead of each control having its own look.
+        ACCENT = "#3b82f6"
+        BG = self.styles['background_color']
+        CARD = "#242424"
+        BORDER = "#3a3a3a"
+        TEXT = self.styles['font_color_main']
         self.setStyleSheet(f"""
             QWidget {{
-                background-color: {self.styles['background_color']};
-                color: {self.styles['font_color_main']};
+                background-color: {BG};
+                color: {TEXT};
+                font-family: -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
             }}
             QLabel, QCheckBox {{
-                color: {self.styles['font_color_main']};
+                color: {TEXT};
+            }}
+            QCheckBox {{
+                spacing: 8px;
+                padding: 2px 0px;
+            }}
+            QCheckBox::indicator {{
+                width: 15px; height: 15px;
+                border: 1px solid #666666;
+                border-radius: 3px;
+                background-color: #333333;
+            }}
+            QCheckBox::indicator:hover {{ border-color: {ACCENT}; }}
+            QCheckBox::indicator:checked {{
+                background-color: {ACCENT};
+                border-color: {ACCENT};
+            }}
+            QGroupBox {{
+                border: 1px solid {BORDER};
+                border-radius: 8px;
+                margin-top: 14px;
+                padding: 10px 8px 8px 8px;
+                background-color: {CARD};
+                font-weight: bold;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 6px;
+                color: #9aa5b1;
             }}
             QComboBox, QDoubleSpinBox, QDateTimeEdit {{
-                color: {self.styles['font_color_main']};
-                background-color: #555555;
-                border: 1px solid #777777;
+                color: {TEXT};
+                background-color: #333333;
+                border: 1px solid {BORDER};
+                border-radius: 5px;
+                padding: 4px 6px;
+            }}
+            QComboBox:focus, QDoubleSpinBox:focus, QDateTimeEdit:focus {{
+                border: 1px solid {ACCENT};
             }}
             QPushButton {{
-                color: #000000; /* 대부분의 버튼은 밝은 배경에 검은 글씨가 가독성이 좋습니다 */
-                background-color: #DDDDDD;
-                border: 1px solid #777777;
-                padding: 5px;
+                color: {TEXT};
+                background-color: #333333;
+                border: 1px solid {BORDER};
+                border-radius: 6px;
+                padding: 7px 14px;
+                font-weight: 600;
             }}
+            QPushButton:hover {{ background-color: #3d3d3d; border-color: #555555; }}
+            QPushButton:pressed {{ background-color: #2a2a2a; }}
             QTabWidget::pane {{
-                border-top: 2px solid #C2C7CB;
+                border-top: 1px solid {BORDER};
             }}
             QTabBar::tab {{
-                background: #555555;
-                color: {self.styles['font_color_main']};
-                padding: 8px;
+                background: transparent;
+                color: #9aa5b1;
+                padding: 10px 18px;
+                font-weight: 600;
             }}
             QTabBar::tab:selected {{
-                background: {self.styles['background_color']};
-                color: {self.styles['font_color_main']};
-                border-top: 2px solid {self.styles['font_color_sensor']};
+                color: {TEXT};
+                border-bottom: 2px solid {ACCENT};
             }}
         """)
         self.tabs = QTabWidget(); self.setCentralWidget(self.tabs)
@@ -178,7 +233,7 @@ class MonitoringApp(QMainWindow):
 
         top_dashboard_frame = QFrame()
         top_dashboard_frame.setStyleSheet("""
-            QFrame { border: 1px solid #555555; border-radius: 8px; background-color: #2b2b2b; margin-bottom: 5px; }
+            QFrame { border: 1px solid #3a3a3a; border-radius: 8px; background-color: #242424; margin-bottom: 5px; }
             QLabel { border: none; background: transparent; padding: 2px; }
         """)
         
@@ -246,25 +301,49 @@ class MonitoringApp(QMainWindow):
         self.is_blink_on = False
 
         # ==========================================
-        # 2. 하단 데이터 라벨 전용 그리드 (센서, 전압/전류)
+        # 2. 센서(Dark Box T/H) 전용 한 줄 — HV 그리드와 분리해 한눈에 보이게
         # ==========================================
-        status_layout = QGridLayout()
-        status_layout.setContentsMargins(5, 5, 5, 10)
-        status_layout.setSpacing(10)
-        main_layout.addLayout(status_layout)
-        
-        self.sensor_labels = {i: {'name': s['name'], 'temp': QLabel(f"{s['name']} T: None"), 'humi': QLabel(f"H: None")} for i, s in enumerate(self.config['arduino_settings']['sensors'])}
-        
+        sensor_frame = QFrame()
+        sensor_frame.setStyleSheet("""
+            QFrame { border: 1px solid #3a3a3a; border-radius: 8px; background-color: #242424; }
+            QLabel { border: none; background: transparent; padding: 2px; }
+        """)
+        sensor_layout = QGridLayout(sensor_frame)
+        sensor_layout.setContentsMargins(12, 8, 12, 8)
+        sensor_layout.setSpacing(18)
+
+        # 'name' stays the raw config name (used to build DB column names, e.g.
+        # "Dark Box #1" -> Dark_Box_1_T, so renaming the display label never
+        # fragments existing history); 'display' is what's actually shown.
+        self.sensor_labels = {i: {'name': s['name'], 'display': s.get('display_name', s['name']),
+                                   'temp': QLabel(f"{s.get('display_name', s['name'])} T: None"),
+                                   'humi': QLabel("H: None")}
+                               for i, s in enumerate(self.config['arduino_settings']['sensors'])}
+
         for i, labels in self.sensor_labels.items():
             labels['temp'].setFont(font_large); labels['humi'].setFont(font_large)
-            labels['temp'].setStyleSheet(f"color: {self.styles['font_color_sensor']};"); labels['humi'].setStyleSheet(f"color: {self.styles['font_color_sensor']};")
-            row, col = divmod(i, 2)
-            # 좌우 공백을 줄이기 위해 열 배치(col) 간격을 촘촘하게 수정
-            status_layout.addWidget(labels['temp'], row, col * 4, 1, 2)
-            status_layout.addWidget(labels['humi'], row, col * 4 + 2, 1, 2)
+            labels['temp'].setStyleSheet(f"color: {self.styles['font_color_sensor']}; font-weight: bold;")
+            labels['humi'].setStyleSheet(f"color: {self.styles['font_color_sensor']};")
+            # One column pair per sensor, all on a single row — with only a
+            # handful of sensors this reads far cleaner than the old 2-per-row
+            # wrap (which left a lone sensor stranded on its own row).
+            sensor_layout.addWidget(labels['temp'], 0, i * 2)
+            sensor_layout.addWidget(labels['humi'], 0, i * 2 + 1)
+        for col in range(len(self.sensor_labels) * 2):
+            sensor_layout.setColumnStretch(col, 1)
+
+        main_layout.addWidget(sensor_frame)
+
+        # ==========================================
+        # 3. 하단 데이터 라벨 전용 그리드 (전압/전류)
+        # ==========================================
+        status_layout = QGridLayout()
+        status_layout.setContentsMargins(5, 10, 5, 10)
+        status_layout.setSpacing(10)
+        main_layout.addLayout(status_layout)
 
         self.hv_labels = {}
-        base_row = len(self.sensor_labels) // 2 + 1 
+        base_row = 0
         headers_added = False
         
         for i, ch in enumerate(self.config['caen_hv_settings']['channels_to_monitor']):
@@ -273,34 +352,39 @@ class MonitoringApp(QMainWindow):
                 status_layout.addWidget(volt_header, base_row, 0, 1, 2)
                 
                 if self.is_dual_current:
-                    curH_header = QLabel("Current H (uA):"); curL_header = QLabel("Current L (uA):")
-                    for h in [curH_header, curL_header]: h.setFont(font_large); h.setStyleSheet(f"color: {self.styles['font_color_current']}; font-weight: bold;")
+                    # Current L (IMonL, the low-range monitor) never carries a
+                    # meaningful reading at these PMT dark-current levels --
+                    # always pinned near 0 -- so it's dropped from the display
+                    # in favor of a decoded channel Status row (ON/OFF/RAMP
+                    # UP/RAMP DOWN/trip cause), which is actually actionable.
+                    curH_header = QLabel("Current (uA):"); stat_header = QLabel("Status:")
+                    for h in [curH_header, stat_header]: h.setFont(font_large); h.setStyleSheet(f"color: {self.styles['font_color_current']}; font-weight: bold;")
                     status_layout.addWidget(curH_header, base_row + 1, 0, 1, 2)
-                    status_layout.addWidget(curL_header, base_row + 2, 0, 1, 2)
+                    status_layout.addWidget(stat_header, base_row + 2, 0, 1, 2)
                 else:
                     cur_header = QLabel("Current (uA):"); cur_header.setFont(font_large); cur_header.setStyleSheet(f"color: {self.styles['font_color_current']}; font-weight: bold;")
                     status_layout.addWidget(cur_header, base_row + 1, 0, 1, 2)
                 headers_added = True
-            
-            self.hv_labels[ch] = {'v': QLabel("-"), 'i': QLabel("-"), 'il': QLabel("-"), 'ih': QLabel("-")}
+
+            self.hv_labels[ch] = {'v': QLabel("-"), 'i': QLabel("-"), 'ih': QLabel("-"), 'stat': QLabel("-")}
             for label in self.hv_labels[ch].values(): label.setFont(font_large)
-            
+
             self.hv_labels[ch]['v'].setStyleSheet(f"color: {self.styles['font_color_voltage']};")
             self.hv_labels[ch]['i'].setStyleSheet(f"color: {self.styles['font_color_current']};")
-            self.hv_labels[ch]['il'].setStyleSheet(f"color: {self.styles['font_color_current']};")
             self.hv_labels[ch]['ih'].setStyleSheet(f"color: {self.styles['font_color_current']};")
-            
-            col_offset = (i * 2) + 2 
-            
+            self.hv_labels[ch]['stat'].setStyleSheet("color: #2ca02c; font-weight: bold;")
+
+            col_offset = (i * 2) + 2
+
             lbl_v = QLabel(f"Ch{ch}:"); lbl_v.setFont(font_large)
             status_layout.addWidget(lbl_v, base_row, col_offset); status_layout.addWidget(self.hv_labels[ch]['v'], base_row, col_offset + 1)
-            
+
             if self.is_dual_current:
                 lbl_ih = QLabel(f"Ch{ch}:"); lbl_ih.setFont(font_large)
                 status_layout.addWidget(lbl_ih, base_row + 1, col_offset); status_layout.addWidget(self.hv_labels[ch]['ih'], base_row + 1, col_offset + 1)
-                
-                lbl_il = QLabel(f"Ch{ch}:"); lbl_il.setFont(font_large)
-                status_layout.addWidget(lbl_il, base_row + 2, col_offset); status_layout.addWidget(self.hv_labels[ch]['il'], base_row + 2, col_offset + 1)
+
+                lbl_stat = QLabel(f"Ch{ch}:"); lbl_stat.setFont(font_large)
+                status_layout.addWidget(lbl_stat, base_row + 2, col_offset); status_layout.addWidget(self.hv_labels[ch]['stat'], base_row + 2, col_offset + 1)
             else:
                 lbl_i = QLabel(f"Ch{ch}:"); lbl_i.setFont(font_large)
                 status_layout.addWidget(lbl_i, base_row + 1, col_offset); status_layout.addWidget(self.hv_labels[ch]['i'], base_row + 1, col_offset + 1)
@@ -313,54 +397,48 @@ class MonitoringApp(QMainWindow):
         
         graph_widget = QWidget(); graph_layout = QGridLayout(graph_widget)
         self.monitor_plots = {k: pg.PlotWidget(axisItems={'bottom': pg.DateAxisItem(orientation='bottom')}) for k in ['temp', 'humi', 'volt', 'curr']}
-        
+
         for p in self.monitor_plots.values():
-            p.addLegend().setLabelTextSize(legend_font_size_str) 
+            legend = p.addLegend()
+            legend.setLabelTextSize(legend_font_size_str)
+            # Default pyqtgraph legend has no background/border, so it gets
+            # lost against busy plot lines on the dark theme -- give it a
+            # solid dark card + a light label color so it's actually legible.
+            try:
+                legend.setBrush(pg.mkBrush(20, 20, 20, 220))
+                legend.setPen(pg.mkPen('#777777', width=1))
+                legend.setLabelTextColor('#e0e0e0')
+            except Exception:
+                pass
             p.getAxis('bottom').setTickFont(tick_font)
             p.getAxis('left').setTickFont(tick_font)
-            p.getAxis('left').label.setFont(label_font) 
-        
+            p.getAxis('left').label.setFont(label_font)
+
         self.monitor_plots['temp'].setTitle("Temperature", size=title_font_size_str)
         self.monitor_plots['humi'].setTitle("Humidity", size=title_font_size_str)
         self.monitor_plots['volt'].setTitle("HV Voltage", size=title_font_size_str)
         self.monitor_plots['curr'].setTitle("HV Current", size=title_font_size_str)
-        
+
+        # Plain 2x2 grid -- the old 3rd-row "Sensor T/H Overlay" combined
+        # chart duplicated exactly what Temperature/Humidity above it already
+        # show (both sensors, already overlaid on each), so it was dropped.
         graph_layout.addWidget(self.monitor_plots['temp'], 0, 0); graph_layout.addWidget(self.monitor_plots['humi'], 0, 1); graph_layout.addWidget(self.monitor_plots['volt'], 1, 0); graph_layout.addWidget(self.monitor_plots['curr'], 1, 1)
-        
-        th_color = self.styles.get('font_color_sensor', 'blue')
-        self.monitor_plots['overlay'] = self.create_dual_y_plot("Temperature (°C)", "Humidity (%)", None , th_color)
-        self.monitor_plots['overlay'].getPlotItem().addLegend().setLabelTextSize(legend_font_size_str)
-        
-        self.monitor_plots['overlay'].setTitle("Sensor T/H Overlay (Solid=T, Dash=H)", size=title_font_size_str)
-        graph_layout.addWidget(self.monitor_plots['overlay'], 2, 0, 1, 2)
 
         for p in self.monitor_plots.values():
             if isinstance(p, pg.PlotWidget):
                 p.getViewBox().setMouseMode(pg.ViewBox.RectMode)
-        
-        self.monitor_curves = {'temp': {}, 'humi': {}, 'volt': {}, 'curr': {}, 'overlay_temp': {}, 'overlay_humi': {}}
-        
+
+        self.monitor_curves = {'temp': {}, 'humi': {}, 'volt': {}, 'curr': {}}
+
         for i, s in enumerate(self.config['arduino_settings']['sensors']):
             t_pen = pg.mkPen(color=self.temp_colors[i % len(self.temp_colors)], width=3)
             h_pen = pg.mkPen(color=self.humi_colors[i % len(self.humi_colors)], width=3)
-            self.monitor_curves['temp'][i] = self.monitor_plots['temp'].plot(pen=t_pen, name=s['name'])
-            self.monitor_curves['humi'][i] = self.monitor_plots['humi'].plot(pen=h_pen, name=s['name'])
-            
+            disp = s.get('display_name', s['name'])
+            self.monitor_curves['temp'][i] = self.monitor_plots['temp'].plot(pen=t_pen, name=disp)
+            self.monitor_curves['humi'][i] = self.monitor_plots['humi'].plot(pen=h_pen, name=disp)
+
         for i, ch in enumerate(self.config['caen_hv_settings']['channels_to_monitor']):
             pen = pg.mkPen(color=self.plot_colors[i % len(self.plot_colors)], width=3); self.monitor_curves['volt'][ch] = self.monitor_plots['volt'].plot(pen=pen, name=f'Ch{ch}'); self.monitor_curves['curr'][ch] = self.monitor_plots['curr'].plot(pen=pen, name=f'Ch{ch}')
-
-        p1 = self.monitor_plots['overlay'].getPlotItem()
-        p2 = self.monitor_plots['overlay'].dual_viewbox
-        
-        for i_overlay, s_overlay in enumerate(self.config['arduino_settings']['sensors']):
-            pen_t = pg.mkPen(color=self.temp_colors[i_overlay % len(self.temp_colors)], width=2, style=Qt.SolidLine)
-            self.monitor_curves['overlay_temp'][i_overlay] = p1.plot(pen=pen_t, name=f"{s_overlay['name']} (T)")
-            
-            pen_h = pg.mkPen(color=self.humi_colors[i_overlay % len(self.humi_colors)], width=2, style=Qt.DashLine)
-            curve = pg.PlotCurveItem(pen=pen_h, name=f"{s_overlay['name']} (H)")
-            self.monitor_curves['overlay_humi'][i_overlay] = curve
-            p2.addItem(curve) 
-            p1.legend.addItem(curve, f"{s_overlay['name']} (H)")
 
 
         bottom_layout = QGridLayout(); font_medium = QFont(); font_medium.setPointSize(self.styles['font_size_medium'])
@@ -388,32 +466,81 @@ class MonitoringApp(QMainWindow):
 
 
     def setup_analysis_ui(self):
-        layout = QVBoxLayout(self.analysis_tab); control_layout = QGridLayout(); font_large = QFont(); font_large.setPointSize(self.styles['font_size_large'])
-        self.start_time_edit = QDateTimeEdit(QDateTime.currentDateTime().addDays(-7)); self.start_time_edit.setFont(font_large)
-        self.end_time_edit = QDateTimeEdit(QDateTime.currentDateTime()); self.end_time_edit.setFont(font_large)
-        self.load_data_btn = QPushButton("Data Load"); self.load_data_btn.setFont(font_large)
-        self.export_csv_btn = QPushButton("Export selected items to CSV"); self.export_csv_btn.setFont(font_large)
-        control_layout.addWidget(QLabel("Start:"), 0, 0); control_layout.addWidget(self.start_time_edit, 0, 1); control_layout.addWidget(QLabel("End:"), 0, 2); control_layout.addWidget(self.end_time_edit, 0, 3)
-        control_layout.addWidget(self.load_data_btn, 0, 4); control_layout.addWidget(self.export_csv_btn, 0, 5)
+        import re
+        layout = QVBoxLayout(self.analysis_tab)
+        layout.setSpacing(10)
+        font_large = QFont(); font_large.setPointSize(self.styles['font_size_large'])
+        font_medium = QFont(); font_medium.setPointSize(self.styles.get('font_size_medium', 14))
+
+        # ── Toolbar card: time range + actions ──────────────────────────
+        toolbar_frame = QFrame()
+        toolbar_frame.setStyleSheet("""
+            QFrame { border: 1px solid #3a3a3a; border-radius: 8px; background-color: #242424; }
+            QLabel { border: none; background: transparent; }
+        """)
+        control_layout = QHBoxLayout(toolbar_frame)
+        control_layout.setContentsMargins(14, 10, 14, 10)
+        control_layout.setSpacing(10)
+        self.start_time_edit = QDateTimeEdit(QDateTime.currentDateTime().addDays(-7)); self.start_time_edit.setFont(font_medium)
+        self.end_time_edit = QDateTimeEdit(QDateTime.currentDateTime()); self.end_time_edit.setFont(font_medium)
+        self.load_data_btn = QPushButton("📈 Load Data"); self.load_data_btn.setFont(font_medium)
+        self.load_data_btn.setStyleSheet("QPushButton { background-color: #3b82f6; color: white; } QPushButton:hover { background-color: #4c8bf5; } QPushButton:pressed { background-color: #2f6fd1; }")
+        self.export_csv_btn = QPushButton("⬇ Export CSV"); self.export_csv_btn.setFont(font_medium)
+        lbl_start = QLabel("Start"); lbl_start.setFont(font_medium); lbl_start.setStyleSheet("color: #9aa5b1;")
+        lbl_end = QLabel("End"); lbl_end.setFont(font_medium); lbl_end.setStyleSheet("color: #9aa5b1;")
+        control_layout.addWidget(lbl_start); control_layout.addWidget(self.start_time_edit)
+        control_layout.addSpacing(12)
+        control_layout.addWidget(lbl_end); control_layout.addWidget(self.end_time_edit)
+        control_layout.addStretch(1)
+        control_layout.addWidget(self.load_data_btn)
+        control_layout.addWidget(self.export_csv_btn)
+        layout.addWidget(toolbar_frame)
+
+        # ── Series selection: grouped into cards instead of one flat wall
+        #    of checkboxes, so Sensors / HV Voltage&Current / HV Status read
+        #    as distinct sections at a glance. ──────────────────────────
         self.analysis_checkboxes = {}
-        checkbox_widget = QWidget(); checkbox_layout = QGridLayout(checkbox_widget)
-        btn_all = QPushButton("Select all"); btn_none = QPushButton("All clear")
-        checkbox_layout.addWidget(btn_all, 0, 0); checkbox_layout.addWidget(btn_none, 0, 1)
-        col_count = 12; row_idx, col_idx = 1, 0
-        db_cols = self.db_manager._get_expected_columns()
-        for col_def in db_cols:
-            col_name = col_def.split()[0]; cb = QCheckBox(col_name); cb.setFont(font_large); self.analysis_checkboxes[col_name] = cb
-            checkbox_layout.addWidget(cb, row_idx, col_idx); col_idx += 1
-            if col_idx >= col_count: col_idx = 0; row_idx += 1
-        btn_all.clicked.connect(lambda: [cb.setChecked(True) for cb in self.analysis_checkboxes.values()]); btn_none.clicked.connect(lambda: [cb.setChecked(False) for cb in self.analysis_checkboxes.values()])
-        
+        db_cols = [c.split()[0] for c in self.db_manager._get_expected_columns()]
+        groups = [("Sensors (T / H)", []), ("HV Voltage & Current", []), ("HV Status", [])]
+        for col_name in db_cols:
+            if re.match(r"^Ch\d+_Stat$", col_name):
+                groups[2][1].append(col_name)
+            elif re.match(r"^Ch\d+_(V|I|I_L|I_H)$", col_name):
+                groups[1][1].append(col_name)
+            else:
+                groups[0][1].append(col_name)
+
+        checkbox_row = QHBoxLayout()
+        checkbox_row.setSpacing(10)
+        for title, cols in groups:
+            if not cols:
+                continue
+            box = QGroupBox(title)
+            grid = QGridLayout(box)
+            grid.setSpacing(6)
+            per_row = 3
+            for idx, col_name in enumerate(cols):
+                cb = QCheckBox(col_name); cb.setFont(font_medium)
+                self.analysis_checkboxes[col_name] = cb
+                grid.addWidget(cb, idx // per_row, idx % per_row)
+            checkbox_row.addWidget(box, stretch=len(cols))
+        layout.addLayout(checkbox_row)
+
+        select_row = QHBoxLayout()
+        btn_all = QPushButton("Select all"); btn_none = QPushButton("Clear all")
+        btn_all.setFont(font_medium); btn_none.setFont(font_medium)
+        select_row.addWidget(btn_all); select_row.addWidget(btn_none); select_row.addStretch(1)
+        layout.addLayout(select_row)
+        btn_all.clicked.connect(lambda: [cb.setChecked(True) for cb in self.analysis_checkboxes.values()])
+        btn_none.clicked.connect(lambda: [cb.setChecked(False) for cb in self.analysis_checkboxes.values()])
+
         title_font_size_str = f"{self.styles.get('font_size_large', 18)}pt"
         legend_font_size_str = f"{self.styles.get('font_size_legend', 10)}pt"
-        
+
         self.analysis_plots_widget = QWidget(); graph_layout = QGridLayout(self.analysis_plots_widget)
-        
-        self.analysis_plots = {} 
-        
+
+        self.analysis_plots = {}
+
         th_color = self.styles.get('font_color_sensor', 'blue')
         self.analysis_plots['temp_humi_overlay'] = self.create_dual_y_plot("Temperature (°C)", "Humidity (%)", None, th_color)
         self.analysis_plots['temp_humi_overlay'].setTitle("T/H Overlay History", size=title_font_size_str)
@@ -421,18 +548,28 @@ class MonitoringApp(QMainWindow):
         hv_curr_color = self.styles.get('font_color_current', 'darkorange')
         self.analysis_plots['hv_curr_overlay'] = self.create_dual_y_plot("HV Voltage (V)", "HV Current (uA)", None, hv_curr_color)
         self.analysis_plots['hv_curr_overlay'].setTitle("HV/Current Overlay History", size=title_font_size_str)
-        
+
         for plot in self.analysis_plots.values():
-            plot.getPlotItem().addLegend().setLabelTextSize(legend_font_size_str)
-        
+            legend = plot.getPlotItem().addLegend()
+            legend.setLabelTextSize(legend_font_size_str)
+            try:
+                legend.setBrush(pg.mkBrush(20, 20, 20, 220))
+                legend.setPen(pg.mkPen('#777777', width=1))
+                legend.setLabelTextColor('#e0e0e0')
+            except Exception:
+                pass
+
+        # Stacked vertically (row 0/1, same column) instead of side-by-side --
+        # user feedback: easier to read two time-series plots stacked than
+        # squeezed horizontally next to each other.
         graph_layout.addWidget(self.analysis_plots['temp_humi_overlay'], 0, 0)
-        graph_layout.addWidget(self.analysis_plots['hv_curr_overlay'], 0, 1)
+        graph_layout.addWidget(self.analysis_plots['hv_curr_overlay'], 1, 0)
 
         for p in self.analysis_plots.values():
             if isinstance(p, pg.PlotWidget):
                 p.getViewBox().setMouseMode(pg.ViewBox.RectMode)
-        
-        layout.addLayout(control_layout); layout.addWidget(checkbox_widget); layout.addWidget(self.analysis_plots_widget)
+
+        layout.addWidget(self.analysis_plots_widget, stretch=1)
         self.load_data_btn.clicked.connect(self.load_and_plot_data); self.export_csv_btn.clicked.connect(self.export_analysis_to_csv)
 
     def connect_signals(self):
@@ -499,13 +636,6 @@ class MonitoringApp(QMainWindow):
         for ch, curve in self.monitor_curves['curr'].items():
              if ch in self.graph_data['curr']:
                 curve.setData(self.graph_data['time'], self.graph_data['curr'][ch], connect='finite')
-        
-        for i, curve in self.monitor_curves['overlay_temp'].items():
-            if i in self.graph_data['temp']:
-                curve.setData(self.graph_data['time'], self.graph_data['temp'][i], connect='finite')
-        for i, curve in self.monitor_curves['overlay_humi'].items():
-            if i in self.graph_data['humi']:
-                curve.setData(self.graph_data['time'], self.graph_data['humi'][i], connect='finite')
 
     def update_arduino_data(self, idx, temp, humi):
         if idx not in self.sensor_labels:
@@ -525,25 +655,80 @@ class MonitoringApp(QMainWindow):
                 if key in self.latest_data['hv'][ch] and self.latest_data['hv'][ch][key] is None: 
                     self.latest_data['hv'][ch][key] = np.nan
 
+    # CAEN standard channel Status bit-field (same layout the pre-existing
+    # bit11/bit12 interlock check already assumed): decode it into a human
+    # cause string instead of just a generic "INTERLOCK" flag, so a real trip
+    # (e.g. OVC/TRIP) is distinguishable from an external interlock (KILL/
+    # ILOCK) at a glance -- this was the whole point of reading Status at all.
+    _STATUS_BITS = {
+        3: "OVC (overcurrent)", 4: "OVV (overvoltage)", 6: "MAXV",
+        7: "TRIP", 8: "OVP", 9: "OVT (over temp)",
+        11: "KILL", 12: "EXT INTERLOCK",
+    }
+
+    def _decode_status(self, stat):
+        if not isinstance(stat, (int, float)) or np.isnan(stat):
+            return []
+        stat = int(stat)
+        return [label for bit, label in self._STATUS_BITS.items() if stat & (1 << bit)]
+
+    def _status_text(self, stat):
+        """Human state for the per-channel Status label: alarm cause takes
+        priority, otherwise ON/OFF/RAMP UP/RAMP DOWN from the base bits
+        (bit0 ON, bit1 RUP, bit2 RDW)."""
+        causes = self._decode_status(stat)
+        if causes:
+            return "⚠ " + "/".join(causes), "#d62728"
+        if not isinstance(stat, (int, float)) or np.isnan(stat):
+            return "-", "#9aa5b1"
+        stat = int(stat)
+        if not (stat & 1):
+            return "OFF", "#9aa5b1"
+        if stat & (1 << 1):
+            return "RAMP UP", "#e6a817"
+        if stat & (1 << 2):
+            return "RAMP DOWN", "#e6a817"
+        return "ON", "#2ca02c"
+
     def update_indicators(self):
-        is_interlocked = False 
+        is_interlocked = False
+        warn_channels = []   # (ch, pct) approaching trip current, not tripped yet
+        causes_by_channel = {}   # ch -> tuple(causes), grouped below into trip_causes
         for i, data in self.latest_data['sensors'].items():
-            if i not in self.sensor_labels: continue 
-            self.sensor_labels[i]['temp'].setText(f"{self.sensor_labels[i]['name']} T: {data.get('t'):.2f} C" if not np.isnan(data.get('t', np.nan)) else f"{self.sensor_labels[i]['name']} T: None")
+            if i not in self.sensor_labels: continue
+            disp = self.sensor_labels[i]['display']
+            self.sensor_labels[i]['temp'].setText(f"{disp} T: {data.get('t'):.2f} C" if not np.isnan(data.get('t', np.nan)) else f"{disp} T: None")
             self.sensor_labels[i]['humi'].setText(f"H: {data.get('h'):.2f} %" if not np.isnan(data.get('h', np.nan)) else f"H: None")
-            
+
         for ch, data in self.latest_data['hv'].items():
             if ch not in self.hv_labels: continue
             self.hv_labels[ch]['v'].setText(f"{data.get('v', 0):.2f}")
-            if self.is_dual_current: 
-                self.hv_labels[ch]['il'].setText(f"{data.get('il', 0):.4f}")
+            if self.is_dual_current:
                 self.hv_labels[ch]['ih'].setText(f"{data.get('ih', 0):.4f}")
-            else: 
+            else:
                 self.hv_labels[ch]['i'].setText(f"{data.get('i', 0):.4f}")
-                
-            stat = data.get('stat', 0)
-            if isinstance(stat, int) and (stat & (1 << 12) or stat & (1 << 11)):
+
+            stat = data.get('stat')
+            if self.is_dual_current and 'stat' in self.hv_labels[ch]:
+                txt, color = self._status_text(stat)
+                self.hv_labels[ch]['stat'].setText(txt)
+                self.hv_labels[ch]['stat'].setStyleSheet(f"color: {color}; font-weight: bold;")
+            causes = self._decode_status(stat)
+            if causes:
                 is_interlocked = True
+                causes_by_channel[ch] = tuple(causes)
+
+            # Early warning: current trending toward the trip threshold (ISet)
+            # even though nothing has tripped yet.
+            iset = data.get('iset')
+            i_now = data.get('ih') if self.is_dual_current else data.get('i')
+            try:
+                if iset and i_now is not None and not np.isnan(i_now) and float(iset) > 0:
+                    pct = float(i_now) / float(iset)
+                    if pct >= 0.85 and not causes:
+                        warn_channels.append((ch, pct))
+            except (TypeError, ValueError):
+                pass
 
         # [FIX] Watchdog sequence: Catch disconnect state and purge old values immediately
         current_time = time.time()
@@ -556,8 +741,9 @@ class MonitoringApp(QMainWindow):
             for ch in self.hv_labels:
                 self.hv_labels[ch]['v'].setText("N/A")
                 if self.is_dual_current:
-                    self.hv_labels[ch]['il'].setText("N/A")
                     self.hv_labels[ch]['ih'].setText("N/A")
+                    self.hv_labels[ch]['stat'].setText("-")
+                    self.hv_labels[ch]['stat'].setStyleSheet("color: #9aa5b1; font-weight: bold;")
                 else:
                     self.hv_labels[ch]['i'].setText("N/A")
 
@@ -571,8 +757,34 @@ class MonitoringApp(QMainWindow):
         if is_interlocked:
             if not self.blink_timer.isActive():
                 self.blink_timer.start(500)
-            self.interlock_indicator.setText("HV: INTERLOCK")
+            # Group channels that share the exact same cause(s) into one
+            # segment (e.g. "Ch0-Ch3: EXT INTERLOCK") instead of repeating the
+            # identical text per channel -- the board-level interlock always
+            # trips every channel together, so 4 separate "EXT INTERLOCK"
+            # entries were just noise. Channels with a genuinely different
+            # cause (e.g. one channel OVC while the rest are EXT INTERLOCK)
+            # still get their own segment.
+            groups = {}
+            for ch, causes in causes_by_channel.items():
+                groups.setdefault(causes, []).append(ch)
+            trip_causes = []
+            for causes, chs in groups.items():
+                chs.sort()
+                if len(chs) > 1 and chs == list(range(chs[0], chs[-1] + 1)):
+                    ch_label = f"Ch{chs[0]}-Ch{chs[-1]}"
+                elif len(chs) > 1:
+                    ch_label = "Ch" + ",".join(str(c) for c in chs)
+                else:
+                    ch_label = f"Ch{chs[0]}"
+                trip_causes.append(f"{ch_label}: {', '.join(causes)}")
+            self.interlock_indicator.setText("HV: " + " | ".join(trip_causes))
             self.interlock_indicator.setStyleSheet("background-color: #d62728; color: white; font-weight: bold; padding: 5px; border-radius: 4px;")
+        elif warn_channels:
+            self.blink_timer.stop()
+            self.all_clear_alarm_btn.setStyleSheet("background-color: #44475a; color: white; border-radius: 4px; font-weight: bold; padding: 5px;")
+            warn_txt = ", ".join(f"Ch{ch} {pct*100:.0f}%" for ch, pct in warn_channels)
+            self.interlock_indicator.setText(f"HV: ⚠ NEARING TRIP ({warn_txt})")
+            self.interlock_indicator.setStyleSheet("background-color: #e6a817; color: black; font-weight: bold; padding: 5px; border-radius: 4px;")
         else:
             self.blink_timer.stop()
             self.all_clear_alarm_btn.setStyleSheet("background-color: #44475a; color: white; border-radius: 4px; font-weight: bold; padding: 5px;")
@@ -595,11 +807,6 @@ class MonitoringApp(QMainWindow):
                 if i in self.monitor_curves[curve_dict]:
                     self.monitor_curves[curve_dict][i].setData(self.graph_data['time'], d_list, connect='finite')
 
-            if i in self.monitor_curves['overlay_temp'] and i in self.graph_data['temp']:
-                self.monitor_curves['overlay_temp'][i].setData(self.graph_data['time'], self.graph_data['temp'][i], connect='finite')
-            if i in self.monitor_curves['overlay_humi'] and i in self.graph_data['humi']:
-                self.monitor_curves['overlay_humi'][i].setData(self.graph_data['time'], self.graph_data['humi'][i], connect='finite')
-
         for ch in self.config['caen_hv_settings']['channels_to_monitor']:
             data = self.latest_data['hv'].get(ch, {})
             volt_list = self.graph_data['volt'].setdefault(ch, []); volt_list.append(data.get('v', np.nan))
@@ -614,7 +821,13 @@ class MonitoringApp(QMainWindow):
 
     def capture_data_point(self):
         if self._is_closing: return
-        data_point = {'ts': datetime.now().isoformat(), 'sensors': self.latest_data['sensors'].copy(), 'hv': self.latest_data['hv'].copy()}
+        # If HV data hasn't refreshed in a while, the worker is disconnected
+        # (see the same 3.5s staleness check in update_indicators) -- log NULL
+        # for every HV column instead of replaying the last-known values, so a
+        # comm dropout can never be misread later as a real trip-to-0V event.
+        hv_stale = (time.time() - getattr(self, 'last_hv_data_time', 0)) > 3.5
+        hv_snapshot = {} if hv_stale else self.latest_data['hv'].copy()
+        data_point = {'ts': datetime.now().isoformat(), 'sensors': self.latest_data['sensors'].copy(), 'hv': hv_snapshot}
         self.db_manager.log_data(data_point)
         cursor = self.db_manager.conn.cursor(); cursor.execute("SELECT COUNT(*) FROM monitoring_data"); count = cursor.fetchone()[0]
         self.log_status_label.setText(f"Logging: {count} point(s) collected")
@@ -629,14 +842,21 @@ class MonitoringApp(QMainWindow):
         for plot in self.analysis_plots.values(): 
             p1 = plot.getPlotItem()
 
-            # [FIX] Close and remove existing legend container safely to prevent detached object errors
+            # [FIX] Close and remove existing legend container safely to prevent detached object errors.
+            # PlotItem.addLegend() only creates a NEW LegendItem when self.legend is
+            # None -- otherwise it just returns the existing (here: closed/invisible)
+            # one without re-attaching it to the scene. .close() alone doesn't reset
+            # that reference, so every reload AFTER the first left p1.legend pointing
+            # at a dead legend and addLegend() below silently no-opped -- the legend
+            # only ever appeared on the very first load. Must null it out here too.
             if p1.legend:
                 p1.legend.close()
-            
-            plot.clear() 
+                p1.legend = None
+
+            plot.clear()
             if hasattr(plot, 'dual_viewbox'):
-                plot.dual_viewbox.clear() 
-            
+                plot.dual_viewbox.clear()
+
             # [FIX] Re-add a fresh clean Legend instance after clearing the plot frame
             p1.addLegend().setLabelTextSize(legend_font_size_str)
             
@@ -713,6 +933,21 @@ class MonitoringApp(QMainWindow):
         p_th2.enableAutoRange(axis='y', enable=True)
         p_hv2.enableAutoRange(axis='y', enable=True)
 
+        # Rot1/Rot2 (pin2/pin3) sensor-ID fix marker -- only draw it if the
+        # loaded time range actually straddles the fix, so an out-of-range
+        # marker never drags the plot's autoRange out to include a timestamp
+        # nowhere near the visible data. Kept even after the DB migration
+        # (which consolidated Rot1_T/H, Rot2_T/H into one continuous column
+        # per physical sensor across the whole history) as a permanent record
+        # of when the config-side pin<->name mapping itself was corrected.
+        if timestamps and min(timestamps) <= DARKBOX_RELABEL_TS <= max(timestamps):
+            marker = pg.InfiniteLine(pos=DARKBOX_RELABEL_TS, angle=90,
+                                     pen=pg.mkPen('#ff5555', width=2, style=Qt.DashLine))
+            label = pg.TextItem("Rot1/Rot2 sensor ID fixed", color='#ff5555', anchor=(0, 1))
+            label.setPos(DARKBOX_RELABEL_TS, 0)
+            p_th1.addItem(marker)
+            p_th1.addItem(label)
+
 
     def export_analysis_to_csv(self):
         path, _ = QFileDialog.getSaveFileName(self, "Save CSV", f"export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv", "CSV Files (*.csv)")
@@ -745,6 +980,21 @@ class MonitoringApp(QMainWindow):
         if self._is_closing: event.accept(); return
         print("Close button pressed. Initiating shutdown...")
         self._is_closing = True; event.ignore(); self.setEnabled(False)
+
+        # setEnabled(False) alone left the window looking frozen with no
+        # feedback while worker_manager.initiate_shutdown() finishes in the
+        # background (only a terminal print, easy to miss) -- indistinguishable
+        # from the app just hanging. A visible "Shutting down..." overlay on
+        # top of the disabled window makes it obvious it's actually closing.
+        overlay = QLabel("⏻  Shutting down...\nReleasing hardware, please wait.", self)
+        overlay.setAlignment(Qt.AlignCenter)
+        overlay.setStyleSheet(
+            "background-color: rgba(20, 20, 20, 230); color: #ffcc00; "
+            "font-size: 20pt; font-weight: bold; border: none;")
+        overlay.setGeometry(0, 0, self.width(), self.height())
+        overlay.show(); overlay.raise_()
+        QApplication.processEvents()
+
         for timer in [self.indicator_timer, self.capture_timer, self.graph_timer, self.datetime_timer]: timer.stop()
         self.db_manager.close()
         self.worker_manager.initiate_shutdown()

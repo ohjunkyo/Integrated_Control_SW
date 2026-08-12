@@ -13,16 +13,35 @@ class ControlAccessManager:
 
 
     def is_production_running(self):
-        """Check if main.py is already running, ignoring the current process."""
+        """Check if ANOTHER main.py is already running, ignoring this process.
+
+        pgrep -f 'python.*main.py' matches the WHOLE command line as text --
+        which also matches things that merely MENTION "main.py" without
+        actually being a running instance of it. The known false positive:
+        an Update&Restart in flight spawns a detached bash watcher whose own
+        script text literally contains "... exec .../python3 main.py ...";
+        that bash process is not python at all, but the substring match still
+        counted it as "another instance", falsely blocking Unlock right after
+        a restart. Verify each candidate PID's actual executable via /proc so
+        only genuine python processes count."""
         try:
-            result = subprocess.run(['pgrep', '-f', 'python.*main.py'], capture_output=True, text=True)
+            result = subprocess.run(['pgrep', '-f', 'main.py'], capture_output=True, text=True)
             pids = result.stdout.strip().split()
-            
             current_pid = str(os.getpid())
-            
-            other_pids = [pid for pid in pids if pid != current_pid]
-            
-            return len(other_pids) > 0
+
+            for pid in pids:
+                if pid == current_pid:
+                    continue
+                try:
+                    with open(f"/proc/{pid}/comm") as f:
+                        comm = f.read().strip()
+                except (FileNotFoundError, ProcessLookupError):
+                    continue   # process gone by the time we checked
+                except Exception:
+                    continue
+                if comm.lower().startswith("python"):
+                    return True
+            return False
         except Exception:
             return False
 
@@ -50,3 +69,21 @@ class ControlAccessManager:
         else:
             messagebox.showerror("Error", "Incorrect password.")
             return False
+
+    def verify_password_prompt(self, title="Security", prompt="Enter Master Password:"):
+        """One-off password re-check that does NOT read or touch self.unlocked.
+
+        request_unlock() is a toggle tied to the general Unlock Controls
+        banner (unlock stays active for the whole session once granted).
+        Some actions -- e.g. Scan Parameters -- are meant to demand the
+        password EVERY time regardless of that banner's state, so they must
+        not call request_unlock() (which would silently re-lock the whole
+        system if it happened to already be unlocked, since it's a toggle).
+        """
+        pwd = simpledialog.askstring(title, prompt, show='*')
+        if pwd is None:
+            return False
+        if pwd == ADMIN_PASSWORD:
+            return True
+        messagebox.showerror("Error", "Incorrect password.")
+        return False

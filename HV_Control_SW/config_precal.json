@@ -3,9 +3,9 @@
     "port": "/dev/arduino_env",
     "baud_rate": 9600,
     "sensors": [
-      { "pin": 2, "name": "Dark Box #1" },
-      { "pin": 3, "name": "Dark Box #2" },
-      { "pin": 4, "name": "Dark Box #3" }
+      { "pin": 2, "name": "Dark Box #2", "display_name": "Rot#2" },
+      { "pin": 3, "name": "Dark Box #1", "display_name": "Rot#1" },
+      { "pin": 4, "name": "Dark Box #3", "display_name": "Mon." }
     ]
   },
   "caen_hv_settings": {
@@ -20,7 +20,8 @@
       "i_mon_high": "IMonH",
       "v_set": "VSet",
       "i_set": "ISet",
-      "pw": "Pw"
+      "pw": "Pw",
+      "status": "ChStatus"
     }
   },
   "ui_options": {

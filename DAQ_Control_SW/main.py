@@ -6,12 +6,45 @@ warnings.filterwarnings("ignore", message="invalid value encountered in scalar d
 import tkinter as tk
 from PIL import Image, ImageTk
 from tkinter import ttk, filedialog, messagebox
+# customtkinter migration (in progress). Guarded so the app still runs if the
+# package is missing; callers check CTK_AVAILABLE before using ctk.
+try:
+    import customtkinter as ctk
+    CTK_AVAILABLE = True
+
+    # Upstream bug workaround (customtkinter 6.0.0, ctk_scrollable_frame.py):
+    # CTkScrollableFrame binds its mouse-wheel handler with bind_all(), so it
+    # fires for scroll events anywhere in the app, not just inside a
+    # scrollable frame. _check_if_valid_scroll() assumes event.widget is
+    # always a real Tkinter widget object and calls widget.master on it --
+    # but Tk sometimes delivers event.widget as a raw Tcl path STRING instead
+    # (observed scrolling over a ttk.Combobox dropdown and over an embedded
+    # matplotlib FigureCanvasTkAgg, e.g. the B-field Monitoring tab), which
+    # crashes with "AttributeError: 'str' object has no attribute 'master'".
+    # Patch: treat a string widget as "not a valid scroll target" instead of
+    # recursing into .master.
+    try:
+        from customtkinter.windows.widgets.ctk_scrollable_frame import CTkScrollableFrame as _CTkScrollableFrame
+        _orig_check_valid_scroll = _CTkScrollableFrame._check_if_valid_scroll
+
+        def _patched_check_valid_scroll(self, widget):
+            if isinstance(widget, str):
+                return False
+            return _orig_check_valid_scroll(self, widget)
+
+        _CTkScrollableFrame._check_if_valid_scroll = _patched_check_valid_scroll
+    except Exception:
+        pass   # best-effort patch; a failure here must never block app startup
+except Exception:
+    ctk = None
+    CTK_AVAILABLE = False
 import time
 import math
 import sys
 import os
 import signal
 import subprocess
+import webbrowser
 import threading
 import json
 import re
@@ -85,6 +118,7 @@ class App:
         
         # 1. 설정 로드
         self.load_app_config()
+        self.ui_prefs = self._load_ui_prefs()
 
         if self.config_manager and self.config_manager.get_config_value("LogDir"):
             base_log_dir = self.config_manager.get_config_value("LogDir")
@@ -95,8 +129,8 @@ class App:
             os.makedirs(self.laser_log_dir, exist_ok=True) 
 
         self.laser_port_mapping = {
-            "375nm": "1-3.3:1.0", "405nm": "1-3.1:1.0",
-            "450nm": "1-3.2:1.0", "473nm": "1-3.4:1.0"
+            "375nm": "1-3.4.4:1.0", "405nm": "1-3.4.1:1.0",
+            "450nm": "1-3.4.2:1.0", "473nm": "1-3.4.3:1.0"
         }
 
         # 2. 로직 매니저 생성
@@ -104,7 +138,13 @@ class App:
         self.rot_mgr = RotationManager(self)
         self.auto_mgr = AutomationManager(self)
 
+        # Created before UIManager so the lock banner (always visible, unlike the
+        # bottom status bar which can be pushed off-screen on tall content) can
+        # bind a badge label to this var.
+        self.update_badge_var = tk.StringVar()
+
         # 3. UI 생성
+        self._setup_theme()
         self.ui = UIManager(master, self)
         self.auto_ui = self.ui.auto_ui
 
@@ -112,7 +152,7 @@ class App:
         self.laser_mgr = LaserManager(self)
         self.ups_mgr = UPSManager(self)
 
-        master.title("DAQ/LASER/UPS Control Panel")
+        master.title(f"DAQ/LASER/UPS Control Panel — {self._version_string()}")
         master.geometry("1600x950")
         self.master.minsize(1400, 900)
 
@@ -136,7 +176,14 @@ class App:
                     self._log(f"Laser {wl} init failed: {e}")
 
         # 7. 상태바 세팅
-        self._setup_status_bar() 
+        self._setup_status_bar()
+
+        # 7b. Update & Restart watcher — polls source mtimes; shows a status-bar
+        # badge when the code on disk is newer than this running process.
+        self._app_code_baseline = time.time()
+        self._update_available = False
+        self._restart_when_idle = False
+        self.master.after(60000, self._check_for_code_updates)
 
         # 8. 초기 데이터 리프레시 및 스케줄러 등록
         self.ui.setup_shortcuts()
@@ -221,6 +268,17 @@ class App:
         self.moving_lbl = tk.Label(self.status_bar, textvariable=self.moving_indicator_var,
                                    font=("Helvetica", 10, "bold"), fg="#dc3545")
         self.moving_lbl.pack(side=tk.LEFT, padx=20)
+
+        # Update & Restart badge — empty until _check_for_code_updates() detects
+        # newer source files on disk. Clickable from any tab. (self.update_badge_var
+        # itself is created earlier, before UIManager, so the lock banner can also
+        # show it — this status-bar copy is a second, redundant place to click it.)
+        self.update_badge_lbl = tk.Label(self.status_bar, textvariable=self.update_badge_var,
+                                         font=("Helvetica", 10, "bold"), fg="#e67700",
+                                         cursor="hand2")
+        self.update_badge_lbl.pack(side=tk.LEFT, padx=10)
+        self.update_badge_lbl.bind("<Button-1>", lambda e: self._on_update_badge_click())
+
         ttk.Label(self.status_bar, textvariable=self.elapsed_time_var).pack(side=tk.RIGHT, padx=10)
 
         self._update_status_bar()
@@ -278,6 +336,370 @@ class App:
             except tk.TclError:
                 pass
         self.master.after(0, _apply)
+
+    # ══════════════════════════════════════════════════════════════════
+    # Update & Restart — detect source-code changes and re-exec in place
+    # ══════════════════════════════════════════════════════════════════
+    def _watched_source_files(self):
+        """App source files whose change should raise the update badge.
+        Only *.py — config3.h / buttons.json / logs change during normal
+        operation and must NOT count as a code update."""
+        files = glob.glob(os.path.join(self.base_dir, "*.py"))
+        files += glob.glob(os.path.join(self.base_dir, "managers", "*.py"))
+        return files
+
+    def _version_string(self):
+        """Short version tag for the title bar: git revision + newest source
+        mtime. Lets remote operators see at a glance whether their window is
+        running the latest code."""
+        rev = ""
+        try:
+            r = subprocess.run(['git', '-C', self.base_dir, 'rev-parse', '--short', 'HEAD'],
+                               capture_output=True, text=True, timeout=2)
+            rev = r.stdout.strip()
+        except Exception:
+            pass
+        ts = ""
+        try:
+            newest = max(os.path.getmtime(p) for p in self._watched_source_files())
+            ts = datetime.fromtimestamp(newest).strftime('%b %d %H:%M')
+        except Exception:
+            pass
+        if rev and ts:
+            return f"rev {rev} ({ts})"
+        return rev or ts or "dev"
+
+    def _check_for_code_updates(self):
+        """Periodic watcher (status-bar badge). 5 s debounce so we never react
+        to a file an editor is still writing."""
+        if getattr(self, '_shutting_down', False):
+            return
+        try:
+            newest = 0.0
+            for p in self._watched_source_files():
+                try:
+                    newest = max(newest, os.path.getmtime(p))
+                except OSError:
+                    pass
+            if (not self._update_available and newest > self._app_code_baseline
+                    and (time.time() - newest) >= 5.0):
+                self._update_available = True
+                self.update_badge_var.set("🔄 Update available — click to restart")
+                self._log("[INFO] Source update detected on disk. "
+                          "Click the status-bar badge to restart and apply it.")
+            if self._update_available and self._restart_when_idle and not self._is_busy():
+                self._log("[INFO] System is idle — applying the queued update restart.")
+                self._restart_app()
+                return
+        except Exception:
+            pass
+        interval = 15000 if self._restart_when_idle else 60000
+        self.master.after(interval, self._check_for_code_updates)
+
+    def _busy_reason(self):
+        """Return a short human-readable reason a restart would interrupt real
+        work, or None if the system is idle. Reasons: an auto scan, a running
+        console job (DAQ/Produce/Analysis/...), a motor move, or a live
+        execute_DAQ_v2 acquisition process."""
+        if getattr(getattr(self, 'auto_mgr', None), 'is_running', False):
+            return "an automated scan is running"
+        for slot, proc in getattr(self, '_console_procs', {}).items():
+            if proc is not None and proc.poll() is None:
+                return f"a console job is running ({slot})"
+        if any(getattr(getattr(self, 'rot_mgr', None), 'is_moving', {}).values()):
+            return "a motor is moving"
+        try:
+            # Match only the live acquisition BINARY (execute_DAQ_v2), not a
+            # bash/gnome-terminal wrapper that merely mentions it in its argv —
+            # a wrapper left open on a `read -p` prompt would otherwise make the
+            # app look permanently busy and silently block every restart.
+            check = subprocess.run(
+                'pgrep -x execute_DAQ_v2 | xargs -r ps -o pid=,args= -p 2>/dev/null | grep -v -- "-j"',
+                shell=True, capture_output=True)
+            if check.returncode == 0 and check.stdout.strip():
+                return "a DAQ acquisition (execute_DAQ_v2) is running"
+        except Exception:
+            pass
+        return None
+
+    def _is_busy(self):
+        return self._busy_reason() is not None
+
+    def _syntax_check_sources(self):
+        """Parse-check every watched file. Returns an error string, or None if
+        clean. Guards against restarting into syntactically broken code (the
+        app would die on startup and not come back)."""
+        import ast
+        for p in self._watched_source_files():
+            try:
+                with open(p, 'r', encoding='utf-8') as f:
+                    ast.parse(f.read(), filename=p)
+            except SyntaxError as e:
+                return f"{os.path.basename(p)}:{e.lineno}: {e.msg}"
+            except Exception as e:
+                return f"{os.path.basename(p)}: {e}"
+        return None
+
+    def _on_update_badge_click(self):
+        if not self._update_available:
+            self._log("[INFO] Update badge clicked but no update is pending.")
+            return
+        self._log("[INFO] Update badge clicked — checking whether a restart can proceed.")
+        err = self._syntax_check_sources()
+        if err:
+            messagebox.showerror(
+                "Update Error",
+                "The updated code has a syntax error — staying on the current version.\n\n"
+                f"{err}")
+            return
+        reason = self._busy_reason()
+        if reason:
+            self._log(f"[INFO] Restart blocked: {reason}.")
+            choice = messagebox.askyesnocancel(
+                "Update Pending",
+                f"The system looks busy: {reason}.\n\n"
+                "Yes  — restart automatically as soon as it becomes idle.\n"
+                "No   — force restart RIGHT NOW anyway.\n"
+                "Cancel — do nothing.\n\n"
+                "(If you believe this 'busy' status is stale, choose No to force it.)")
+            if choice is True:
+                self._restart_when_idle = True
+                self.update_badge_var.set("🔄 Update pending — restarts when idle")
+                self._log("[INFO] Update restart queued — will apply when the system is idle.")
+            elif choice is False:
+                self._log("[WARNING] Operator forced a restart while system reported busy.")
+                self._restart_app()
+            return
+        if messagebox.askokcancel(
+                "Restart",
+                "Restart now to apply the update?\n\n"
+                "• Unsaved Quick Setup edits will be lost.\n"
+                "• Hardware state (motors, laser TEC/LD, UPS) is NOT touched."):
+            self._restart_app()
+
+    def _restart_app(self):
+        """Re-exec this process in place (self-update restart). Hardware is
+        deliberately left untouched — no motor commands, laser TEC/LD state
+        kept, tmux sessions preserved. Only OS-level handles (serial / HID)
+        are released so the new process can reopen them."""
+        try:
+            self._restart_app_impl()
+        except Exception as e:
+            # Every risky step inside _restart_app_impl already has its own
+            # try/except, but if something UNEXPECTED still escapes, Tkinter's
+            # default callback-exception handler would otherwise just log it
+            # to stderr and keep the mainloop running -- the app silently
+            # stays alive with no restart and no visible error, which read as
+            # "the restart button does nothing." Surface it instead.
+            self._log(f"[ERROR] Restart failed unexpectedly: {e}")
+            try:
+                messagebox.showerror("Restart Failed",
+                                     f"Restart could not complete:\n{e}\n\n"
+                                     "The app is still running on the OLD code. "
+                                     "Check Live Scan Logs / logs/restart.log for details.")
+            except Exception:
+                pass
+
+    def _restart_app_impl(self):
+        self._log(f"[INFO] Restarting to apply update (was {self._version_string()}).")
+        self._shutting_down = True
+
+        # Snapshot + save "currently connected" laser wavelengths BEFORE
+        # disconnecting them below. save_app_config() computes that list from
+        # each instance's LIVE is_connected() state -- calling it AFTER the
+        # disconnect loop (the previous order) meant every laser had already
+        # been marked disconnected, so last_connected_wls was saved as an
+        # empty list on EVERY restart, and auto_connect_laser() then bailed
+        # out immediately on `if not last_wls: return` post-restart -- the
+        # post-restart laser reconnect could never actually fire, regardless
+        # of the APP_RESTART_AUTO_RECONNECT flag below.
+        try:
+            self.save_app_config()
+        except Exception:
+            pass
+
+        try:
+            if hasattr(self, 'ups_mgr') and self.ups_mgr.ups_serial and self.ups_mgr.ups_serial.is_open:
+                self.ups_mgr.ups_serial.close()
+        except Exception:
+            pass
+        if hasattr(self, 'laser_mgr'):
+            for wl, inst in self.laser_mgr.laser_instances.items():
+                try:
+                    if inst.is_connected():
+                        inst.disconnect()   # frees the HID handle only; LD/TEC on the unit unchanged
+                except Exception:
+                    pass
+        try:
+            self.master.destroy()
+        except Exception:
+            pass
+        # Tell the re-exec'd process to skip the "restore last connections?"
+        # confirmation dialog and reconnect the lasers immediately — this is a
+        # self-triggered restart the user already approved, not a fresh manual
+        # launch, and the lasers were connected a second ago. Without this,
+        # auto_connect_laser() waits on a modal Yes/No dialog after every
+        # Update & Restart and the lasers are left disconnected until someone
+        # notices and clicks it.
+        os.environ["APP_RESTART_AUTO_RECONNECT"] = "1"
+
+        # Preserve HOW the app was launched (production main.py vs the TEST-MODE
+        # main_test.py shim) instead of hardcoding main.py, so a restart keeps
+        # the same mode. Fall back to main.py if argv[0] isn't a usable script.
+        entry = os.path.abspath(sys.argv[0]) if sys.argv and sys.argv[0].endswith(".py") \
+            and os.path.exists(os.path.abspath(sys.argv[0])) else os.path.join(self.base_dir, "main.py")
+
+        # Robust restart: do NOT rely on os.execv (it silently fails on some
+        # remote/venv/threaded setups, and once master.destroy() has run the
+        # app would just close without coming back — the reported symptom).
+        # Instead spawn a DETACHED watcher that waits for THIS process to fully
+        # exit, then launches a fresh app. No execv quirks, and the two never
+        # run at once. A breadcrumb file records that a restart was attempted.
+        import shlex
+        pid = os.getpid()
+        cmd = " ".join(shlex.quote(a) for a in ([sys.executable, entry] + sys.argv[1:]))
+        watcher = f'while kill -0 {pid} 2>/dev/null; do sleep 0.3; done; cd {shlex.quote(self.base_dir)}; exec {cmd}'
+        try:
+            with open(os.path.join(self.base_dir, "logs", "restart.log"), "a") as f:
+                f.write(f"[{datetime.now()}] restart -> {cmd}\n")
+        except Exception:
+            pass
+        try:
+            subprocess.Popen(["bash", "-c", watcher], cwd=self.base_dir,
+                             start_new_session=True, env=os.environ.copy())
+        except Exception as e:
+            print(f"[ERROR] Failed to spawn relauncher: {e}")
+            # Last resort: try in-place re-exec so the user isn't left with a
+            # dead window.
+            try:
+                os.execv(sys.executable, [sys.executable, entry] + sys.argv[1:])
+            except Exception:
+                pass
+
+        try:
+            self.master.destroy()
+        except Exception:
+            pass
+        os._exit(0)
+
+    def _ui_prefs_path(self):
+        return os.path.join(self.base_dir, "ui_prefs.json")
+
+    def _load_ui_prefs(self):
+        """Small standalone JSON for cosmetic UI prefs (font scale, ...),
+        separate from the main app config so a bad value here can never
+        corrupt hardware/run settings."""
+        try:
+            with open(self._ui_prefs_path(), "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def _save_ui_prefs(self, **kv):
+        prefs = self._load_ui_prefs()
+        prefs.update(kv)
+        try:
+            with open(self._ui_prefs_path(), "w", encoding="utf-8") as f:
+                json.dump(prefs, f, indent=2)
+            self.ui_prefs = prefs
+        except Exception as e:
+            self._log(f"[WARNING] Failed to save UI prefs: {e}")
+
+    def _setup_theme(self):
+        """One-shot global ttk restyle. Switches from the default theme's
+        chunky 3D-beveled borders to a flat, single-surface look with thin
+        hairline borders and cleaner notebook tabs. Only touches ttk widgets
+        (frames/labels/tabs/entries/treeview) -- the tk.Button action colors
+        are owned by AutomationUI.PALETTE and are unaffected. Wrapped in
+        try/except so an unsupported style option can never block startup;
+        worst case the app falls back to the old look.
+
+        To revert: delete this method and its call in __init__ (a full-file
+        backup was also saved under DAQ_Control_SW/_ui_backup_*/)."""
+        try:
+            BG      = "#eef0f3"   # single neutral surface for all chrome
+            CARD    = "#f7f8fa"   # very slightly lighter, for input fields
+            WHITE   = "#ffffff"
+            TEXT    = "#1f2430"
+            MUTED   = "#5f6672"
+            ACCENT  = "#007ACC"
+            BORDER  = "#d3d7dd"
+            SEL_TAB = "#ffffff"
+            IDLE_TAB= "#e2e5ea"
+
+            # NOTE: global Tk 'scaling'-based text enlargement was REMOVED. It
+            # is the only lever that resizes the app's hardcoded point fonts,
+            # but it also inflates the embedded matplotlib canvases (Laser/UPS
+            # graphs) and clipped them off their panes -- and it left some
+            # fixed-pixel text unscaled. Not worth the breakage; the app runs
+            # at native scale. (View -> Text Size was removed accordingly.)
+
+            style = ttk.Style()
+            try:
+                style.theme_use("clam")   # flat, no 3D bevels; the big visual win
+            except tk.TclError:
+                pass
+
+            # Base: every ttk widget inherits these unless overridden.
+            style.configure(".", background=BG, foreground=TEXT,
+                            fieldbackground=WHITE, bordercolor=BORDER,
+                            font=("Helvetica", 10))
+
+            style.configure("TFrame", background=BG)
+            style.configure("TLabel", background=BG, foreground=TEXT)
+            style.configure("TCheckbutton", background=BG, foreground=TEXT)
+            style.configure("TRadiobutton", background=BG, foreground=TEXT)
+            style.configure("TSeparator", background=BORDER)
+
+            # LabelFrame: thin solid hairline instead of the default ridge,
+            # accent-colored title.
+            style.configure("TLabelframe", background=BG, bordercolor=BORDER,
+                            relief="solid", borderwidth=1)
+            style.configure("TLabelframe.Label", background=BG, foreground=ACCENT,
+                            font=("Helvetica", 10, "bold"))
+
+            # Entries / combobox / spinbox: white field, thin border.
+            for w in ("TEntry", "TCombobox", "TSpinbox"):
+                style.configure(w, fieldbackground=WHITE, background=WHITE,
+                                bordercolor=BORDER, foreground=TEXT)
+
+            # Treeview (Scan History, etc.): white rows, subtle header.
+            style.configure("Treeview", background=WHITE, fieldbackground=WHITE,
+                            foreground=TEXT, bordercolor=BORDER)
+            style.configure("Treeview.Heading", background=IDLE_TAB,
+                            foreground=TEXT, font=("Helvetica", 10, "bold"))
+
+            # Generic ttk.Button (not the colored tk.Button actions): a
+            # visible hairline border + a background a shade darker than the
+            # panel so the button edge actually reads against it (the earlier
+            # near-panel-colored fill made borders vanish).
+            style.configure("TButton", background="#e4e7ec", foreground=TEXT,
+                            bordercolor="#b9bec7", lightcolor="#e4e7ec",
+                            darkcolor="#b9bec7", relief="solid", borderwidth=1,
+                            padding=7, focusthickness=0)
+            style.map("TButton",
+                      background=[("active", "#d5d9e0"), ("pressed", "#c7ccd4")],
+                      bordercolor=[("active", "#9aa0ab")])
+
+            # Notebook: clean tabs, selected tab pops white with accent text.
+            style.configure("TNotebook", background=BG, borderwidth=0)
+            style.configure("TNotebook.Tab", padding=(14, 7),
+                            background=IDLE_TAB, foreground=MUTED,
+                            font=("Helvetica", 10))
+            style.map("TNotebook.Tab",
+                      background=[("selected", SEL_TAB)],
+                      foreground=[("selected", ACCENT)],
+                      expand=[("selected", (1, 1, 1, 0))])
+
+            # Scrollbars: slimmer, neutral.
+            for w in ("Vertical.TScrollbar", "Horizontal.TScrollbar"):
+                style.configure(w, background=IDLE_TAB, troughcolor=BG,
+                                bordercolor=BG, arrowcolor=MUTED)
+
+            self.master.configure(bg=BG)
+        except Exception as e:
+            # Never let a cosmetic setup crash the app.
+            print(f"[WARNING] Theme setup skipped: {e}")
 
     def request_control_unlock(self):
         """비밀번호 확인 후 제어권 활성화 및 자동화 UI 연동"""
@@ -380,6 +802,17 @@ class App:
         elapsed_str = f"{hours:02}:{minutes:02}:{seconds:02}"
         self.elapsed_time_var.set(f"Execution time: {elapsed_str}")
 
+        # Heartbeat for scripts/daq_heartbeat_watchdog.sh: this callback only
+        # keeps firing while the Tk mainloop is genuinely alive and pumping
+        # events, so a stale file here means the GUI process is truly hung
+        # (not just a slow subprocess) -- unlike an sd_notify from a background
+        # thread, which would keep "looking alive" even with a deadlocked UI.
+        try:
+            with open(os.path.join(self.base_dir, "logs", "heartbeat.txt"), "w") as f:
+                f.write(str(time.time()))
+        except Exception:
+            pass
+
         self.master.after(1000, self._update_status_bar)
 
     def load_app_config(self):
@@ -387,8 +820,8 @@ class App:
         
         self.last_connected_wls = []
         self.laser_port_mapping = {
-            "375nm": "1-3.3:1.0", "405nm": "1-3.1:1.0",
-            "450nm": "1-3.2:1.0", "473nm": "1-3.4:1.0"
+            "375nm": "1-3.4.4:1.0", "405nm": "1-3.4.1:1.0",
+            "450nm": "1-3.4.2:1.0", "473nm": "1-3.4.3:1.0"
         }
         self.laser_log_dir = "/home/precalkor/ADC/ADC_test/LOG/LASER"
         self.terminal_preference = 'gnome-terminal'
@@ -550,39 +983,42 @@ class App:
         Returns dict {key: str_value} on OK, or None if the user cancelled.
         Settings are NEVER saved — dialog always opens with the supplied defaults.
         """
-        import tkinter as tk
-        from tkinter import ttk
-
         result = {}
         cancelled = [False]
 
-        dlg = tk.Toplevel(self.master)
+        if not CTK_AVAILABLE:
+            messagebox.showerror("Missing dependency",
+                                 "customtkinter is not installed.\n\nRun:  pip install customtkinter")
+            return None
+        ctk.set_appearance_mode("light")
+        ctk.set_default_color_theme("blue")
+
+        dlg = ctk.CTkToplevel(self.master)
         dlg.title(title)
-        dlg.resizable(False, False)
+        dlg.resizable(True, True)   # False,False also strips the min/max window buttons on this WM
         dlg.grab_set()
 
-        body = ttk.Frame(dlg, padding=16)
-        body.pack(fill=tk.BOTH, expand=True)
+        ctk.CTkLabel(dlg, text=title,
+                     font=ctk.CTkFont(size=18, weight="bold")).pack(anchor="w", padx=22, pady=(20, 8))
+
+        body = ctk.CTkFrame(dlg, corner_radius=14)
+        body.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 12))
 
         vars_ = {}
         for i, (key, label, default, hint) in enumerate(fields):
-            ttk.Label(body, text=label, font=("Helvetica", 10, "bold"),
-                      anchor="e").grid(row=i, column=0, sticky="e", padx=(0, 8), pady=5)
+            ctk.CTkLabel(body, text=label, anchor="e",
+                         font=ctk.CTkFont(size=13)).grid(row=i, column=0, sticky="e", padx=(16, 8), pady=8)
             v = tk.StringVar(value=str(default))
-            ttk.Entry(body, textvariable=v, width=12, justify="center").grid(
-                row=i, column=1, sticky="w", pady=5)
+            ctk.CTkEntry(body, textvariable=v, width=120, justify="center").grid(
+                row=i, column=1, sticky="w", pady=8)
             if hint:
-                ttk.Label(body, text=hint, foreground="#777",
-                          font=("Helvetica", 9)).grid(
-                    row=i, column=2, sticky="w", padx=(8, 0), pady=5)
+                ctk.CTkLabel(body, text=hint, text_color="#8a9099",
+                             font=ctk.CTkFont(size=11)).grid(
+                    row=i, column=2, sticky="w", padx=(8, 16), pady=8)
             vars_[key] = v
 
-        ttk.Label(body, text="↩ Always resets to default on next run",
-                  foreground="#6c757d", font=("Helvetica", 9, "italic")).grid(
-            row=len(fields), column=0, columnspan=3, pady=(10, 2))
-
-        btn_row = ttk.Frame(dlg, padding=(16, 0, 16, 12))
-        btn_row.pack(fill=tk.X)
+        ctk.CTkLabel(dlg, text="↩ Always resets to default on next run",
+                     text_color="#6c757d", font=ctk.CTkFont(size=11, slant="italic")).pack(anchor="w", padx=22)
 
         def on_ok():
             for k, v in vars_.items():
@@ -593,12 +1029,13 @@ class App:
             cancelled[0] = True
             dlg.destroy()
 
-        tk.Button(btn_row, text="▶ Run", bg="#28a745", fg="white",
-                  font=("Helvetica", 10, "bold"), relief="flat", padx=14,
-                  command=on_ok).pack(side=tk.RIGHT, padx=(4, 0))
-        tk.Button(btn_row, text="Cancel", bg="#6c757d", fg="white",
-                  font=("Helvetica", 10, "bold"), relief="flat", padx=14,
-                  command=on_cancel).pack(side=tk.RIGHT)
+        btn_row = ctk.CTkFrame(dlg, fg_color="transparent")
+        btn_row.pack(anchor="e", padx=20, pady=(8, 18))
+        ctk.CTkButton(btn_row, text="Cancel", width=90, fg_color="transparent",
+                      border_width=1, text_color=("#1f2430", "#e5e5e5"),
+                      command=on_cancel).pack(side=tk.LEFT, padx=(0, 8))
+        ctk.CTkButton(btn_row, text="▶ Run", width=120, fg_color="#2e9e4f",
+                      hover_color="#268043", command=on_ok).pack(side=tk.LEFT)
 
         dlg.protocol("WM_DELETE_WINDOW", on_cancel)
         dlg.wait_window()
@@ -654,6 +1091,7 @@ class App:
             # console_write handles \r explicitly to overwrite the current line.
             proc = subprocess.Popen(
                 argv, env=env,
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=False, start_new_session=True)
         except Exception as e:
@@ -713,18 +1151,40 @@ class App:
                         self.ui.console_write(
                             f"===== {job_name} finished (exit 0) =====\n\n", "ok", slot=slot)
                         self.ui.console_set_status("✓ Done", slot=slot, state="done")
-                        if on_complete:
-                            on_complete()
                     else:
                         self.ui.console_write(
                             f"===== {job_name} FAILED (exit {code}) =====\n\n", "err", slot=slot)
                         self.ui.console_set_status(
                             f"✗ Failed (exit {code})", slot=slot, state="failed")
+                    # Called on EITHER outcome now (was success-only) -- the HK
+                    # scan loop needs to know about a failed exit code too, not
+                    # just quietly wait out the blind acq_time as if nothing
+                    # happened. Existing callers that only cared about success
+                    # (there's only one, DAQ's on_complete=None) are unaffected.
+                    if on_complete:
+                        on_complete(code)
                 if not getattr(self, '_shutting_down', False):
                     self.master.after(0, done)
 
         threading.Thread(target=reader, daemon=True).start()
         self.master.after(120, flush_buffer)
+
+    def send_console_input(self, slot, text):
+        """콘솔에서 실행 중인 job의 stdin으로 한 줄을 보낸다 (Enter 포함).
+        DPB Setup처럼 nested ssh가 root 비밀번호 등을 대화형으로 물어보는
+        경우, 이 경로가 없으면 프롬프트가 콘솔에 찍혀도 입력할 방법이 없어
+        영원히 멈춰있게 된다 -- Console 탭의 입력창이 여기로 연결된다."""
+        procs = getattr(self, '_console_procs', {})
+        proc = procs.get(slot)
+        if proc is None or proc.poll() is not None or proc.stdin is None:
+            return False
+        try:
+            proc.stdin.write((text + "\n").encode('utf-8'))
+            proc.stdin.flush()
+            return True
+        except Exception as e:
+            self.ui.console_write(f"\n[INPUT] Failed to send: {e}\n", "err", slot=slot)
+            return False
 
     def stop_console_job(self, slot="analysis"):
         """해당 슬롯에서 실행 중인 콘솔 작업을 프로세스 그룹째 종료한다(Stop 버튼)."""
@@ -865,7 +1325,20 @@ class App:
 
     def open_image_viewer(self):
         self.ui.open_image_viewer()
-    
+
+    def open_data_log(self):
+        """Opens the live DAQ Data Monitoring dashboard (serve_data_monitoring.py,
+        managed by the daq-data-monitoring systemd --user service) in the
+        default browser. LAN first since it works without VPN/Tailscale; falls
+        back to the Tailscale address in the log line in case LAN is down."""
+        url = "http://192.168.10.100:8090/"
+        self._log(f"[INFO] Opening Data Log dashboard: {url}  (Tailscale fallback: http://100.119.212.12:8090/)")
+        try:
+            webbrowser.open(url)
+        except Exception as e:
+            self._log(f"[WARNING] Could not open browser automatically: {e}")
+            messagebox.showinfo("Data Log", f"Open this URL manually:\n{url}")
+
     def open_pmt_config_window(self, pmt_name):
         """Config 수정 후 화면상의 Configuration 및 파일 목록 자동 새로고침"""
         if self.config_manager:
@@ -907,6 +1380,40 @@ class App:
                                  f"확인된 경로: /opt/cisco/secureclient/bin/vpnui\n"
                                  f"파일 권한(chmod +x)을 확인해 보세요.")
 
+    def _sync_config_from_active_laser(self):
+        """Write the currently-active laser's wavelength + pulse/bias into config3.h
+        before a manual run, so it no longer has to be hand-edited each time.
+
+        Only fires when EXACTLY ONE LD is ON (the normal manual state -- the app
+        enforces one-LD-at-a-time). With zero or multiple LDs on it logs a warning
+        and leaves config3.h alone, so a run never records a wrong/stale setting.
+        NOTE is never touched (user-owned); the pulse/bias split stays in the laser
+        CSV logs. Reuses AutomationManager._apply_laser_config as the single writer."""
+        try:
+            if not hasattr(self, 'laser_mgr') or not hasattr(self, 'auto_mgr'):
+                return
+            on = []
+            for wl, inst in self.laser_mgr.laser_instances.items():
+                try:
+                    if inst and inst.is_connected() and inst.status.get('ld_on', False):
+                        on.append(wl)
+                except Exception:
+                    pass
+            if len(on) != 1:
+                if on:
+                    self._log(f"[WARNING] Laser config not auto-synced: {len(on)} LDs ON "
+                              f"({', '.join(str(w) for w in on)}). Edit config3.h manually if needed.")
+                return
+            wl = on[0]
+            vd = self.ui.laser_tabs_data.get(wl)
+            if not vd:
+                return
+            pulse = float(vd["pulse_set"].get())
+            bias = float(vd["bias_set"].get())
+            self.auto_mgr._apply_laser_config(wl, pulse, bias)
+        except Exception as e:
+            self._log(f"[WARNING] Laser config auto-sync failed: {e}")
+
     def run_daq(self, tilt=None, r2=None, r3=None):
         if not getattr(getattr(self, 'access_mgr', None), 'unlocked', True):
             messagebox.showwarning(
@@ -917,6 +1424,15 @@ class App:
         category = self.ui.run_mode.get()
         is_auto_running = hasattr(self, 'auto_mgr') and self.auto_mgr.is_running
         is_dummy = hasattr(self, 'auto_ui') and self.auto_ui.dummy_var.get()
+
+        # HK Digitizer backend: auto-scan points go through _execute_hk_point and
+        # never reach run_daq, so reaching here in HK mode is a MANUAL trigger.
+        # Route it to the HK acquisition (streamed to the HK console) instead of
+        # the local CAEN execute_DAQ.
+        if getattr(getattr(self, 'auto_mgr', None), 'daq_backend', 'caen') == 'hk':
+            if not is_auto_running:
+                self.auto_mgr.hk_manual_acquire()
+            return
 
         if not is_auto_running:
             try:
@@ -937,11 +1453,17 @@ class App:
 
         if category == "manual" and hasattr(self.ui, 'manual_type_var'):
             mode = self.ui.manual_type_var.get()
+        elif is_auto_running and hasattr(self, 'auto_ui') and hasattr(self.auto_ui, 'scan_mode_var'):
+            # General Scan's own Scan Mode radio (Laser multi-wavelength vs Dark
+            # single scan) -- previously this branch always fell through to the
+            # "laser" default below, so General Scan could never run Dark mode
+            # even when the operator wanted a wavelength-loop-free noise scan.
+            mode = self.auto_ui.scan_mode_var.get()
         else:
             mode = "laser"
 
-        # Block Dark DAQ if any laser LD is still ON
-        if category == "manual" and mode == "dark":
+        # Block Dark DAQ if any laser LD is still ON (manual or auto/General Scan)
+        if mode == "dark":
             lasers_on = []
             if hasattr(self, 'laser_mgr'):
                 for wl, inst in self.laser_mgr.laser_instances.items():
@@ -990,14 +1512,28 @@ class App:
                 else:
                     start_block = "0"
 
+        # Manual-mode laser<->config linkage: sync config3.h from the active laser
+        # so the wavelength/current never has to be hand-edited before a manual run.
+        # Skipped during an automated scan (it runs its own _apply_laser_config per
+        # block) and for Dark runs (laser is OFF).
+        if not is_auto_running and mode != "dark":
+            self._sync_config_from_active_laser()
+
         script_path = os.path.join(daq_path, 'script_v7.sh')
         config_path = self.config_manager.filepath
 
         command = [script_path, mode, config_path]
 
         if tilt is not None and r2 is not None and r3 is not None:
-            command.extend([str(r2), str(tilt), str(r3), str(tilt)])
-            self._log(f"[INFO] Injecting live angles to DAQ -> R2:{r2}, T2:{tilt}, R3:{r3}, T3:{tilt}")
+            # --rot2/--tilt2/--rot3/--tilt3 are int options in ADC_test7.cpp
+            # (boost::program_options): passing "135.0" aborts the binary with
+            # invalid_option_value, so round here exactly like the manual path
+            # below does. These stay RAW STAGE angles -- rounding only fixes the
+            # text form, never the value.
+            ri2, ti2 = int(round(float(r2))), int(round(float(tilt)))
+            ri3, ti3 = int(round(float(r3))), int(round(float(tilt)))
+            command.extend([str(ri2), str(ti2), str(ri3), str(ti3)])
+            self._log(f"[INFO] Injecting live angles to DAQ -> R2:{ri2}, T2:{ti2}, R3:{ri3}, T3:{ti3}")
         else:
             # Manual "Run DAQ" click (no explicit angles) — previously hardcoded
             # "0","0","0","0" here, which meant RunInfo recorded angle=0 regardless
@@ -1130,12 +1666,19 @@ class App:
         return self._acquire_parallel_slot(
             getattr(self.ui, 'CONTOUR_SLOTS', ("contour_1", "contour_2", "contour_3")))
 
+    def _acquire_uniformity_slot(self):
+        """Return the first free uniformity slot (uniformity_1/2/3), or None if all 3 are busy.
+        Safe to parallelize: the tag/run-range are passed as plain CLI args, no shared
+        config file (unlike Overlay, which stays single-slot below)."""
+        return self._acquire_parallel_slot(
+            getattr(self.ui, 'UNIFORMITY_SLOTS', ("uniformity_1", "uniformity_2", "uniformity_3")))
+
     def _ask_rate_scan_range(self):
         """Show a dialog asking for threshold range. Returns (thr_min, thr_max) or None if cancelled."""
         import tkinter as tk
         dialog = tk.Toplevel(self.master)
         dialog.title("Rate Scan Range")
-        dialog.resizable(False, False)
+        dialog.resizable(True, True)   # False,False also strips the min/max window buttons on this WM
         dialog.grab_set()
 
         tk.Label(dialog, text="Threshold scan range [mV]", font=("Helvetica", 11, "bold")).grid(
@@ -1413,19 +1956,29 @@ class App:
             messagebox.showerror("Error", f"Macro not found:\n{script}")
             return
 
-        dlg = tk.Toplevel(self.master)
+        if not CTK_AVAILABLE:
+            messagebox.showerror("Missing dependency",
+                                 "customtkinter is not installed.\n\nRun:  pip install customtkinter")
+            return
+        ctk.set_appearance_mode("light")
+        ctk.set_default_color_theme("blue")
+
+        dlg = ctk.CTkToplevel(self.master)
         dlg.title("Uniformity Analysis")
         dlg.transient(self.master)
         dlg.grab_set()
-        dlg.resizable(False, False)
+        dlg.resizable(True, True)   # False,False also strips the min/max window buttons on this WM
+        dlg.grid_columnconfigure(0, weight=1)
 
-        ttk.Label(dlg, text="Draw_Uniformity_Norm_v7(tag, run_start, run_end)",
-                  font=("Helvetica", 10, "bold")).grid(row=0, column=0, columnspan=2, padx=12, pady=(12, 2))
-        ttk.Label(dlg, justify="left", foreground="#666666",
-                  text=("Reads Data/FinalResult/ result files whose name contains <tag>,\n"
-                        "for run numbers in [start, end]. Saves PNGs to Data/image/Uniformity/.\n"
-                        "PMT serials / HV / angles are read automatically from each file.")
-                  ).grid(row=1, column=0, columnspan=2, padx=12, pady=(0, 8))
+        ctk.CTkLabel(dlg, text="Uniformity Analysis",
+                     font=ctk.CTkFont(size=19, weight="bold")).grid(
+            row=0, column=0, sticky="w", padx=22, pady=(20, 0))
+        ctk.CTkLabel(dlg, justify="left", text_color="#6c757d",
+                     font=ctk.CTkFont(size=12),
+                     text=("Reads Data/FinalResult/ files whose name contains <tag>, for runs\n"
+                           "[start, end]. Saves PNGs to Data/image/Uniformity/. PMT serials /\n"
+                           "HV / angles are read automatically from each file.")
+                     ).grid(row=1, column=0, sticky="w", padx=22, pady=(2, 12))
 
         today = datetime.now().strftime("%Y%m%d")
         tag_var = tk.StringVar(value=today)
@@ -1446,22 +1999,34 @@ class App:
         except Exception:
             pass
 
-        ttk.Label(dlg, text="Date tag   (e.g. " + today + ")").grid(row=2, column=0, sticky="w", padx=12, pady=3)
-        ttk.Combobox(dlg, textvariable=tag_var, values=avail_tags, width=16).grid(row=2, column=1, padx=12, pady=3)
-        ttk.Label(dlg, text="Run start  (e.g. 0)").grid(row=3, column=0, sticky="w", padx=12, pady=3)
-        ttk.Entry(dlg, textvariable=start_var, width=18).grid(row=3, column=1, padx=12, pady=3)
-        ttk.Label(dlg, text="Run end    (e.g. 99)").grid(row=4, column=0, sticky="w", padx=12, pady=3)
-        ttk.Entry(dlg, textvariable=end_var, width=18).grid(row=4, column=1, padx=12, pady=3)
+        card = ctk.CTkFrame(dlg, corner_radius=14)
+        card.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 14))
+        card.grid_columnconfigure(1, weight=1)
+
+        def _crow(r, label, widget):
+            ctk.CTkLabel(card, text=label, anchor="w",
+                         font=ctk.CTkFont(size=13)).grid(
+                row=r, column=0, sticky="w", padx=(16, 8), pady=10)
+            widget.grid(row=r, column=1, sticky="e", padx=(0, 16), pady=10)
+
+        _crow(0, f"Date tag  (e.g. {today})",
+              ctk.CTkComboBox(card, variable=tag_var, values=avail_tags, width=160))
+        _crow(1, "Run start  (e.g. 0)",
+              ctk.CTkEntry(card, textvariable=start_var, width=160, justify="center"))
+        _crow(2, "Run end  (e.g. 99)",
+              ctk.CTkEntry(card, textvariable=end_var, width=160, justify="center"))
 
         # Channel selection (which PMTs to draw in the combined plots)
         ch_vars = {0: tk.BooleanVar(value=True),
                    1: tk.BooleanVar(value=True),
                    2: tk.BooleanVar(value=True)}
-        ttk.Label(dlg, text="Channels").grid(row=5, column=0, sticky="w", padx=12, pady=3)
-        ch_frame = ttk.Frame(dlg)
-        ch_frame.grid(row=5, column=1, sticky="w", padx=12, pady=3)
+        ctk.CTkLabel(card, text="Channels", anchor="w",
+                     font=ctk.CTkFont(size=13)).grid(row=3, column=0, sticky="w", padx=(16, 8), pady=10)
+        ch_frame = ctk.CTkFrame(card, fg_color="transparent")
+        ch_frame.grid(row=3, column=1, sticky="e", padx=(0, 16), pady=10)
         for c in (0, 1, 2):
-            ttk.Checkbutton(ch_frame, text=f"CH{c}", variable=ch_vars[c]).pack(side=tk.LEFT, padx=(0, 8))
+            ctk.CTkCheckBox(ch_frame, text=f"CH{c}", variable=ch_vars[c],
+                            width=54).pack(side=tk.LEFT, padx=(0, 6))
 
         def _go():
             tag = tag_var.get().strip()
@@ -1477,24 +2042,36 @@ class App:
             if not chsel:
                 messagebox.showerror("Invalid input", "Select at least one channel.", parent=dlg)
                 return
+            slot = self._acquire_uniformity_slot()
+            if slot is None:
+                messagebox.showinfo(
+                    "Uniformity Busy",
+                    "3 Uniformity jobs are already running concurrently.\n\n"
+                    "Please wait for one to finish before starting another.",
+                    parent=dlg)
+                return
             dlg.destroy()
             helper = os.path.join(self.base_dir, 'run_cpp_script_v2.sh')
             config_path = self.config_manager.filepath
             tag_arg = f'\\\"{tag}\\\"'
             chsel_arg = f'\\\"{chsel}\\\"'
             cmd = " ".join([helper, script, config_path, tag_arg, str(rs), str(re_), chsel_arg])
-            self._execute_in_new_terminal([cmd])
+            self.ui.ensure_console_pane(slot)
+            self._run_job_in_console([cmd], job_name="Uniformity", slot=slot)
             self._log(f"[INFO] Uniformity analysis: tag={tag}, runs {rs}-{re_}")
             messagebox.showinfo("Uniformity Analysis",
                                 f"Running for tag={tag}, runs {rs}-{re_}.\n\n"
-                                "PNGs will appear in Data/image/Uniformity/.\n"
-                                "Use the Image Viewer (then Refresh) once the terminal finishes.")
+                                "Progress streams into the Output tab (Uniformity).\n"
+                                "PNGs appear in Data/image/Uniformity/ — open the Image Viewer\n"
+                                "(then Refresh) once the job shows ✓ Done.")
             self.ui.open_image_viewer()
 
-        btns = ttk.Frame(dlg)
-        btns.grid(row=6, column=0, columnspan=2, pady=10)
-        ttk.Button(btns, text="Run", command=_go).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btns, text="Cancel", command=dlg.destroy).pack(side=tk.LEFT, padx=5)
+        btns = ctk.CTkFrame(dlg, fg_color="transparent")
+        btns.grid(row=3, column=0, sticky="e", padx=20, pady=(0, 20))
+        ctk.CTkButton(btns, text="Cancel", width=90, fg_color="transparent",
+                      border_width=1, text_color=("#1f2430", "#e5e5e5"),
+                      command=dlg.destroy).pack(side=tk.LEFT, padx=(0, 8))
+        ctk.CTkButton(btns, text="Run", width=130, command=_go).pack(side=tk.LEFT)
 
     def run_overlay(self):
         """Pick which Uniformity datasets to overlay. Writes Data/UNIFORMITY/overlay_tags.txt
@@ -1517,56 +2094,89 @@ class App:
                                    "Run '7. Uniformity' first to create the per-dataset graph files.")
             return
 
-        dlg = tk.Toplevel(self.master)
+        if not CTK_AVAILABLE:
+            messagebox.showerror("Missing dependency",
+                                 "customtkinter is not installed.\n\nRun:  pip install customtkinter")
+            return
+        ctk.set_appearance_mode("light")
+        ctk.set_default_color_theme("blue")
+
+        dlg = ctk.CTkToplevel(self.master)
         dlg.title("Overlay Uniformity")
         dlg.transient(self.master)
         dlg.grab_set()
-        ttk.Label(dlg, text="Select datasets to overlay  (Ctrl / Shift for multiple):",
-                  font=("Helvetica", 10, "bold")).pack(padx=10, pady=(10, 2))
-        ttk.Label(dlg, text=f"Reads {uni_dir}/{prefix}<tag>{suffix}",
-                  foreground="#666666").pack(padx=10, pady=(0, 6))
+        ctk.CTkLabel(dlg, text="Overlay Uniformity",
+                     font=ctk.CTkFont(size=19, weight="bold")).pack(anchor="w", padx=22, pady=(20, 0))
+        ctk.CTkLabel(dlg, text="Select datasets to overlay. Legend label is optional "
+                              "(blank = dataset name).",
+                     text_color="#6c757d", font=ctk.CTkFont(size=12)).pack(anchor="w", padx=22, pady=(2, 10))
 
-        frame = ttk.Frame(dlg)
-        frame.pack(fill=tk.BOTH, expand=True, padx=10)
-        sb = ttk.Scrollbar(frame, orient="vertical")
-        lb = tk.Listbox(frame, selectmode=tk.EXTENDED, width=46,
-                        height=min(16, max(4, len(tags))), yscrollcommand=sb.set)
-        sb.config(command=lb.yview)
-        sb.pack(side=tk.RIGHT, fill=tk.Y)
-        lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        for tg in tags:
-            lb.insert(tk.END, tg)
-
-        # Pre-select whatever is already in overlay_tags.txt
+        # Pre-fill selection from overlay_tags.txt ("tag" or "tag,Label").
         cfg_path = os.path.join(uni_dir, 'overlay_tags.txt')
-        preset = set()
+        preset_selected, preset_label = set(), {}
         if os.path.exists(cfg_path):
             try:
                 with open(cfg_path) as f:
                     for ln in f:
                         ln = ln.strip()
                         if ln and not ln.startswith('#'):
-                            preset.add(ln.split(',')[0].strip())
+                            parts = ln.split(',', 1)
+                            tg = parts[0].strip()
+                            preset_selected.add(tg)
+                            if len(parts) > 1 and parts[1].strip():
+                                preset_label[tg] = parts[1].strip()
             except Exception:
                 pass
-        for i, tg in enumerate(tags):
-            if tg in preset:
-                lb.selection_set(i)
+
+        # Labels persist independently of selection (overlay_tags.txt only ever
+        # remembers labels for datasets that were CHECKED the last time you ran
+        # Overlay -- an unchecked row's typed label used to vanish on reopen).
+        # This file stores every tag's label regardless of checkbox state.
+        labels_path = os.path.join(uni_dir, 'overlay_labels.json')
+        persisted_labels = {}
+        if os.path.exists(labels_path):
+            try:
+                with open(labels_path) as f:
+                    persisted_labels = json.load(f)
+            except Exception:
+                pass
+        for tg, lbl in preset_label.items():
+            persisted_labels.setdefault(tg, lbl)
+        persisted_labels_loaded = set(persisted_labels.keys())
+
+        # One row per dataset: checkbox to select + entry to set its legend
+        # label. CTkScrollableFrame replaces the old Canvas+Scrollbar+inner
+        # boilerplate -- it scrolls natively when the list is long.
+        scroll = ctk.CTkScrollableFrame(dlg, label_text="Datasets",
+                                        height=min(360, max(120, 34 * len(tags))))
+        scroll.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 8))
+
+        row_vars = {}   # tag -> (BooleanVar selected, StringVar label)
+        for tg in tags:
+            row = ctk.CTkFrame(scroll, fg_color="transparent")
+            row.pack(fill=tk.X, pady=2)
+            sel_var = tk.BooleanVar(value=(tg in preset_selected))
+            lbl_var = tk.StringVar(value=persisted_labels.get(tg, ""))
+            ctk.CTkCheckBox(row, text="", width=24, variable=sel_var).pack(side=tk.LEFT, padx=(0, 4))
+            ctk.CTkLabel(row, text=tg, width=180, anchor="w").pack(side=tk.LEFT)
+            ctk.CTkEntry(row, textvariable=lbl_var, width=160,
+                         placeholder_text="legend label").pack(side=tk.LEFT, padx=(4, 0))
+            row_vars[tg] = (sel_var, lbl_var)
 
         # Channel selection (which PMTs to overlay)
         ch_vars = {0: tk.BooleanVar(value=True),
                    1: tk.BooleanVar(value=True),
                    2: tk.BooleanVar(value=True)}
-        ch_outer = ttk.Frame(dlg)
-        ch_outer.pack(padx=10, pady=(6, 0))
-        ttk.Label(ch_outer, text="Channels:").pack(side=tk.LEFT, padx=(0, 6))
+        ch_outer = ctk.CTkFrame(dlg, fg_color="transparent")
+        ch_outer.pack(padx=20, pady=(0, 4), anchor="w")
+        ctk.CTkLabel(ch_outer, text="Channels:", font=ctk.CTkFont(size=13)).pack(side=tk.LEFT, padx=(0, 8))
         for c in (0, 1, 2):
-            ttk.Checkbutton(ch_outer, text=f"CH{c}", variable=ch_vars[c]).pack(side=tk.LEFT, padx=(0, 8))
+            ctk.CTkCheckBox(ch_outer, text=f"CH{c}", variable=ch_vars[c], width=54).pack(side=tk.LEFT, padx=(0, 6))
 
         chan_cfg_path = os.path.join(uni_dir, 'overlay_channels.txt')
 
         def _go():
-            sel = [tags[i] for i in lb.curselection()]
+            sel = [tg for tg in tags if row_vars[tg][0].get()]
             if not sel:
                 messagebox.showwarning("No selection", "Select at least one dataset.", parent=dlg)
                 return
@@ -1579,9 +2189,25 @@ class App:
                 with open(cfg_path, 'w') as f:
                     f.write("# Overlay tag list (edited from the GUI). One 'tag' or 'tag,Label' per line.\n")
                     for tg in sel:
-                        f.write(tg + "\n")
+                        label = row_vars[tg][1].get().strip()
+                        f.write(f"{tg},{label}\n" if label else f"{tg}\n")
                 with open(chan_cfg_path, 'w') as f:
                     f.write(",".join(str(c) for c in chsel) + "\n")
+                # Persist every row's label (checked or not) so an unchecked
+                # dataset's typed label survives closing/reopening this dialog.
+                # Only clear a tag's saved label if it had one loaded at dialog-open
+                # time and the user actively blanked it -- an untouched blank field
+                # (e.g. a tag whose label was never populated in this session) must
+                # not wipe out a label saved by an earlier session.
+                for tg in tags:
+                    label = row_vars[tg][1].get().strip()
+                    had_before = tg in persisted_labels_loaded
+                    if label:
+                        persisted_labels[tg] = label
+                    elif had_before:
+                        persisted_labels.pop(tg, None)
+                with open(labels_path, 'w') as f:
+                    json.dump(persisted_labels, f, indent=2)
             except Exception as e:
                 messagebox.showerror("Error", f"Could not write overlay config:\n{e}", parent=dlg)
                 return
@@ -1589,18 +2215,22 @@ class App:
             helper = os.path.join(self.base_dir, 'run_cpp_script_v2.sh')
             config_path = self.config_manager.filepath
             cmd = " ".join([helper, script, config_path])
-            self._execute_in_new_terminal([cmd])
+            self.ui.ensure_console_pane("overlay")
+            self._run_job_in_console([cmd], job_name="Overlay", slot="overlay")
             self._log(f"[INFO] Overlay Uniformity: {len(sel)} datasets -> {sel}")
             messagebox.showinfo("Overlay Uniformity",
                                 f"Overlaying {len(sel)} dataset(s).\n\n"
-                                "PNGs will appear in Data/image/Uniformity/.\n"
-                                "Open the Image Viewer (Refresh) once the terminal finishes.")
+                                "Progress streams into the Output tab (Overlay).\n"
+                                "PNGs appear in Data/image/Uniformity/ — open the Image Viewer\n"
+                                "(Refresh) once the job shows ✓ Done.")
             self.ui.open_image_viewer()
 
-        btns = ttk.Frame(dlg)
-        btns.pack(pady=10)
-        ttk.Button(btns, text="Overlay", command=_go).pack(side=tk.LEFT, padx=5)
-        ttk.Button(btns, text="Cancel", command=dlg.destroy).pack(side=tk.LEFT, padx=5)
+        btns = ctk.CTkFrame(dlg, fg_color="transparent")
+        btns.pack(anchor="e", padx=20, pady=(4, 18))
+        ctk.CTkButton(btns, text="Cancel", width=90, fg_color="transparent",
+                      border_width=1, text_color=("#1f2430", "#e5e5e5"),
+                      command=dlg.destroy).pack(side=tk.LEFT, padx=(0, 8))
+        ctk.CTkButton(btns, text="Overlay", width=130, command=_go).pack(side=tk.LEFT)
 
     def run_transfer(self):
         daq_path = self._get_daq_path()
@@ -1958,6 +2588,21 @@ class App:
         """Continuous background loop for DAQ connection checking with thread-safe compliance."""
         # Loop strictly boundaries on the control boolean variable safety flags
         while getattr(self, '_daq_check_running', False):
+            # In HK Digitizer mode the local CAEN box isn't in use (often not
+            # even powered), so this probe would otherwise keep spawning
+            # execute_DAQ_v2 -j every 2s indefinitely against absent hardware
+            # -- each attempt can run up to its 5s timeout, and that sustained
+            # background load is what read as "the DAQ app got laggy" while
+            # testing HK mode. Skip the CAEN probe entirely while HK is active.
+            if getattr(getattr(self, 'auto_mgr', None), 'daq_backend', 'caen') == 'hk':
+                try:
+                    if hasattr(self, 'master') and self.master.winfo_exists():
+                        self.master.after(0, lambda: self.ui.update_daq_connection_status(False))
+                except Exception:
+                    pass
+                time.sleep(2.0)
+                continue
+
             is_connected = False
             try:
                 if self.config_manager:
@@ -1995,6 +2640,7 @@ class App:
 
         raw_data_path = self.config_manager.get_config_value("RawDataPath")
         ext_data_path = self.config_manager.get_config_value("ExternalPath")
+        ext2_data_path = self.config_manager.get_config_value("ExternalPath2")
 
         #print(f"DEBUG: RawDataPath from config: '{raw_data_path}'") # [디버깅] 경로 확인
         #print(f"DEBUG: ExternalPath from config: '{ext_data_path}'")
@@ -2016,6 +2662,14 @@ class App:
             print(f"DEBUG: External Path invalid. Exists? {os.path.exists(ext_data_path) if ext_data_path else 'N/A'}")
             msg = "Path Not Found" if ext_data_path else "Path Not Set"
             self.ui.update_data_size_display(msg, True)
+
+        # 3. 두 번째 외부 하드 경로 체크 (Ext HDD2)
+        if ext2_data_path and os.path.exists(ext2_data_path):
+            threading.Thread(target=self._get_directory_size_thread,
+                             args=(ext2_data_path, "ext2"), daemon=True).start()
+        else:
+            msg = "Path Not Found" if ext2_data_path else "Path Not Set"
+            self.ui.update_data_size_display(msg, "ext2")
 
     def _get_directory_size_thread(self, path, is_ext):
         """디버깅 프린트가 추가된 용량 계산 함수"""
@@ -2084,6 +2738,7 @@ class App:
     def apply_laser_frequency_multi(self, wl): self.laser_mgr.apply_laser_frequency_multi(wl)
     def set_laser_tec_multi(self, wl, state): self.laser_mgr.set_laser_tec_multi(wl, state)
     def apply_laser_currents_multi(self, wl): self.laser_mgr.apply_laser_currents_multi(wl)
+    def apply_laser_pulse_width_multi(self, wl): self.laser_mgr.apply_laser_pulse_width_multi(wl)
     def update_laser_status_loop(self): self.laser_mgr.update_laser_status_loop()
     def on_laser_trigger_change_multi(self, wl): self.laser_mgr.on_laser_trigger_change_multi(wl)
     def on_laser_trigger_change(self, event=None): self.laser_mgr.on_laser_trigger_change(event)
@@ -2132,10 +2787,16 @@ class App:
 
 
     def get_system_status(self):
+        """NOTE: includes a blocking subprocess.run() (see _check_hv_env_process
+        below) -- fine for one-off callers, but the dashboard loop that used
+        to call this every 2s has been switched to call _check_hv_env_process()
+        from a background thread instead, since running it directly on the Tk
+        main thread stalled the whole GUI for the pgrep's duration every tick.
+        Kept intact here for any future synchronous caller."""
         status = {
                 "DAQ": False,
-                "HV": False, 
-                "Env": False, 
+                "HV": False,
+                "Env": False,
                 "Laser": False,
                 "UPS": False
                 }
@@ -2153,15 +2814,21 @@ class App:
                 if "Normal" in msg or "Battery" in msg:
                     status["UPS"] = True
 
-        try:
-            check_hv = subprocess.run(['pgrep', '-f', 'monitoring_app.py'], capture_output=True)
-            if check_hv.returncode == 0:
-                status["HV"] = True
-                status["Env"] = True 
-        except Exception:
-            pass
+        if self._check_hv_env_process():
+            status["HV"] = True
+            status["Env"] = True
 
         return status
+
+    def _check_hv_env_process(self):
+        """The pgrep check alone, with no Tk/widget access -- safe to call
+        from a background thread. Split out of get_system_status() so the
+        dashboard loop can run this off the main thread."""
+        try:
+            check_hv = subprocess.run(['pgrep', '-f', 'monitoring_app.py'], capture_output=True)
+            return check_hv.returncode == 0
+        except Exception:
+            return False
 
     def on_closing(self):
         """Shows a shutdown progress dialog and safely releases hardware."""

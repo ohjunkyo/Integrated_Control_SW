@@ -91,6 +91,10 @@ class TamadenshiLaser:
         # other's response, causing "Status parse error" and bogus temp/current values.
         self._io_lock = threading.RLock()
         self._last_csv_log_time = 0.0
+        # Filled on first successful get_pulse_width_ps(); the width only
+        # changes when someone writes it, so the CSV logger reuses this cache
+        # instead of adding an HID round trip to every 10s log line.
+        self._cached_pulse_width_ps: Optional[int] = None
         print(f"Controller initialized (VID: {self.VENDOR_ID:04x}, PID: {self.PRODUCT_ID:04x})")
 
     def connect(self, dev_path: bytes = None) -> (bool, str):
@@ -264,8 +268,17 @@ class TamadenshiLaser:
                 data = self.device.read(self.PACKET_LENGTH, 1000)
 
             if data:
-                # Return data, excluding the first byte (Report ID)
-                return data[1:] 
+                # NOTE: this device uses UNNUMBERED HID reports, so on Linux
+                # hidraw the read comes back as 64 bytes of pure payload with
+                # NO leading report-ID byte (verified: len(read()) == 64). The
+                # strip below therefore discards a REAL payload byte -- what
+                # tmHIDLD.dll calls data[0]. Every field this driver parses is
+                # indexed against the stripped array and reads correctly (e.g.
+                # pulse -> 164.98 mA for a 165 mA setpoint), so the strip is
+                # left in place rather than re-indexing everything; callers who
+                # need byte 0 (only the photodiode's high byte, see
+                # update_status) use _read_status_raw() instead.
+                return data[1:]
             else:
                 print("❌ Command read failed: Empty response from device.")
                 return None
@@ -278,6 +291,26 @@ class TamadenshiLaser:
             # Catch generic Exception for compatibility (e.g., instead of hid.HIDException)
             # Handle read timeout
             print(f"👻 HID read failed (Timeout?): {e}")
+            return None
+
+    def _read_status_raw(self) -> Union[list, None]:
+        """Status report WITHOUT _read_command's report-ID strip -- byte 0 is
+        real payload on this device (unnumbered HID reports; see the note in
+        _read_command). Only the photodiode needs it, because tmHIDLD.dll's
+        GetPD() reads the PD as data[0]*256 + data[1] and the stripped array
+        loses that high byte."""
+        if not self.is_connected():
+            return None
+        report = [0x00] * self.PACKET_LENGTH
+        report[0] = self.REPORT_ID
+        report[1] = self.CMD_GET_ALL_STATUS
+        try:
+            with self._io_lock:
+                self.device.write(report)
+                data = self.device.read(self.PACKET_LENGTH, 1000)
+            return list(data) if data else None
+        except Exception as e:
+            print(f"👻 Raw status read failed: {e}")
             return None
 
     # ===================================================
@@ -317,8 +350,56 @@ class TamadenshiLaser:
     def set_temp(self, temp_c: float) -> bool:
         """Sets the target TEC temperature. (Unit: °C, max 40°C)"""
         # The max value for SetTemp is assumed to be 40.0 (based on GetTemp logic)
-        hb, lb = self._val_to_dac(temp_c, max_ma=40.0) 
+        hb, lb = self._val_to_dac(temp_c, max_ma=40.0)
         return self._send_command(self.CMD_SET_TEMP, [hb, lb])
+
+    CMD_PULSE_WIDTH = 0x08   # (PulseWidth) -- found via decompiling tmHIDLD.dll;
+    # not documented in any vendor manual we have. add+128, dat=0 reads EEPROM
+    # slot `add` WITHOUT writing/touching the live hardware output (see
+    # PulseWidth() in LD_board_library_manual.pdf p.19). The response byte
+    # layout was confirmed empirically via a round-trip write/read on a
+    # scratch slot (address 5, never used live): the response's first two
+    # bytes (after this driver's usual report-ID strip) are [hi, lo]
+    # directly -- no separate leading address byte, unlike a literal
+    # reading of the manual's byte table.
+    def get_pulse_width_ps(self, address: int = 0) -> Optional[int]:
+        """Reads the pulse width (picoseconds) currently stored at EEPROM
+        slot `address` (0-9; 0 is the live/active one) WITHOUT writing
+        anything -- safe to call anytime, including while the laser is
+        firing. Returns None on comm failure."""
+        resp = self._read_command(self.CMD_PULSE_WIDTH, [address + 128, 0, 0])
+        if resp is None or len(resp) < 2:
+            return None
+        dat = resp[0] * 256 + resp[1]
+        # dat is documented as 10-1023 (LD_board_library_manual.pdf p.19).
+        # Anything outside that -- 0, or a garbage value like 22016 -- means
+        # we caught a stale/leftover response (e.g. read right after another
+        # command with no settling time) rather than this command's real
+        # reply. Treat it as a failed read instead of caching a fake value;
+        # the caller (laser_manager.py) simply retries on the next 1s poll.
+        if not (10 <= dat <= 1023):
+            return None
+        width_ps = dat * 10
+        if address == 0:                      # the live slot -- cache for the CSV logger
+            self._cached_pulse_width_ps = width_ps
+        return width_ps
+
+    def set_pulse_width_ps(self, width_ps: int, address: int = 0) -> bool:
+        """Writes the pulse width (picoseconds, rounded to the nearest 10)
+        to EEPROM slot `address`. Per LD_board_library_manual.pdf p.19,
+        writing address 0-9 (no +128) BOTH updates the live hardware output
+        immediately AND persists to EEPROM -- unlike get_pulse_width_ps's
+        read (address+128), this one actually changes what the laser fires.
+        Valid dat range is 10-1023 (100ps-10230ps); out-of-range raises."""
+        dat = round(width_ps / 10)
+        if not (10 <= dat <= 1023):
+            raise ValueError(f"pulse width {width_ps}ps out of valid range (100-10230ps)")
+        hb, lb = (dat >> 8) & 0xFF, dat & 0xFF
+        resp = self._read_command(self.CMD_PULSE_WIDTH, [address, hb, lb])
+        ok = resp is not None
+        if ok and address == 0:
+            self._cached_pulse_width_ps = dat * 10   # keep the CSV logger in step
+        return ok
 
     # --- [NEW] Frequency Set Functions ---
     def _freq_to_4bytes(self, freq_hz: int) -> List[int]:
@@ -354,17 +435,70 @@ class TamadenshiLaser:
         """
         Reads all key device statuses at once and stores them in the internal 'self.status' dict.
         """
-        data = self._read_command(self.CMD_GET_ALL_STATUS)
-        
-        if data is None:
+        raw = self._read_status_raw()
+        if raw is None:
             return False
+        # Everything below is indexed against the historically-stripped array.
+        data = raw[1:]
 
         try:
-            # PD Current (Bytes [1] and [2])
-            self.status['pd_raw'] = (data[1] << 8) | data[2]
-            # LD Temperature (Bytes [4] and [5])
-            raw_ld_temp = (data[4] << 8) | data[5]
-            self.status['ld_temp'] = (raw_ld_temp / 1023.0) * 40.0
+            # Photodiode monitor -- the ONLY real optical-output measurement the
+            # board makes (bias/pulse below are just the DAC setpoints we wrote,
+            # echoed back; there is no current-sense ADC on the LD drive path).
+            #
+            # Was (data[1]<<8)|data[2], which read a constant 2 on every laser.
+            # tmHIDLD.dll's GetPD() reads the PD as data[0]*256 + data[1] --
+            # a 10-bit ADC split across the report's FIRST TWO bytes, which is
+            # why this uses the unstripped `raw` (the stripped array starts at
+            # raw[1] and would silently drop the high byte, capping PD at 255).
+            self.status['pd_raw'] = raw[0] * 256 + raw[1]
+            # Vendor's photodiode current, from GetPD(): the front end is a
+            # logarithmic amplifier, hence 10**(...) rather than a linear scale.
+            # The 2.5 constant is 3.0 on boards with HardInfoB's DA2_048V_DA3V
+            # bit set; see the LD-temperature note below for why the revision
+            # probe isn't reimplemented here. Result is in Amps.
+            #
+            # HARDWARE CAVEAT (measured 2026-08-09, all four boards, LD ON with
+            # the trigger connected and firing): only the 450nm board's monitor
+            # photodiode actually responds -- raw ~88 dark, rising to ~106 while
+            # lasing. 375nm / 405nm / 473nm return EXACTLY 0 even while firing,
+            # i.e. not even ADC noise, which means their monitor-PD input is
+            # dead or unpopulated rather than merely reading a small signal.
+            # pd_valid says whether this reading means anything, so drift
+            # analysis can drop the three boards that cannot report light
+            # instead of silently averaging in a hard zero.
+            self.status['pd_current'] = 10.0 ** (((self.status['pd_raw'] * 2.5 / 1023.0) - 0.5) / 0.2)
+            self.status['pd_valid'] = self.status['pd_raw'] > 0
+            # Mirror the cached width into status so CSV loggers can record it
+            # without paying for an extra HID round trip on every sample.
+            self.status['pulse_width_ps'] = self._cached_pulse_width_ps
+            # LD Temperature.
+            #
+            # Was (data[4]<<8)|data[5] * 40/1023, which read the WRONG bytes:
+            # with the TEC off on three of the four lasers (so all four should
+            # sit at the same room temperature) that formula gave
+            # 14.00/14.31/3.21/14.35 C -- mutually inconsistent, and the 450nm
+            # "3.21 C" was pure artifact, not a cold laser. It also made the
+            # live temperature plot step like a square wave, which no real
+            # thermistor does.
+            #
+            # Decompiling tmHIDLD.dll's GetPD() shows the vendor reads the
+            # temperature from ITS data[3],data[4] and scales by 0.0391 (note
+            # 40/1023 = 0.03910068, i.e. our old scale factor was already the
+            # vendor's -- only the byte offset was wrong). The vendor's buffer
+            # keeps the leading byte that _read_command() strips off here, so
+            # vendor data[3],data[4] == our data[2],data[3]. With those bytes
+            # all four lasers read 22.4-23.0 C: tight, mutually consistent, and
+            # exactly room temperature.
+            #
+            # NOTE: the vendor additionally scales by 0.04888 instead of 0.0391
+            # on boards whose HardInfoB bit5 is set, and by x1.5 / x1.75 for
+            # other revisions. All four of our boards are plainly on the plain
+            # 0.0391 x1.0 branch (the alternatives would put a room-temperature
+            # board at 28 C / 34 C / 39 C), so the revision probe is not
+            # reimplemented here -- revisit if a board ever reads implausibly hot.
+            raw_ld_temp = (data[2] << 8) | data[3]
+            self.status['ld_temp'] = raw_ld_temp * 0.0391
             
             if len(data) > 17:
                  self.status['tec_current_raw'] = (data[17] << 8) | data[8]
@@ -394,13 +528,27 @@ class TamadenshiLaser:
                     self._setup_daily_logger(current_log_file)
 
                 try:
-                    csv_line = "{},{ld},{tec},{temp:.3f},{bias:.3f},{pulse:.3f}".format(
+                    # pd_raw/pd_current are the only genuinely MEASURED
+                    # quantities here -- bias/pulse are the DAC setpoints read
+                    # back, so they cannot show drift by construction (they
+                    # read the commanded value even with the LD off). Logging
+                    # both lets a drift analysis divide the measured optical
+                    # output by the commanded drive current.
+                    # Blank (not 0, not the 3.162 log-formula floor) when the
+                    # board's photodiode is dead, so a drift fit reading this
+                    # CSV skips those rows instead of fitting a flat fake line.
+                    pd_valid = self.status.get('pd_valid', False)
+                    csv_line = ("{},{ld},{tec},{temp:.3f},{bias:.3f},{pulse:.3f},"
+                                "{pw},{pd_raw},{pd_cur}").format(
                         now.isoformat(),
                         ld=self.status['ld_on'],
                         tec=self.status['tec_on'],
                         temp=self.status['ld_temp'],
                         bias=self.status['bias'],
-                        pulse=self.status['pulse']
+                        pulse=self.status['pulse'],
+                        pw=self._cached_pulse_width_ps if self._cached_pulse_width_ps is not None else "",
+                        pd_raw=self.status.get('pd_raw', 0),
+                        pd_cur=f"{self.status.get('pd_current', 0.0):.6f}" if pd_valid else "",
                     )
                     data_logger.info(csv_line)
                 except Exception as e:
@@ -423,5 +571,6 @@ class TamadenshiLaser:
         if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
             # 파일이 없거나 비어있을 때만 헤더 추가
             with open(file_path, 'w') as f:
-                f.write("timestamp,ld_on,tec_on,temp_c,bias_ma,pulse_ma\n")
+                f.write("timestamp,ld_on,tec_on,temp_c,bias_ma,pulse_ma,"
+                        "pulse_width_ps,pd_raw,pd_current\n")
         data_logger.addHandler(new_handler)

@@ -28,7 +28,7 @@ class _Tooltip:
             self._tip = None
 
 
-from tkinter import ttk, scrolledtext, messagebox, font
+from tkinter import ttk, scrolledtext, messagebox, font, simpledialog
 import os
 import json
 import math
@@ -36,19 +36,21 @@ import re
 import subprocess
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+import pandas as pd
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from image_viewer import ImageViewer
-from config_window import ConfigWindow 
+from config_window import ConfigWindow
 from datetime import datetime
-import requests 
+# customtkinter migration (in progress). Guarded so the app still runs if the
+# package is missing; callers check CTK_AVAILABLE before using ctk.
+try:
+    import customtkinter as ctk
+    CTK_AVAILABLE = True
+except Exception:
+    ctk = None
+    CTK_AVAILABLE = False
 import threading
-import io 
-import time 
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
-from PIL import Image, ImageTk
+import time
 from managers.ui_automation import AutomationUI
 
 
@@ -75,7 +77,10 @@ class UIManager:
                 "temp": tk.StringVar(value="--.- °C"),
                 "bias_live": tk.StringVar(value="---.- mA"),
                 "pulse_live": tk.StringVar(value="---.- mA"),
-                "check_interval": tk.StringVar(value="1s"),
+                "pulse_width_live": tk.StringVar(value="-- ps"),
+                "pd_current_live": tk.StringVar(value="--"),
+                "pulse_width_var": tk.StringVar(value=""),
+                "pulse_width_default_ps": None,
                 "bias_set": tk.DoubleVar(value=0.0),
                 "pulse_set": tk.DoubleVar(value=0.0),
                 "trigger_mode": tk.StringVar(value="External"),
@@ -104,6 +109,7 @@ class UIManager:
         
         self.data_size_var = tk.StringVar(value="Calculating...")
         self.ext_data_size_var = tk.StringVar(value="Calculating...")
+        self.ext2_data_size_var = tk.StringVar(value="Calculating...")
 
         self.is_dark_mode = False
         self.colors = {
@@ -172,7 +178,81 @@ class UIManager:
 
         view_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="View", menu=view_menu)
+        # "Text Size" (global Tk scaling) removed -- it clipped the embedded
+        # Laser/UPS matplotlib graphs. _open_font_size_dialog is kept but
+        # unlinked from the menu.
         view_menu.add_command(label="Toggle Dark Mode 🌙", command=self.toggle_theme)
+
+    def _open_font_size_dialog(self):
+        """Slider to scale ALL app text. Because the app hardcodes point-sized
+        fonts, the reliable global lever is Tk's pixels-per-point ratio, which
+        only takes full effect at startup -- so this saves the factor and
+        offers to restart. The live preview label shows the chosen size right
+        away without needing a restart to eyeball it."""
+        cur = float(self.controller.ui_prefs.get("font_scale", 1.0))
+
+        if not CTK_AVAILABLE:
+            messagebox.showerror("Missing dependency",
+                                 "customtkinter is not installed.\n\nRun:  pip install customtkinter")
+            return
+        ctk.set_appearance_mode("light")
+        ctk.set_default_color_theme("blue")
+
+        win = ctk.CTkToplevel(self.master)
+        win.title("Text Size")
+        win.geometry("440x360")
+        win.attributes("-topmost", True)
+        win.transient(self.master)
+
+        ctk.CTkLabel(win, text="Text Size",
+                     font=ctk.CTkFont(size=19, weight="bold")).pack(anchor="w", padx=22, pady=(20, 0))
+        ctk.CTkLabel(win, text="Scale all app text. Applied on restart.",
+                     text_color="#6c757d", font=ctk.CTkFont(size=12)).pack(anchor="w", padx=22, pady=(2, 10))
+
+        scale_var = tk.DoubleVar(value=round(cur * 100))
+        pct_lbl = ctk.CTkLabel(win, text=f"{int(round(cur * 100))} %",
+                               font=ctk.CTkFont(size=15, weight="bold"), text_color="#007ACC")
+        pct_lbl.pack(anchor="w", padx=22)
+
+        # Live preview: a sample line whose point size tracks the slider
+        # (10pt at 100%). Gives the "show me the size" feedback immediately.
+        preview = ctk.CTkLabel(win, text="Sample 미리보기 · Aa Bb 123",
+                               font=ctk.CTkFont(size=13), fg_color="white",
+                               corner_radius=10, height=56)
+        preview.pack(fill=tk.X, padx=22, pady=12)
+
+        def _on_slide(_v=None):
+            pct = scale_var.get()
+            pct_lbl.configure(text=f"{int(round(pct))} %")
+            preview.configure(font=ctk.CTkFont(size=max(9, int(round(13 * pct / 100.0)))))
+
+        # 80%–160% covers "a bit smaller" to "much bigger" without breaking
+        # layouts. number_of_steps keeps the slider on round 5% stops.
+        ctk.CTkSlider(win, from_=80, to=160, number_of_steps=16,
+                      variable=scale_var, command=_on_slide, width=360).pack(padx=22, pady=(0, 4))
+        _on_slide()
+
+        def _apply():
+            factor = round(scale_var.get() / 100.0, 3)
+            self.controller._save_ui_prefs(font_scale=factor)
+            if messagebox.askyesno(
+                    "Restart to Apply",
+                    f"Text size set to {int(round(factor * 100))}%.\n\n"
+                    "A restart is needed to apply it everywhere.\n"
+                    "Restart now?", parent=win):
+                win.destroy()
+                self.controller._restart_app()
+            else:
+                win.destroy()
+
+        btns = ctk.CTkFrame(win, fg_color="transparent")
+        btns.pack(side=tk.BOTTOM, anchor="e", padx=22, pady=16)
+        ctk.CTkButton(btns, text="Cancel", width=90, fg_color="transparent",
+                      border_width=1, text_color=("#1f2430", "#e5e5e5"),
+                      command=win.destroy).pack(side=tk.LEFT, padx=(0, 8))
+        ctk.CTkButton(btns, text="Apply & Restart", width=150,
+                      fg_color="#2e9e4f", hover_color="#268043",
+                      command=_apply).pack(side=tk.LEFT)
 
     def show_about(self):
         messagebox.showinfo("About DAQ Control (2026. 03. 10)",
@@ -285,7 +365,12 @@ class UIManager:
 
         # main tab 3
         self._create_web_monitor_tab(self.main_notebook)
-        
+
+        # 3b: Signal Lamp (PATLITE NE-USB) manual control
+        self.lamp_main_frame = ttk.Frame(self.main_notebook)
+        self.main_notebook.add(self.lamp_main_frame, text=" 🚨 Signal Lamp ")
+        self._create_signal_lamp_tab(self.lamp_main_frame)
+
         # 4: UPS Status
         self.ups_main_frame = ttk.Frame(self.main_notebook)
         self.main_notebook.add(self.ups_main_frame, text=" UPS Status ")
@@ -904,23 +989,33 @@ class UIManager:
 
     def _create_grid_storage_widget(self, parent):
         accent = self.colors["dark" if self.is_dark_mode else "light"]["accent"]
-        
+
         title_font = ("Helvetica", 11)
-        val_font = ("Helvetica", 16, "bold") 
+        # Three rows now (local + two external disks) instead of two, so the
+        # value font is a little smaller to keep the cell from overflowing.
+        val_font = ("Helvetica", 14, "bold")
 
-        ttk.Label(parent, text="DAQ Storage (Local):", font=title_font).pack(pady=(15, 0))
-        
-        self.data_size_label = ttk.Label(parent, textvariable=self.data_size_var, 
+        ttk.Label(parent, text="DAQ Storage (Local):", font=title_font).pack(pady=(8, 0))
+
+        self.data_size_label = ttk.Label(parent, textvariable=self.data_size_var,
                                           foreground=accent, font=val_font)
-        self.data_size_label.pack(pady=5)
+        self.data_size_label.pack(pady=3)
 
-        ttk.Separator(parent, orient='horizontal').pack(fill='x', pady=20)
+        ttk.Separator(parent, orient='horizontal').pack(fill='x', pady=10)
 
-        ttk.Label(parent, text="External HDD (Backup):", font=title_font).pack()
-        
-        self.data_size_label2 = ttk.Label(parent, textvariable=self.ext_data_size_var, 
+        ttk.Label(parent, text="Ext HDD1 (Backup):", font=title_font).pack()
+
+        self.data_size_label2 = ttk.Label(parent, textvariable=self.ext_data_size_var,
                                            foreground=accent, font=val_font)
-        self.data_size_label2.pack(pady=5)
+        self.data_size_label2.pack(pady=3)
+
+        ttk.Separator(parent, orient='horizontal').pack(fill='x', pady=10)
+
+        ttk.Label(parent, text="Ext HDD2 (Backup):", font=title_font).pack()
+
+        self.data_size_label3 = ttk.Label(parent, textvariable=self.ext2_data_size_var,
+                                           foreground=accent, font=val_font)
+        self.data_size_label3.pack(pady=3)
 
     def _create_helper_diagram(self, parent, pmt_index, rotation_angle, tilt_angle,
                                cable_type, pos_map_angles):
@@ -987,15 +1082,16 @@ class UIManager:
         txt_fill = 'white' if self.is_dark_mode else 'black'
         C_X, C_Y, R = 150, 125, 82
 
-        fx = math.cos(math.radians(tilt_angle))
-        if abs(fx) < 0.12:
-            fx = 0.12 if fx >= 0 else -0.12
+        # TOP VIEW is always drawn as a true circle. (Older versions foreshortened
+        # the x-axis by cos(tilt) to hint at the tilt, but that just squashed the
+        # disc into an ellipse -- tilt is already fully shown in the SIDE VIEW.)
+        fx = 1.0
 
         def get_pos(angle_deg, radius):
             rad = math.radians(angle_deg)
             x = C_X + radius * math.cos(rad)
             y = C_Y - radius * math.sin(rad)
-            return C_X + (x - C_X) * fx, y
+            return x, y
 
         # ── Pin map offset ────────────────────────────────────────────────
         physical_cable_angle = 180 + rotation_angle
@@ -1082,12 +1178,21 @@ class UIManager:
                                    font=axis_lbl_font, fill="#e67700")
 
         # ── 9. DY1 / DY2 ──────────────────────────────────────────────────
+        # DY1 sits on the A (+Y) side, DY2 directly behind it (opposite side).
         dy_r = 15
-        dy1_x, dy1_y = get_pos(90  + pin_offset, dy_r)
-        dy2_x, dy2_y = get_pos(270 + pin_offset, dy_r)
+        dy1_ang = a_ang
+        dy2_ang = a_ang + 180
+        dy1_x, dy1_y = get_pos(dy1_ang, dy_r)
+        dy2_x, dy2_y = get_pos(dy2_ang, dy_r)
         canvas.create_oval(C_X - 2, C_Y - 2, C_X + 2, C_Y + 2, fill="gray", outline="")
-        canvas.create_text(dy1_x, dy1_y, text="DY1", font=("Helvetica", 9, "bold"), fill=txt_fill)
-        canvas.create_text(dy2_x, dy2_y, text="DY2", font=("Helvetica", 9, "bold"), fill=txt_fill)
+        sq = 7  # DY1: square
+        canvas.create_rectangle(dy1_x - sq, dy1_y - sq, dy1_x + sq, dy1_y + sq,
+                                outline=txt_fill, width=2)
+        rw, rh = 5, 9  # DY2: rectangle (narrower, taller)
+        canvas.create_rectangle(dy2_x - rw, dy2_y - rh, dy2_x + rw, dy2_y + rh,
+                                outline=txt_fill, width=2)
+        canvas.create_text(dy1_x, dy1_y - sq - 10, text="DY1", font=("Helvetica", 9, "bold"), fill=txt_fill)
+        canvas.create_text(dy2_x, dy2_y - rh - 10, text="DY2", font=("Helvetica", 9, "bold"), fill=txt_fill)
 
         canvas.create_text(C_X, 244, text="TOP VIEW", font=("Helvetica", 9, "bold"), fill="#888")
 
@@ -1566,11 +1671,13 @@ class UIManager:
         fmt_csv_radio.pack(anchor=tk.W)
         ######## updated 6.10 ^^ 
 
-        ttk.Label(frame, text="Run number (Produce & Analysis):").pack(anchor=tk.W, pady=(15, 0))
+        # Run number field is hidden from the UI (per operator request -- it's
+        # auto-managed via update_latest_run_number, so operators don't edit it
+        # by hand). Widgets are still CREATED (not packed) so run_number_var and
+        # set_run_number_status keep working and the field can be restored by
+        # re-adding the .pack() calls below.
         run_entry = ttk.Entry(frame, textvariable=self.run_number_var)
-        run_entry.pack(fill=tk.X)
         self.run_num_status_label = ttk.Label(frame, text="", foreground="gray", font=("Helvetica", 8))
-        self.run_num_status_label.pack(anchor=tk.W, pady=(2, 0))
 
 
     def set_run_number_status(self, message):
@@ -1650,7 +1757,7 @@ class UIManager:
         self.path_container.pack(fill=tk.X, pady=(0, 5))
 
         self.path_labels = {}
-        path_keys = ['BasePath', 'RawDataPath', 'ExternalPath'] #DaqProgramPath
+        path_keys = ['BasePath', 'RawDataPath', 'ExternalPath', 'ExternalPath2'] #DaqProgramPath
         #path_keys = [] #DaqProgramPath
 
         for key in path_keys:
@@ -1678,7 +1785,12 @@ class UIManager:
         self.path_container.bind("<Configure>", configure_wraplength)
 
     def update_data_size_display(self, size_str, is_external=False):
-        if is_external:
+        # `is_external` keeps its original bool meaning (False=local, True=Ext HDD1);
+        # pass the string "ext2" for the second external disk so existing callers
+        # that only ever passed a bool keep working unchanged.
+        if is_external == "ext2":
+            self.ext2_data_size_var.set(size_str)
+        elif is_external:
             self.ext_data_size_var.set(size_str)
         else:
             self.data_size_var.set(size_str)
@@ -2133,10 +2245,46 @@ class UIManager:
         for code, color in self.ANSI_FG_BRIGHT.items():
             text.tag_config(f"ansib{code}", foreground=color)
 
+        # 입력창 — nested ssh 등 대화형 프롬프트(예: DPB Setup의 root 비밀번호)에
+        # 응답할 방법이 없던 문제를 해결. 기본은 비밀번호 마스킹(show="*"),
+        # 체크박스로 평문 표시 전환 가능 (일반 확인 프롬프트 y/n 등에 유용).
+        input_bar = tk.Frame(parent, bg="#2d2d2d")
+        input_bar.pack(fill=tk.X)
+        tk.Label(input_bar, text="⌨ Input:", font=(mono, 10), bg="#2d2d2d", fg="#808080",
+                 padx=10).pack(side=tk.LEFT)
+        input_var = tk.StringVar()
+        input_entry = tk.Entry(input_bar, textvariable=input_var, show="*",
+                               bg="#1e1e1e", fg="#d4d4d4", insertbackground="#d4d4d4",
+                               relief="flat", font=(mono, 11))
+        input_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4), pady=6)
+
+        def _send(event=None, s=slot, var=input_var):
+            text_to_send = var.get()
+            if not text_to_send:
+                return
+            if self.controller.send_console_input(s, text_to_send):
+                var.set("")
+            else:
+                messagebox.showwarning("No running job",
+                                       "Nothing is currently running in this console to send input to.")
+        input_entry.bind("<Return>", _send)
+
+        show_plain = tk.BooleanVar(value=False)
+        def _toggle_mask(entry=input_entry, var=show_plain):
+            entry.config(show="" if var.get() else "*")
+        tk.Checkbutton(input_bar, text="show", variable=show_plain, command=_toggle_mask,
+                       bg="#2d2d2d", fg="#d4d4d4", selectcolor="#2d2d2d",
+                       activebackground="#2d2d2d", activeforeground="white",
+                       relief="flat").pack(side=tk.LEFT, padx=4)
+        tk.Button(input_bar, text="Send ⏎", command=_send,
+                  bg="#2d5a27", fg="white", relief="flat", padx=10,
+                  activebackground="#3a7a34").pack(side=tk.LEFT, padx=(0, 10), pady=4)
+
         self.console_panes[slot] = {
             "frame": parent, "text": text,
             "status_var": status_var, "status_lbl": status_lbl,
             "autoscroll": autoscroll, "term_btn": term_btn,
+            "input_var": input_var, "input_entry": input_entry,
             "ansi_tag": None, "ansi_bold": False, "ansi_fg": None}
 
     def _pick_mono_font(self):
@@ -2332,6 +2480,7 @@ class UIManager:
     }
     _SLOT_LABELS = {
         "daq":        "DAQ Stream",
+        "hk":         "HK Digitizer",
         "analysis":   "Rate Scan",
         "contour":    "Contour",
         "produce_1":  "Produce 1",
@@ -2343,12 +2492,21 @@ class UIManager:
         "contour_1":  "Contour 1",
         "contour_2":  "Contour 2",
         "contour_3":  "Contour 3",
+        "uniformity_1": "Uniformity 1",
+        "uniformity_2": "Uniformity 2",
+        "uniformity_3": "Uniformity 3",
+        "overlay":    "Overlay",
     }
 
-    # Produce / Analysis / Contour each run in parallel across these slots (max 3 concurrent).
-    PRODUCE_SLOTS  = ("produce_1", "produce_2", "produce_3")
-    ANALYSIS_SLOTS = ("analysis_1", "analysis_2", "analysis_3")
-    CONTOUR_SLOTS  = ("contour_1", "contour_2", "contour_3")
+    # Produce / Analysis / Contour / Uniformity each run in parallel across these
+    # slots (max 3 concurrent per kind). Overlay stays single-slot (see
+    # App._run_job_in_console callers) because its dataset list is written to a
+    # single shared config file (Data/UNIFORMITY/overlay_tags.txt) that the ROOT
+    # macro reads by a fixed relative path — concurrent runs would race on it.
+    PRODUCE_SLOTS     = ("produce_1", "produce_2", "produce_3")
+    ANALYSIS_SLOTS    = ("analysis_1", "analysis_2", "analysis_3")
+    CONTOUR_SLOTS     = ("contour_1", "contour_2", "contour_3")
+    UNIFORMITY_SLOTS  = ("uniformity_1", "uniformity_2", "uniformity_3")
 
     def console_set_status(self, text, slot="analysis", state="idle"):
         """Update status label color + sub-tab label + outer tab indicator."""
@@ -2453,10 +2611,10 @@ class UIManager:
                 f"Mode: {kv.get('RunMode','?')}\n"
                 f"Shifter: {kv.get('Shifter','?')}  /  Expert: {kv.get('Expert','?')}\n"
                 f"Laser: {kv.get('Laser_mA','?')} mA @ {kv.get('Wavelength','?')} nm\n"
-                f"CH0 (mon): {kv.get('SN1','?')}  HV {kv.get('HV1','?')}\n"
-                f"CH1: {kv.get('SN2','?')}  HV {kv.get('HV2','?')}\n"
+                f"Mon.: {kv.get('SN1','?')}  HV {kv.get('HV1','?')}\n"
+                f"Rot#1: {kv.get('SN2','?')}  HV {kv.get('HV2','?')}\n"
                 f"     Rot {kv.get('Rot2','?')}°, Tilt {kv.get('Tilt2','?')}°\n"
-                f"CH2: {kv.get('SN3','?')}  HV {kv.get('HV3','?')}\n"
+                f"Rot#2: {kv.get('SN3','?')}  HV {kv.get('HV3','?')}\n"
                 f"     Rot {kv.get('Rot3','?')}°, Tilt {kv.get('Tilt3','?')}°\n"
                 f"Note: {kv.get('NOTE','')}"
             )
@@ -2744,15 +2902,32 @@ class UIManager:
                 "temp": tk.StringVar(value="--.- °C"),
                 "bias_live": tk.StringVar(value="---.- mA"),
                 "pulse_live": tk.StringVar(value="---.- mA"),
+                "pulse_width_live": tk.StringVar(value="-- ps"),
+                "pd_current_live": tk.StringVar(value="--"),
+                "pulse_width_var": tk.StringVar(value=""),
+                "pulse_width_default_ps": None,
                 "bias_set": tk.DoubleVar(value=0.0),
                 "pulse_set": tk.DoubleVar(value=default_pulse),
                 "trigger_mode": tk.StringVar(value="External"),
                 "freq_hz": tk.StringVar(value="10000000"),
                 "bias_current": tk.StringVar(value="0.00 mA"),
-                "check_interval": tk.StringVar(value="1s")
             }
             self.laser_tabs_data[wl] = vars_dict
             self._build_individual_laser_ui(tab_frame, wl, vars_dict)
+
+    def _fig_dpi(self, base=100):
+        """A matplotlib canvas renders at figsize*dpi*<tk scaling> pixels, so
+        the app-wide text scaling (View -> Text Size, applied as Tk 'scaling')
+        inflates every embedded graph and pushes it past its pane -- the
+        Laser/UPS graphs getting clipped on the right. Dividing the dpi by the
+        same scale keeps each graph's pixel footprint constant regardless of
+        the chosen text size (the app text stays enlarged; only the graphs are
+        held to their intended size)."""
+        try:
+            scale = float(self.controller.ui_prefs.get("font_scale", 1.0))
+            return base / scale if scale > 0 else base
+        except Exception:
+            return base
 
     def _build_individual_laser_ui(self, tab_parent, wl, vars_dict):
         # [NEW] 1. 탭 최상단: 개별 장비 연결 제어바 생성
@@ -2766,21 +2941,16 @@ class UIManager:
         status_lbl.pack(side=tk.LEFT, padx=(10, 20))
         vars_dict["conn_label_obj"] = status_lbl # 색상 변경을 위해 객체 저장
 
-        # 제어 버튼들 (main.py의 새 함수들과 연결)
+        # 제어 버튼들 (main.py의 새 함수들과 연결). Reverted to ttk for safety
+        # (kept consistent with the rest of the ttk laser tab).
         ttk.Button(conn_frame, text="🔌 Connect", width=12,
                    command=lambda: self.controller.connect_single_laser(wl)).pack(side=tk.LEFT, padx=2)
-        
         ttk.Button(conn_frame, text="❌ Disconnect", width=12,
                    command=lambda: self.controller.disconnect_single_laser(wl)).pack(side=tk.LEFT, padx=2)
-        
-        # 구분선
         ttk.Separator(conn_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=10, pady=2)
-
-        # 새로고침 및 히스토리 버튼
         ttk.Button(conn_frame, text="Refresh 🔄", width=10,
                    command=lambda: self.controller.manual_refresh_laser(wl)).pack(side=tk.LEFT, padx=2)
-
-        ttk.Button(conn_frame, text="Load History 📂", 
+        ttk.Button(conn_frame, text="Load History 📂",
                    command=lambda: self.controller.load_historical_laser_data(wl)).pack(side=tk.RIGHT, padx=5)
 
 
@@ -2833,7 +3003,7 @@ class UIManager:
         hist_tab = ttk.Frame(left_notebook)
         left_notebook.add(hist_tab, text=" Historical Plot ")
 
-        fig_h, ax_h = plt.subplots(figsize=(4, 2.5), dpi=80)
+        fig_h, ax_h = plt.subplots(figsize=(4, 2.5), dpi=self._fig_dpi(80))
         canvas_h = FigureCanvasTkAgg(fig_h, master=hist_tab)
         canvas_h.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         
@@ -2852,7 +3022,10 @@ class UIManager:
         realtime_container = ttk.LabelFrame(right_pane, text=f"Real-time Monitoring ({wl})", padding=5)
         realtime_container.pack(fill=tk.BOTH, expand=True, pady=5)
 
-        fig_live, (ax_temp, ax_curr) = plt.subplots(2, 1, sharex=True, figsize=(6, 6), dpi=100)
+        # 3 rows: Temp, Bias/Pulse SETPOINTS (echoed back, not measured), and
+        # PD monitor current -- the only one of the three that's an actual
+        # measurement, so it's the only one that can show real laser drift.
+        fig_live, (ax_temp, ax_curr, ax_pd) = plt.subplots(3, 1, sharex=True, figsize=(6, 8), dpi=self._fig_dpi(100))
         fig_live.tight_layout(pad=3.0)
 
         canvas_live = FigureCanvasTkAgg(fig_live, master=realtime_container)
@@ -2860,15 +3033,16 @@ class UIManager:
         live_toolbar.update()
         live_toolbar.pack(side=tk.TOP, fill=tk.X)
         canvas_live.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        
+
         vars_dict["fig"] = fig_live
         vars_dict["ax_temp"] = ax_temp
         vars_dict["ax_curr"] = ax_curr
+        vars_dict["ax_pd"] = ax_pd
         vars_dict["canvas"] = canvas_live
 
     def _build_historical_plot_ui(self, parent):
         """삭제되었던 히스토리 그래프 영역 복구"""
-        self.fig_hist, self.ax_hist = plt.subplots(figsize=(10, 5), dpi=100)
+        self.fig_hist, self.ax_hist = plt.subplots(figsize=(10, 5), dpi=self._fig_dpi(100))
         self.canvas_hist = FigureCanvasTkAgg(self.fig_hist, master=parent)
         self.hist_toolbar = NavigationToolbar2Tk(self.canvas_hist, parent)
         self.hist_toolbar.update()
@@ -2892,48 +3066,189 @@ class UIManager:
         # 1. 기존 레이저 버튼 제어 (state는 'normal' 또는 'disabled')
         if hasattr(self, 'laser_tabs_data'):
             for wl, vars_dict in self.laser_tabs_data.items():
-                if "ld_on_btn" in vars_dict: vars_dict["ld_on_btn"].config(state=state)
-                if "ld_off_btn" in vars_dict: vars_dict["ld_off_btn"].config(state=state)
-                if "tec_on_btn" in vars_dict: vars_dict["tec_on_btn"].config(state=state)
-                if "tec_off_btn" in vars_dict: vars_dict["tec_off_btn"].config(state=state)
-                if "curr_apply_btn_obj" in vars_dict: vars_dict["curr_apply_btn_obj"].config(state=state)
+                # .configure (not .config) so this works for both ttk.Button and
+                # customtkinter CTkButton. state is "normal"/"disabled".
+                if "ld_on_btn" in vars_dict: vars_dict["ld_on_btn"].configure(state=state)
+                if "ld_off_btn" in vars_dict: vars_dict["ld_off_btn"].configure(state=state)
+                if "tec_on_btn" in vars_dict: vars_dict["tec_on_btn"].configure(state=state)
+                if "tec_off_btn" in vars_dict: vars_dict["tec_off_btn"].configure(state=state)
+                if "curr_apply_btn_obj" in vars_dict: vars_dict["curr_apply_btn_obj"].configure(state=state)
 
         is_unlocked = (state == tk.NORMAL)
         if hasattr(self.controller, 'auto_ui'):
             self.controller.auto_ui.set_buttons_state(is_unlocked)
 
+    def _flash_click(self, btn, ms=180):
+        """Brief native 'pressed' visual on a ttk button so a click is never
+        ambiguous while the real hardware reaction (LD/TEC has a noticeable
+        delay before it actually confirms) catches up. Doesn't touch
+        enabled/disabled state, just a quick native pressed-look flash."""
+        try:
+            btn.state(['pressed'])
+            btn.after(ms, lambda: btn.state(['!pressed']))
+        except (tk.TclError, AttributeError):
+            # CTkButton has no ttk .state() -- it has its own press/hover
+            # visual, so just skip the manual flash for it.
+            pass
+
     def _create_laser_settings_frames_multi(self, parent, wl, vars_dict):
-        """특정 파장 탭 전용 제어 프레임 생성 (초기 상태: DISABLED)"""
-        pwr_frame = ttk.LabelFrame(parent, text=f"Power Control ({wl})", padding=10)
-        pwr_frame.pack(fill=tk.X, pady=5)
-        
-        vars_dict["ld_on_btn"] = ttk.Button(pwr_frame, text="LD ON", state=tk.DISABLED,
-                                            command=lambda: self.controller.set_laser_ld_safe(wl, True))
-        vars_dict["ld_on_btn"].pack(side=tk.LEFT, padx=5)
+        """특정 파장 탭 전용 제어 프레임 생성 (초기 상태: DISABLED).
+        REVERTED to ttk for safety: these laser buttons are reconfigured via
+        the blocked-on-CTk `.config()` (bg/fg recolor, state) in scattered
+        places -- refresh_ui_state, set_laser_controls_state, and LD/TEC
+        status handlers -- so a CTkButton here crashes the app. Kept ttk; the
+        CTk version below is left unreachable for reference only."""
+        return self._create_laser_settings_frames_multi_legacy(parent, wl, vars_dict)
+        if not CTK_AVAILABLE:  # noqa: unreachable -- retained for reference
+            return self._create_laser_settings_frames_multi_legacy(parent, wl, vars_dict)
 
-        vars_dict["ld_off_btn"] = ttk.Button(pwr_frame, text="LD OFF", state=tk.DISABLED,
-                                             command=lambda: self.controller.set_laser_ld_safe(wl, False))
+        pwr_frame = ctk.CTkFrame(parent)
+        pwr_frame.pack(fill=tk.X, pady=5, padx=2)
+        ctk.CTkLabel(pwr_frame, text=f"Power Control ({wl})",
+                     font=ctk.CTkFont(size=13, weight="bold")).pack(anchor="w", padx=10, pady=(8, 4))
+        pwr_row = ctk.CTkFrame(pwr_frame, fg_color="transparent")
+        pwr_row.pack(fill=tk.X, padx=8, pady=(0, 8))
+
+        vars_dict["ld_on_btn"] = ctk.CTkButton(pwr_row, text="LD ON", width=80, state="disabled",
+            fg_color="#2e9e4f", hover_color="#268043",
+            command=lambda: (self._flash_click(vars_dict["ld_on_btn"]),
+                             self.controller.set_laser_ld_safe(wl, True)))
+        vars_dict["ld_on_btn"].pack(side=tk.LEFT, padx=(0, 5))
+        vars_dict["ld_off_btn"] = ctk.CTkButton(pwr_row, text="LD OFF", width=80, state="disabled",
+            fg_color="#6c757d", hover_color="#5a6268",
+            command=lambda: (self._flash_click(vars_dict["ld_off_btn"]),
+                             self.controller.set_laser_ld_safe(wl, False)))
         vars_dict["ld_off_btn"].pack(side=tk.LEFT, padx=5)
-        
-        ttk.Separator(pwr_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, padx=10, fill=tk.Y)
-        
-        vars_dict["tec_on_btn"] = ttk.Button(pwr_frame, text="TEC ON", state=tk.DISABLED,
-                                             command=lambda: self.controller.set_laser_tec_multi(wl, True))
-        vars_dict["tec_on_btn"].pack(side=tk.LEFT, padx=5)
-
-        vars_dict["tec_off_btn"] = ttk.Button(pwr_frame, text="TEC OFF", state=tk.DISABLED,
-                                              command=lambda: self.controller.set_laser_tec_multi(wl, False))
+        vars_dict["tec_on_btn"] = ctk.CTkButton(pwr_row, text="TEC ON", width=80, state="disabled",
+            fg_color="#2f86c9", hover_color="#2670ab",
+            command=lambda: (self._flash_click(vars_dict["tec_on_btn"]),
+                             self.controller.set_laser_tec_multi(wl, True)))
+        vars_dict["tec_on_btn"].pack(side=tk.LEFT, padx=(14, 5))
+        vars_dict["tec_off_btn"] = ctk.CTkButton(pwr_row, text="TEC OFF", width=80, state="disabled",
+            fg_color="#6c757d", hover_color="#5a6268",
+            command=lambda: (self._flash_click(vars_dict["tec_off_btn"]),
+                             self.controller.set_laser_tec_multi(wl, False)))
         vars_dict["tec_off_btn"].pack(side=tk.LEFT, padx=5)
 
-        curr_frame = ttk.LabelFrame(parent, text="Current Settings (mA)", padding=10)
-        curr_frame.pack(fill=tk.X, pady=5)
-        
+        curr_frame = ctk.CTkFrame(parent)
+        curr_frame.pack(fill=tk.X, pady=5, padx=2)
+        ctk.CTkLabel(curr_frame, text="Current Settings (mA)",
+                     font=ctk.CTkFont(size=13, weight="bold")).pack(anchor="w", padx=10, pady=(8, 4))
         self._create_laser_slider(curr_frame, "Bias:", vars_dict["bias_set"])
         self._create_laser_slider(curr_frame, "Pulse:", vars_dict["pulse_set"])
-        
+        vars_dict["curr_apply_btn_obj"] = ctk.CTkButton(curr_frame, text="Apply Currents", state="disabled",
+            command=lambda: self.controller.apply_laser_currents_multi(wl))
+        vars_dict["curr_apply_btn_obj"].pack(fill=tk.X, padx=8, pady=(6, 10))
+
+    def _create_laser_settings_frames_multi_legacy(self, parent, wl, vars_dict):
+        pwr_frame = ttk.LabelFrame(parent, text=f"Power Control ({wl})", padding=10)
+        pwr_frame.pack(fill=tk.X, pady=5)
+        vars_dict["ld_on_btn"] = ttk.Button(pwr_frame, text="LD ON", state=tk.DISABLED,
+                                            command=lambda: (self._flash_click(vars_dict["ld_on_btn"]),
+                                                              self.controller.set_laser_ld_safe(wl, True)))
+        vars_dict["ld_on_btn"].pack(side=tk.LEFT, padx=5)
+        vars_dict["ld_off_btn"] = ttk.Button(pwr_frame, text="LD OFF", state=tk.DISABLED,
+                                             command=lambda: (self._flash_click(vars_dict["ld_off_btn"]),
+                                                               self.controller.set_laser_ld_safe(wl, False)))
+        vars_dict["ld_off_btn"].pack(side=tk.LEFT, padx=5)
+        ttk.Separator(pwr_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, padx=10, fill=tk.Y)
+        vars_dict["tec_on_btn"] = ttk.Button(pwr_frame, text="TEC ON", state=tk.DISABLED,
+                                             command=lambda: (self._flash_click(vars_dict["tec_on_btn"]),
+                                                               self.controller.set_laser_tec_multi(wl, True)))
+        vars_dict["tec_on_btn"].pack(side=tk.LEFT, padx=5)
+        vars_dict["tec_off_btn"] = ttk.Button(pwr_frame, text="TEC OFF", state=tk.DISABLED,
+                                              command=lambda: (self._flash_click(vars_dict["tec_off_btn"]),
+                                                                self.controller.set_laser_tec_multi(wl, False)))
+        vars_dict["tec_off_btn"].pack(side=tk.LEFT, padx=5)
+        curr_frame = ttk.LabelFrame(parent, text="Current Settings (mA)", padding=10)
+        curr_frame.pack(fill=tk.X, pady=5)
+        self._create_laser_entry_row(curr_frame, "Bias:", vars_dict["bias_set"])
+        self._create_laser_entry_row(curr_frame, "Pulse:", vars_dict["pulse_set"])
         vars_dict["curr_apply_btn_obj"] = ttk.Button(curr_frame, text="Apply Currents", state=tk.DISABLED,
                                                     command=lambda: self.controller.apply_laser_currents_multi(wl))
         vars_dict["curr_apply_btn_obj"].pack(fill=tk.X, pady=10)
+
+        self._create_pulse_width_control(parent, wl, vars_dict)
+
+    # Valid dat range per LD_board_library_manual.pdf's PulseWidth(): dat is
+    # 10-1023 (UShort), actual width = dat * 10 ps.
+    PULSE_WIDTH_MIN_PS = 100
+    PULSE_WIDTH_MAX_PS = 10230
+
+    def _create_pulse_width_control(self, parent, wl, vars_dict):
+        """Pulse Width display/edit -- unlike Bias/Pulse current above, this
+        changes the actual light pulse time profile, not just brightness.
+        For a regular Shifter this is READ-ONLY, always showing whatever the
+        laser is actually running (pulse_width_default_ps, read once at
+        connect by laser_manager.py's status loop -- never a hardcoded
+        guess). Editing requires the same Admin Unlock password prompt used
+        elsewhere (Danger Zone -> Params, config_window.py's protected
+        fields) -- a plain checkbox would let any Shifter "just try it".
+        'Default' always available: reverts the entry to the known-good
+        running value, whether or not the panel is unlocked."""
+        pw_frame = ttk.LabelFrame(parent, text="Pulse Width (ps)", padding=10)
+        pw_frame.pack(fill=tk.X, pady=5)
+
+        row = ttk.Frame(pw_frame); row.pack(fill=tk.X, pady=2)
+        entry = ttk.Entry(row, textvariable=vars_dict["pulse_width_var"], width=10, state="readonly")
+        entry.pack(side=tk.LEFT, padx=(0, 10))
+        vars_dict["pulse_width_entry_obj"] = entry
+
+        unlock_btn = ttk.Button(row, text="🔒 Admin Unlock")
+        unlock_btn.pack(side=tk.LEFT, padx=(0, 10))
+
+        def relock():
+            entry.config(state="readonly")
+            unlock_btn.config(text="🔒 Admin Unlock", state="normal")
+
+        def do_unlock():
+            from managers.control_access import ADMIN_PASSWORD
+            pwd = simpledialog.askstring("Admin Unlock", "Enter Admin Password:", show='*', parent=parent)
+            if pwd is None:
+                return
+            if pwd != ADMIN_PASSWORD:
+                messagebox.showerror("Admin Unlock", "Incorrect password.")
+                return
+            entry.config(state="normal")
+            unlock_btn.config(text="🔓 Unlocked", state="disabled")
+
+        unlock_btn.config(command=do_unlock)
+
+        def restore_default():
+            # Always available (locked or not) -- reverting to the known-good
+            # running value is never dangerous, unlike setting a new one.
+            default_ps = vars_dict.get("pulse_width_default_ps")
+            if default_ps is not None:
+                vars_dict["pulse_width_var"].set(str(default_ps))
+            else:
+                messagebox.showinfo("Pulse Width", f"{wl}: original value not read yet -- reconnect or wait for the next status poll.")
+        ttk.Button(row, text="Default", command=restore_default).pack(side=tk.LEFT, padx=(0, 10))
+
+        def apply_pulse_width():
+            raw = vars_dict["pulse_width_var"].get().strip()
+            try:
+                new_val = int(raw)
+            except ValueError:
+                messagebox.showerror("Pulse Width", f"'{raw}' is not a whole number of picoseconds.")
+                return
+            if not (self.PULSE_WIDTH_MIN_PS <= new_val <= self.PULSE_WIDTH_MAX_PS):
+                messagebox.showerror(
+                    "Pulse Width",
+                    f"{new_val} ps is out of the valid range "
+                    f"({self.PULSE_WIDTH_MIN_PS}-{self.PULSE_WIDTH_MAX_PS} ps).\n"
+                    "Enter a value in range so a real setting actually gets applied.")
+                return
+            default_ps = vars_dict.get("pulse_width_default_ps")
+            if not messagebox.askyesno(
+                    "Confirm Pulse Width Change",
+                    f"Change {wl} pulse width to {new_val} ps?\n\n"
+                    f"(currently running: {default_ps if default_ps is not None else 'unknown'} ps)\n\n"
+                    "This changes the actual light pulse, not just its brightness."):
+                return
+            self.controller.apply_laser_pulse_width_multi(wl)
+            relock()
+
+        ttk.Button(row, text="Apply", command=apply_pulse_width).pack(side=tk.LEFT)
 
     def _create_laser_live_labels_multi(self, parent, vars_dict):
         """특정 파장 탭의 실시간 상태 표시 라벨 생성"""
@@ -2944,17 +3259,25 @@ class UIManager:
             ("LD Status", "ld_status"),
             ("TEC Status", "tec_status"),
             ("Temperature", "temp"),
-            ("Bias Current", "bias_live"),
-            ("Pulse Current", "pulse_live"),
-            ("Check Int.", "check_interval")
+            ("Bias (set)", "bias_live"),
+            ("Pulse (set)", "pulse_live"),
+            ("Pulse Width", "pulse_width_live"),
+            # There is no separate "actual bias" / "actual pulse" reading --
+            # the photodiode measures the LD's TOTAL light output (bias +
+            # pulse combined), not each contribution individually. Bias/Pulse
+            # above are DAC setpoints echoed back (same value even with the
+            # LD off, so they can't show drift); PD Current is the one real
+            # optical-output MEASUREMENT (see laser_driver.py's pd_current).
+            ("PD (actual, combined) [mA]", "pd_current_live"),
         ]
 
         for label_text, var_key in items:
             row = ttk.Frame(status_grid)
             row.pack(fill=tk.X, pady=2)
-            
-            ttk.Label(row, text=f"{label_text}:", width=15, font=("Helvetica", 10, "bold")).pack(side=tk.LEFT)
-            
+
+            ttk.Label(row, text=f"{label_text}:", width=20, anchor="w",
+                      font=("Helvetica", 10, "bold")).pack(side=tk.LEFT)
+
             lbl = ttk.Label(row, textvariable=vars_dict[var_key], width=15, relief="groove")
             lbl.pack(side=tk.LEFT)
 
@@ -2964,320 +3287,432 @@ class UIManager:
                 vars_dict["tec_label_obj"] = lbl
 
     def _create_laser_slider(self, parent, label, var):
+        # ttk (reverted from CTk for safety; lives inside the ttk laser tab).
         frame = ttk.Frame(parent)
         frame.pack(fill=tk.X, pady=2)
         ttk.Label(frame, text=label, width=10).pack(side=tk.LEFT)
         ttk.Scale(frame, from_=0, to=200, variable=var, orient=tk.HORIZONTAL).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10)
         ttk.Entry(frame, textvariable=var, width=8).pack(side=tk.LEFT)
 
+    def _create_laser_entry_row(self, parent, label, var):
+        # Plain number entry, no slider -- a slider isn't precise enough for
+        # mA-level current setpoints and just adds a wide widget that's easy
+        # to bump by accident.
+        frame = ttk.Frame(parent)
+        frame.pack(fill=tk.X, pady=2)
+        ttk.Label(frame, text=label, width=10).pack(side=tk.LEFT)
+        ttk.Entry(frame, textvariable=var, width=10).pack(side=tk.LEFT, padx=10)
+
     # -----------------------------------------------------------
-    # [ Web Monitor ] 탭 관련 메서드
+    # [ Signal Lamp (PATLITE NE-USB) ] 탭 관련 메서드
     # -----------------------------------------------------------
 
-    def _on_admin_only_click(self, event):
-        """URL 입력창 클릭 시 관리자 권한 경고를 띄우고 클릭을 무효화함"""
-        messagebox.showwarning("Access Denied", "Only administrator can modify this URL.")
-        return "break" 
+    def _create_signal_lamp_tab(self, parent):
+        """Manual control panel for the PATLITE NE-USB beacon that's also
+        driven automatically by the laser interlock watchdog
+        (managers/laser_manager.py). Uses the SAME PatliteLamp instance
+        (self.controller.laser_mgr.patlite) rather than opening a second
+        handle -- the USB HID device can only be held open by one handle at
+        a time, so a second PatliteLamp() here would just fail to connect."""
+        from managers.patlite_lamp import LED_COLORS, LED_PATTERNS, BUZZER_PATTERNS
+
+        pad = ttk.Frame(parent, padding=15)
+        pad.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(pad, text="PATLITE NE-USB Signal Lamp", font=("Helvetica", 14, "bold")).pack(anchor="w")
+        ttk.Label(pad, text="Also auto-driven by the laser interlock watchdog (red = interlock tripped).",
+                  foreground="#666").pack(anchor="w", pady=(0, 15))
+
+        self.lamp_status_var = tk.StringVar(value="● Unknown")
+        status_row = ttk.Frame(pad); status_row.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(status_row, text="Status:", width=12).pack(side=tk.LEFT)
+        self.lamp_status_lbl = ttk.Label(status_row, textvariable=self.lamp_status_var,
+                                          font=("Helvetica", 11, "bold"))
+        self.lamp_status_lbl.pack(side=tk.LEFT)
+        ttk.Button(status_row, text="Check Connection", command=self._lamp_check_connection).pack(side=tk.LEFT, padx=15)
+
+        # --- Light ---
+        light_frame = ttk.LabelFrame(pad, text="Light", padding=10)
+        light_frame.pack(fill=tk.X, pady=6)
+
+        row1 = ttk.Frame(light_frame); row1.pack(fill=tk.X, pady=3)
+        ttk.Label(row1, text="Color:", width=12).pack(side=tk.LEFT)
+        self.lamp_color_var = tk.StringVar(value="Red")
+        ttk.Combobox(row1, textvariable=self.lamp_color_var, state="readonly",
+                     values=list(LED_COLORS.keys()), width=14).pack(side=tk.LEFT)
+
+        ttk.Label(row1, text="Pattern:", width=10).pack(side=tk.LEFT, padx=(20, 0))
+        self.lamp_pattern_var = tk.StringVar(value="Steady")
+        ttk.Combobox(row1, textvariable=self.lamp_pattern_var, state="readonly",
+                     values=list(LED_PATTERNS.keys()), width=14).pack(side=tk.LEFT)
+
+        # --- Buzzer ---
+        buz_frame = ttk.LabelFrame(pad, text="Buzzer", padding=10)
+        buz_frame.pack(fill=tk.X, pady=6)
+
+        row2 = ttk.Frame(buz_frame); row2.pack(fill=tk.X, pady=3)
+        ttk.Label(row2, text="Pattern:", width=12).pack(side=tk.LEFT)
+        self.lamp_buzzer_var = tk.StringVar(value="Off")
+        ttk.Combobox(row2, textvariable=self.lamp_buzzer_var, state="readonly",
+                     values=list(BUZZER_PATTERNS.keys()), width=20).pack(side=tk.LEFT)
+
+        row3 = ttk.Frame(buz_frame); row3.pack(fill=tk.X, pady=(8, 3))
+        ttk.Label(row3, text="Volume:", width=12).pack(side=tk.LEFT)
+        self.lamp_volume_var = tk.IntVar(value=5)
+        ttk.Scale(row3, from_=0, to=10, variable=self.lamp_volume_var, orient=tk.HORIZONTAL,
+                  length=180).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Label(row3, textvariable=self.lamp_volume_var, width=3).pack(side=tk.LEFT)
+
+        self.lamp_continuous_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(row3, text="Continuous (loop)", variable=self.lamp_continuous_var).pack(side=tk.LEFT, padx=(20, 0))
+
+        # --- Actions ---
+        act_frame = ttk.Frame(pad); act_frame.pack(fill=tk.X, pady=15)
+        ttk.Button(act_frame, text="Apply ▶", command=self._lamp_apply).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(act_frame, text="🚨 Test Alarm (instant)", command=self._lamp_test_alarm).pack(side=tk.LEFT, padx=8)
+        ttk.Button(act_frame, text="⏹ Off / Reset", command=self._lamp_off).pack(side=tk.LEFT, padx=8)
+
+        # --- Touch sensor (NE-ST/NE-WT variants only) ---
+        touch_frame = ttk.LabelFrame(pad, text="Touch Sensor (NE-ST-USB / NE-WT-USB only)", padding=10)
+        touch_frame.pack(fill=tk.X, pady=6)
+        self.lamp_touch_var = tk.StringVar(value="—")
+        ttk.Button(touch_frame, text="Read Touch State", command=self._lamp_read_touch).pack(side=tk.LEFT)
+        ttk.Label(touch_frame, textvariable=self.lamp_touch_var, font=("Helvetica", 11, "bold")).pack(side=tk.LEFT, padx=15)
+
+        self._lamp_check_connection()
+
+    def _lamp(self):
+        """The shared PatliteLamp instance (owned by LaserManager)."""
+        return getattr(getattr(self.controller, "laser_mgr", None), "patlite", None)
+
+    def _lamp_check_connection(self):
+        lamp = self._lamp()
+        if lamp is None:
+            self.lamp_status_var.set("● Not available")
+            self.lamp_status_lbl.config(foreground="#888")
+            return
+        ok = lamp.probe()
+        if ok:
+            self.lamp_status_var.set("● Connected")
+            self.lamp_status_lbl.config(foreground="#2d8a34")
+        else:
+            self.lamp_status_var.set("● Not connected")
+            self.lamp_status_lbl.config(foreground="#c0392b")
+
+    def _lamp_apply(self):
+        from managers.patlite_lamp import (LED_COLORS, LED_PATTERNS, BUZZER_PATTERNS,
+                                            BUZZER_COUNT_CONTINUOUS, BUZZER_COUNT_KEEP)
+        lamp = self._lamp()
+        if lamp is None:
+            messagebox.showwarning("Signal Lamp", "Lamp driver not available.")
+            return
+        color = LED_COLORS.get(self.lamp_color_var.get(), 0)
+        pattern = LED_PATTERNS.get(self.lamp_pattern_var.get(), 1)
+        buzzer = BUZZER_PATTERNS.get(self.lamp_buzzer_var.get(), 0)
+        count = BUZZER_COUNT_CONTINUOUS if self.lamp_continuous_var.get() else BUZZER_COUNT_KEEP
+        volume = int(self.lamp_volume_var.get())
+        ok = lamp.set_light(color, pattern, buzzer=buzzer, buzzer_count=count, volume=volume)
+        self._lamp_check_connection()
+        if not ok:
+            messagebox.showwarning("Signal Lamp", "Command failed — is the lamp connected?")
+
+    def _lamp_test_alarm(self):
+        """Fires the exact same steady-red/no-buzzer pattern the interlock
+        watchdog uses, so it can be visually verified without tripping a
+        real interlock."""
+        lamp = self._lamp()
+        if lamp is None:
+            messagebox.showwarning("Signal Lamp", "Lamp driver not available.")
+            return
+        ok = lamp.alarm_interlock()
+        self._lamp_check_connection()
+        if not ok:
+            messagebox.showwarning("Signal Lamp", "Command failed — is the lamp connected?")
+
+    def _lamp_off(self):
+        lamp = self._lamp()
+        if lamp is None:
+            return
+        lamp.reset()
+        self._lamp_check_connection()
+
+    def _lamp_read_touch(self):
+        lamp = self._lamp()
+        if lamp is None:
+            self.lamp_touch_var.set("—")
+            return
+        state = lamp.get_touch_state()
+        self.lamp_touch_var.set({1: "ON", 0: "OFF", -1: "read failed / no sensor"}.get(state, "—"))
+
+    # -----------------------------------------------------------
+    # [ B-field Monitoring ] 탭 관련 메서드
+    # -----------------------------------------------------------
 
     def _create_web_monitor_tab(self, parent_notebook):
-        """B-field Monitoring 탭 (스크롤 줌 + 시간 표시 위치 변경)"""
-        tab = ttk.Frame(parent_notebook)
-        parent_notebook.add(tab, text=" B-field Monitoring ") 
+        """B-field Monitoring 탭.
 
-        # 1. 제어 패널
+        Used to run a headless Chrome (Selenium) that screenshotted the
+        external precal_monitoring website over VPN every 60s -- heavy
+        (spins up a browser, re-downloads chromedriver), and useless the
+        moment the VPN drops. Now plots directly from the local
+        log_bfield_*.csv (kept in sync by the bfield-log-sync.timer /
+        ~/scripts/sync_bfield_log.sh systemd unit, pulled from sukap02).
+        Only the sync needs the VPN; viewing the plot never does."""
+        tab = ttk.Frame(parent_notebook)
+        parent_notebook.add(tab, text=" B-field Monitoring ")
+
         ctrl_frame = ttk.Frame(tab, padding=5)
         ctrl_frame.pack(fill=tk.X)
 
-        ttk.Label(ctrl_frame, text="Target URL:").pack(side=tk.LEFT, padx=5)
-        fixed_url = "https://www-sk1.icrr.u-tokyo.ac.jp/~yufei/precal_monitoring/"
-        self.web_url_var = tk.StringVar(value=fixed_url) 
-        
-        self.url_entry = ttk.Entry(ctrl_frame, textvariable=self.web_url_var, width=50)
-        self.url_entry.pack(side=tk.LEFT, padx=5)
-        self.url_entry.config(state="readonly", foreground="gray")
-        self.url_entry.bind("<Button-1>", self._on_admin_only_click)
+        ttk.Label(ctrl_frame, text="Range:").pack(side=tk.LEFT, padx=5)
+        self.bfield_range_var = tk.StringVar(value="Last 24h")
+        range_combo = ttk.Combobox(ctrl_frame, textvariable=self.bfield_range_var, state="readonly",
+                                    values=["Last 6h", "Last 24h", "Last 3 days", "Last 7 days", "All"], width=12)
+        range_combo.pack(side=tk.LEFT, padx=5)
+        range_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_bfield_plot())
 
-        # 줌 컨트롤
-        ttk.Label(ctrl_frame, text="Zoom:").pack(side=tk.LEFT, padx=(10, 2))
-        self.web_zoom_var = tk.DoubleVar(value=1.0) 
-        
-        self.zoom_scale = ttk.Scale(ctrl_frame, from_=0.5, to=2.5, 
-                                    variable=self.web_zoom_var, orient=tk.HORIZONTAL, length=150)
-        self.zoom_scale.pack(side=tk.LEFT, padx=2)
-        
-        self.zoom_label = ttk.Label(ctrl_frame, text="100%", width=5)
-        self.zoom_label.pack(side=tk.LEFT, padx=2)
-        
-        self.zoom_scale.configure(command=lambda v: self.zoom_label.config(text=f"{float(v)*100:.0f}%"))
-        self.zoom_scale.bind("<ButtonRelease-1>", self._on_zoom_release)
-        
-        ttk.Button(ctrl_frame, text="↺ 100%", width=8, command=self._reset_zoom).pack(side=tk.LEFT, padx=2)
+        self.bfield_auto_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(ctrl_frame, text="Auto-refresh (60s)", variable=self.bfield_auto_var).pack(side=tk.LEFT, padx=10)
 
-        self.web_btn = ttk.Button(ctrl_frame, text="Start Monitor", command=self.toggle_web_monitoring)
-        self.web_btn.pack(side=tk.LEFT, padx=10)
+        ttk.Button(ctrl_frame, text="Refresh \U0001f504", command=self._refresh_bfield_plot).pack(side=tk.LEFT, padx=2)
 
-        self.refresh_btn = ttk.Button(ctrl_frame, text="Refresh 🔄", command=self.manual_refresh_web)
-        self.refresh_btn.pack(side=tk.LEFT, padx=2)
+        ttk.Label(ctrl_frame, text="Jump to:").pack(side=tk.LEFT, padx=(15, 3))
+        self.bfield_jump_var = tk.StringVar()
+        jump_entry = ttk.Entry(ctrl_frame, textvariable=self.bfield_jump_var, width=19)
+        jump_entry.pack(side=tk.LEFT)
+        jump_entry.insert(0, "YYYY-MM-DD HH:MM")
+        jump_entry.bind("<Return>", lambda e: self._jump_to_bfield_time())
+        ttk.Button(ctrl_frame, text="Go", width=4, command=self._jump_to_bfield_time).pack(side=tk.LEFT, padx=2)
 
-        self.web_time_label = ttk.Label(ctrl_frame, text="", font=("Helvetica", 14, "bold"), foreground="#007bff")
-        self.web_time_label.pack(side=tk.LEFT, padx=15)
+        self.bfield_status_label = ttk.Label(ctrl_frame, text="", font=("Helvetica", 11, "bold"), foreground="#007bff")
+        self.bfield_status_label.pack(side=tk.LEFT, padx=15)
 
-        # -------------------------------------------------------------
-        # Canvas 생성 (휠 이벤트 추가)
-        # -------------------------------------------------------------
-        self.canvas_frame = ttk.Frame(tab)
-        self.canvas_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
-        v_scroll = ttk.Scrollbar(self.canvas_frame, orient=tk.VERTICAL)
-        h_scroll = ttk.Scrollbar(self.canvas_frame, orient=tk.HORIZONTAL)
+        # Click-to-inspect readout (packed BEFORE plot_frame): Tk's pack()
+        # hands the remaining cavity to whichever sibling is packed first
+        # among side=BOTTOM claimants, so an expand=True widget packed earlier
+        # (plot_frame, below) would otherwise consume all the space and leave
+        # this label with nothing -- this is what made it invisible.
+        self.bfield_click_label = tk.Label(tab, text="Click anywhere on the plot to inspect that point.",
+                                            font=("Consolas", 10), justify=tk.LEFT, anchor="w",
+                                            bg="#f5f5f5", relief=tk.SUNKEN, padx=8, pady=4)
+        self.bfield_click_label.pack(fill=tk.X, side=tk.BOTTOM, padx=2, pady=(0, 2))
 
-        self.web_canvas = tk.Canvas(self.canvas_frame, bg="#e1e1e1",
-                                    yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
-        
-        v_scroll.config(command=self.web_canvas.yview)
-        h_scroll.config(command=self.web_canvas.xview)
-        
-        v_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        h_scroll.pack(side=tk.BOTTOM, fill=tk.X)
-        self.web_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        plot_frame = ttk.Frame(tab)
+        plot_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        self.web_canvas.bind("<ButtonPress-1>", self._on_canvas_click)
-        self.web_canvas.bind("<B1-Motion>", self._on_canvas_drag)
+        self.bfield_fig = plt.Figure(figsize=(11, 9), dpi=100)
+        self.bfield_canvas = FigureCanvasTkAgg(self.bfield_fig, master=plot_frame)
+        self.bfield_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        toolbar = NavigationToolbar2Tk(self.bfield_canvas, plot_frame)
+        toolbar.update()
+        self.bfield_canvas.mpl_connect("button_press_event", self._on_bfield_click)
 
-        self.web_canvas.bind("<Button-4>", self._on_canvas_scroll_zoom) # Linux Scroll UP
-        self.web_canvas.bind("<Button-5>", self._on_canvas_scroll_zoom) # Linux Scroll DOWN
-        self.web_canvas.bind("<MouseWheel>", self._on_canvas_scroll_zoom) # Windows Scroll
+        self._bfield_df_cache = None
+        self._bfield_annotations = []
+        self._bfield_last_ts = None
+        self._refresh_bfield_plot()
+        self.master.after(60000, self._bfield_auto_refresh_loop)
 
-        w_center = 600
-        h_center = 350
-        self.canvas_text_id = self.web_canvas.create_text(
-            w_center, h_center, text="Click 'Start' to verify VPN & Monitor", font=("Helvetica", 14), fill="gray"
-        )
-        self.web_image_id = None 
+    def _bfield_auto_refresh_loop(self):
+        if getattr(self.controller, '_shutting_down', False) or not self.master.winfo_exists():
+            return
+        if self.bfield_auto_var.get():
+            self._refresh_bfield_plot()
+        self.master.after(60000, self._bfield_auto_refresh_loop)
 
-        self.is_monitoring = False
-        self.driver = None
-        self.monitor_w = 1280
-        self.monitor_h = 720
-        self.web_connection_status = False
-        self.force_refresh_flag = False
-
-    def _on_canvas_click(self, event):
-        self.web_canvas.scan_mark(event.x, event.y)
-
-    def _on_canvas_drag(self, event):
-        self.web_canvas.scan_dragto(event.x, event.y, gain=1)
-
-    def _on_zoom_release(self, event):
-        if self.is_monitoring:
-            self.force_refresh_flag = True
-            self.web_time_label.config(text="Zooming...")
-
-    def _on_canvas_scroll_zoom(self, event):
-        """마우스 휠로 줌 확대/축소 (0.1 단위)"""
-        current_zoom = self.web_zoom_var.get()
-        new_zoom = current_zoom
-
-        # Linux (Button-4: Up, Button-5: Down) / Windows (delta) 판별
-        if event.num == 4 or event.delta > 0:
-            new_zoom += 0.1 # 확대
-        elif event.num == 5 or event.delta < 0:
-            new_zoom -= 0.1 # 축소
-
-        # 범위 제한 (0.5배 ~ 2.5배)
-        new_zoom = max(0.5, min(2.5, new_zoom))
-
-        # 값이 변했으면 적용
-        if new_zoom != current_zoom:
-            self.web_zoom_var.set(new_zoom)
-            self.zoom_label.config(text=f"{new_zoom*100:.0f}%")
-
-            # 모니터링 중이라면 즉시 화면 갱신 요청
-            if self.is_monitoring:
-                self.force_refresh_flag = True
-                # 캔버스 중앙에 줌 상태 표시 (잠깐)
-                if self.canvas_text_id:
-                     self.web_canvas.itemconfig(self.canvas_text_id, text=f"Zoom: {new_zoom*100:.0f}%")
-
-    def _reset_zoom(self):
-        """줌을 100%로 초기화하고 즉시 갱신 (Canvas 호환 수정)"""
-        self.web_zoom_var.set(1.0)
-        self.zoom_label.config(text="100%")
-        
-        if self.is_monitoring:
-            self.force_refresh_flag = True
-            # [수정] 이미지가 있으면 굳이 텍스트로 안 바꿔도 됨 (화면 깜빡임 방지)
-            # 텍스트가 살아있는 경우에만 업데이트
-            if self.canvas_text_id and not self.web_image_id:
-                self.web_canvas.itemconfig(self.canvas_text_id, text="Resetting Zoom...")
-
-    def manual_refresh_web(self):
-        """사용자가 Refresh 버튼을 누르면 즉시 화면을 갱신합니다."""
-        if self.is_monitoring:
-            self.force_refresh_flag = True
-            self.web_time_label.config(text="Refreshing...", foreground="orange")
-        else:
-            messagebox.showinfo("Info", "Monitoring is not running.")
-
-    def toggle_web_monitoring(self):
-        """모니터링 시작/정지 (Canvas 호환 수정)"""
-        if not self.is_monitoring:
-            # [시작]
-            target_url = self.web_url_var.get()
-            
-            if not self._check_connection(target_url):
-                ans = messagebox.askyesno(
-                    "Connection Failed",
-                    "Unable to access the website. (VPN verification required)\n\n"
-                    "Would you like to run Cisco AnyConnect (VPN) now?"
-                )
-                if ans:
-                    self.controller.run_cisco()
-                return
-
-            self.is_monitoring = True
-            self.web_btn.config(text="Stop Monitor (Running)") 
-            
-            if self.canvas_text_id:
-                self.web_canvas.itemconfig(self.canvas_text_id, text="Initializing Browser...")
-            
-            threading.Thread(target=self._start_browser_loop, daemon=True).start()
-
-        else:
-            self.is_monitoring = False
-            self.web_btn.config(text="Start Monitor") 
-            
-            self.web_canvas.delete("all")
-            self.web_image_id = None
-            
-            w = self.web_canvas.winfo_width() / 2
-            h = self.web_canvas.winfo_height() / 2
-            self.canvas_text_id = self.web_canvas.create_text(
-                w, h, text="Monitoring Stopped", font=("Helvetica", 14), fill="gray"
-            )
-
-            if self.driver:
-                self.driver.quit()
-                self.driver = None
-
-    def _check_connection(self, url):
-        """해당 URL로 짧은 요청을 보내 VPN 연결 여부를 판단"""
+    def _load_bfield_csv(self):
+        """Reads whichever log_bfield_*.csv was most recently synced. "I1".."I4"
+        are the four compensation-coil currents (Amps); the X/Y/Z-Top/Z-Bottom
+        axis each channel corresponds to hasn't been confirmed against Quick
+        Setup's BField_X/Y/ZTop/ZBottom fields yet, so this plots the raw
+        channel names rather than guessing a mapping that could mislabel an
+        axis. Also derives |B| per magnetometer (M1..M4, mG) the same way
+        serve_data_monitoring.py's bfield_for() does -- sqrt(x^2+y^2+z^2)*1000,
+        with a probe treated as missing (not a fake zero) if any axis is N/A --
+        and passes T1..T6 (degC) through as-is."""
+        import glob
+        paths = glob.glob(os.path.join("/home/precalkor/ADC/ADC_test", "log_bfield_*.csv"))
+        if not paths:
+            return None
+        path = max(paths, key=os.path.getmtime)
         try:
-            requests.get(url, timeout=5) 
-            return True
-        except:
+            df = pd.read_csv(path)
+        except Exception as e:
+            self.controller._log(f"[WARNING] Could not read B-field log {path}: {e}")
+            return None
+        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+
+        def _num(series):
+            return pd.to_numeric(series.astype(str).str.replace("N/A", "", regex=False), errors="coerce")
+
+        for col in ["I1", "I2", "I3", "I4", "T1", "T2", "T3", "T4", "T5", "T6"]:
+            if col in df.columns:
+                df[col] = _num(df[col])
+
+        for n in (1, 2, 3, 4):
+            cols = [f"M{n}_X", f"M{n}_Y", f"M{n}_Z"]
+            if all(c in df.columns for c in cols):
+                x, y, z = (_num(df[c]) for c in cols)
+                df[f"B_M{n}_mG"] = (x**2 + y**2 + z**2) ** 0.5 * 1000.0
+
+        return df.dropna(subset=["timestamp"])
+
+    def _bfield_log_is_fresh(self, max_age_min=20):
+        """For the dashboard status LED: green means bfield-log-sync.timer is
+        actually pulling fresh samples, not that the coil is on/off."""
+        df = self._load_bfield_csv()
+        if df is None or df.empty:
             return False
+        age_min = (pd.Timestamp.now() - df["timestamp"].max()).total_seconds() / 60
+        return age_min < max_age_min
 
-    def _start_browser_loop(self):
-        """[Enhanced] 페이지를 새로고침하여 연결 상태를 확실히 체크"""
+    def _refresh_bfield_plot(self):
+        df = self._load_bfield_csv()
+        if df is None or df.empty:
+            self.bfield_status_label.config(text="No B-field log found -- check bfield-log-sync.timer", foreground="red")
+            return
+        self._bfield_df_cache = df
+
+        rng = self.bfield_range_var.get()
+        now = df["timestamp"].max()
+        window = {"Last 6h": pd.Timedelta(hours=6), "Last 24h": pd.Timedelta(hours=24),
+                  "Last 3 days": pd.Timedelta(days=3), "Last 7 days": pd.Timedelta(days=7)}.get(rng)
+        sub = df[df["timestamp"] >= now - window] if window else df
+
+        LBL, TICK, LEG = 13, 11, 10   # bigger axis-label / tick / legend fonts
+
+        self.bfield_fig.clear()
+        axes = self.bfield_fig.subplots(3, 1, sharex=True)
+        self._bfield_axes = axes
+
+        ax = axes[0]
+        for col in ["I1", "I2", "I3", "I4"]:
+            if col in sub.columns:
+                ax.plot(sub["timestamp"], sub[col], label=col, lw=1.3)
+        ax.set_ylabel("Coil current [A]", fontsize=LBL)
+        ax.legend(fontsize=LEG, loc="upper right", ncol=4)
+        ax.grid(alpha=0.3)
+        ax.tick_params(labelsize=TICK)
+
+        ax = axes[1]
+        for n in (1, 2, 3, 4):
+            col = f"B_M{n}_mG"
+            if col in sub.columns:
+                ax.plot(sub["timestamp"], sub[col], label=f"M{n}", lw=1.3)
+        ax.set_ylabel("|B| [mG]", fontsize=LBL)
+        ax.legend(fontsize=LEG, loc="upper right", ncol=4)
+        ax.grid(alpha=0.3)
+        ax.tick_params(labelsize=TICK)
+
+        ax = axes[2]
+        for col in ["T1", "T2", "T3", "T4", "T5", "T6"]:
+            if col in sub.columns:
+                ax.plot(sub["timestamp"], sub[col], label=col, lw=1.3)
+        ax.set_ylabel("Temperature [°C]", fontsize=LBL)
+        ax.set_xlabel("Time", fontsize=LBL)
+        ax.legend(fontsize=LEG, loc="upper right", ncol=6)
+        ax.grid(alpha=0.3)
+        ax.tick_params(labelsize=TICK)
+
+        self.bfield_fig.autofmt_xdate()
+        self.bfield_fig.tight_layout()
+
+        last_ts = df["timestamp"].max()
+        age_min = (pd.Timestamp.now() - last_ts).total_seconds() / 60
+        color = "#007bff" if age_min < 20 else "red"
+        self.bfield_status_label.config(text=f"Last sample: {last_ts} ({age_min:.0f} min ago)", foreground=color)
+
+        # Re-apply the last inspected point after a rebuild (fig.clear() above
+        # wiped it) -- otherwise the marker/bubble a user clicked would just
+        # vanish on the next 60s auto-refresh with no visible cause.
+        if getattr(self, "_bfield_last_ts", None) is not None:
+            self._show_bfield_point(self._bfield_last_ts, x_frac=0.5)
+        else:
+            self.bfield_canvas.draw()
+
+    def _on_bfield_click(self, event):
+        if event.xdata is None or self._bfield_df_cache is None:
+            return
+        clicked_time = mdates.num2date(event.xdata).replace(tzinfo=None)
+        axes = getattr(self, "_bfield_axes", [])
+        x_frac = 0.5
+        if axes:
+            xlo, xhi = axes[0].get_xlim()
+            if xhi > xlo:
+                x_frac = (event.xdata - xlo) / (xhi - xlo)
+        self._show_bfield_point(pd.Timestamp(clicked_time), x_frac=x_frac)
+
+    def _jump_to_bfield_time(self):
+        """"Jump to" entry: parses free-form date/time text and shows the
+        nearest sample, same as clicking that spot on the plot."""
+        text = self.bfield_jump_var.get().strip()
+        if not text or self._bfield_df_cache is None:
+            return
         try:
-            options = Options()
-            options.add_argument("--headless")
-            options.add_argument(f"--window-size={self.monitor_w},{self.monitor_h}")
-            options.add_argument("--disable-gpu")
-            options.add_argument("--no-sandbox")
-            
-            self.driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-            self.driver.get(self.web_url_var.get())
+            target = pd.Timestamp(text)
+        except Exception:
+            messagebox.showwarning("B-field", f"Could not parse '{text}'.\nTry: YYYY-MM-DD HH:MM")
+            return
+        self._show_bfield_point(target, x_frac=0.5)
 
-            while self.is_monitoring:
-                if not self.driver: break
-                
-                try:
-                    # 1. 크기 및 줌 설정
-                    current_w = self.web_canvas.winfo_width()
-                    current_h = self.web_canvas.winfo_height()
-                    if current_w > 100: self.monitor_w = current_w
-                    if current_h > 100: self.monitor_h = current_h
-                    
-                    zoom_factor = self.web_zoom_var.get()
-                    target_h = int(self.monitor_h * zoom_factor)
-                    
-                    self.driver.set_window_size(self.monitor_w, target_h)
-                    
-                    self.driver.refresh()
-                    
-                    self.driver.execute_script(f"document.body.style.zoom='{zoom_factor}'")
+    def _show_bfield_point(self, target_time, x_frac=0.5):
+        """Snaps to the sample nearest target_time and shows it three ways:
+        the full readout in bfield_click_label, a bold marker line on all 3
+        panels, and a per-panel speech-bubble annotation -- a lighter
+        alternative to a hover-tooltip library this project doesn't
+        otherwise depend on. Called from a plot click, the Jump-to box, and
+        automatically re-applied after every auto-refresh rebuild."""
+        df = self._bfield_df_cache
+        if df is None or df.empty:
+            return
+        idx = (df["timestamp"] - target_time).abs().idxmin()
+        row = df.loc[idx]
+        self._bfield_last_ts = row["timestamp"]
 
-                    png_data = self.driver.get_screenshot_as_png()
-                    pil_image = Image.open(io.BytesIO(png_data))
-                    
-                    self.web_connection_status = True
-                    self.master.after(0, lambda img=pil_image: self._update_web_image(img))
-                    
-                    current_time = time.strftime("%Y-%m-%d %H:%M:%S")
-                    self.master.after(0, lambda: self.web_time_label.config(text=f"Updated: {current_time} (interval = 60sec)", foreground="#007bff"))
-                    
-                    self.force_refresh_flag = False 
-                    
-                except Exception as e:
-                    print(f"Capture Error: {e}")
-                    self.web_connection_status = False
-                    self.master.after(0, self._show_error_on_canvas)
-                    self.master.after(0, lambda: self.web_time_label.config(text="Connection Lost", foreground="red"))
+        parts = [f"[{row['timestamp']}]"]
+        parts.append("I: " + " ".join(f"{c}={row[c]:.3f}A" for c in ["I1", "I2", "I3", "I4"] if c in row and pd.notna(row[c])))
+        parts.append("|B|: " + " ".join(f"M{n}={row[f'B_M{n}_mG']:.1f}mG" for n in (1, 2, 3, 4)
+                                         if f"B_M{n}_mG" in row and pd.notna(row[f"B_M{n}_mG"])))
+        parts.append("T: " + " ".join(f"{c}={row[c]:.2f}°C" for c in ["T1", "T2", "T3", "T4", "T5", "T6"]
+                                       if c in row and pd.notna(row[c])))
+        self.bfield_click_label.config(text="   ".join(parts))
 
-                for _ in range(60): 
-                    if not self.is_monitoring: break
-                    if self.force_refresh_flag: break 
-                    time.sleep(1)
+        axes = getattr(self, "_bfield_axes", [])
+        for ax in axes:
+            for ln in list(ax.lines):
+                if getattr(ln, "_bfield_marker", False):
+                    ln.remove()
+        for ann in getattr(self, "_bfield_annotations", []):
+            ann.remove()
+        self._bfield_annotations = []
 
-        except Exception as e:
-            print(f"Browser Init Error: {e}")
-            self.web_connection_status = False
-            self.is_monitoring = False
-            self.master.after(0, lambda: self.web_btn.config(text="Start Monitor"))
-        
-        finally:
-            self.web_connection_status = False
+        panel_texts = [
+            "\n".join(f"{c}={row[c]:.3f}A" for c in ["I1", "I2", "I3", "I4"] if c in row and pd.notna(row[c])),
+            "\n".join(f"M{n}={row[f'B_M{n}_mG']:.1f}mG" for n in (1, 2, 3, 4)
+                      if f"B_M{n}_mG" in row and pd.notna(row[f"B_M{n}_mG"])),
+            "\n".join(f"{c}={row[c]:.2f}°C" for c in ["T1", "T2", "T3", "T4", "T5", "T6"] if c in row and pd.notna(row[c])),
+        ]
+        # Flip the bubble to the left side of the line when the click is on
+        # the right half of the plot, so it doesn't run off the edge.
+        offset_x = -85 if x_frac > 0.6 else 12
 
+        for ax, text in zip(axes, panel_texts):
+            if not text:
+                continue
+            # Thick, high-contrast red marker -- the earlier thin gray dashed
+            # line was easy to lose against a busy multi-series plot.
+            marker = ax.axvline(row["timestamp"], color="red", ls="-", lw=1.6, alpha=0.85, zorder=5)
+            marker._bfield_marker = True
+            ann = ax.annotate(
+                text, xy=(row["timestamp"], 0.92), xycoords=("data", "axes fraction"),
+                xytext=(offset_x, 0), textcoords="offset points",
+                fontsize=9, family="monospace", va="top", zorder=10, clip_on=False,
+                bbox=dict(boxstyle="round,pad=0.4", fc="lightyellow", ec="red", lw=1.2, alpha=0.95),
+                arrowprops=dict(arrowstyle="-", color="red", lw=1.0),
+            )
+            self._bfield_annotations.append(ann)
 
-    def _show_error_on_canvas(self):
-        self.web_canvas.delete("all")
-        self.web_image_id = None
-        w = self.web_canvas.winfo_width() / 2
-        h = self.web_canvas.winfo_height() / 2
-        self.canvas_text_id = self.web_canvas.create_text(
-            w, h, text="Connection Lost\nRetrying...", font=("Helvetica", 14), fill="red", justify="center"
-        )
-
-    def _update_web_image(self, pil_image):
-        """메인 스레드: 캔버스에 이미지를 그리고 스크롤 영역을 갱신"""
-        try:
-            # 1. Tkinter 호환 이미지 생성
-            photo = ImageTk.PhotoImage(pil_image)
-            
-            # 2. 기존 이미지 삭제 및 새 이미지 생성
-            if self.web_image_id:
-                self.web_canvas.delete(self.web_image_id)
-                
-            # 3. 안내 문구 삭제 (첫 실행 시)
-            if self.canvas_text_id:
-                self.web_canvas.delete(self.canvas_text_id)
-                self.canvas_text_id = None
-
-            # 4. 이미지 그리기 (좌상단 0,0 기준)
-            self.web_image_id = self.web_canvas.create_image(0, 0, image=photo, anchor="nw")
-            
-            # 5. [핵심] 스크롤 영역(ScrollRegion)을 이미지 크기에 맞춤
-            # 이렇게 해야 드래그나 스크롤바가 끝까지 닿습니다.
-            self.web_canvas.config(scrollregion=self.web_canvas.bbox("all"))
-            
-            # 6. 이미지 참조 유지 (GC 방지)
-            self.web_canvas.image = photo 
-
-            # 시간 업데이트 (Canvas 위에 텍스트로 표시하려면 별도 create_text 필요)
-            # 여기서는 간단히 윈도우 타이틀이나 상태바 등으로 대체 가능하나,
-            # 깔끔하게 우측 하단에 시간을 띄워드리겠습니다.
-            self.web_canvas.delete("timestamp_tag")
-            current_time = time.strftime("%H:%M:%S")
-            w = pil_image.width
-            h = pil_image.height
-            # 우측 하단에 반투명 박스 느낌으로 시간 표시
-            self.web_canvas.create_text(w - 60, h - 20, text=f"Updated: {current_time}", 
-                                        fill="red", font=("Helvetica", 10, "bold"), tag="timestamp_tag")
-
-        except Exception as e:
-            print(f"Image Update Error: {e}") 
+        self.bfield_canvas.draw_idle()
 
     def _create_ups_monitoring_tab(self, parent):
         container = ttk.Frame(parent, padding=15)
@@ -3393,7 +3828,7 @@ class UIManager:
         graph_frame = ttk.LabelFrame(container, text=" UPS Real-time Trend ", padding=5)
         graph_frame.pack(fill=tk.BOTH, expand=True, pady=5)
 
-        self.fig_ups, self.axes_ups = plt.subplots(2, 2, figsize=(10, 8), dpi=100)
+        self.fig_ups, self.axes_ups = plt.subplots(2, 2, figsize=(10, 8), dpi=self._fig_dpi(100))
         self.ax_ups_watt = self.axes_ups[0, 0] # 좌상: 전력
         self.ax_ups_temp = self.axes_ups[0, 1] # 우상: 온도
         self.ax_ups_vin  = self.axes_ups[1, 0] # 좌하: 입력전압
@@ -3434,20 +3869,51 @@ class UIManager:
             ("OMRON UPS", "UPS")
         ]
 
+        self._daq_backend_lbl = None
         for i, (label, key) in enumerate(devices):
             frame = ttk.Frame(inner_container)
             frame.pack(side=tk.LEFT, padx=15)
 
             canvas = tk.Canvas(frame, width=20, height=20, highlightthickness=0)
             canvas.pack(side=tk.LEFT, padx=5)
-            led = canvas.create_oval(2, 2, 18, 18, fill="#dc3545", outline="#333") 
+            led = canvas.create_oval(2, 2, 18, 18, fill="#dc3545", outline="#333")
 
             lbl = ttk.Label(frame, text=label, font=("Helvetica", 10, "bold"))
             lbl.pack(side=tk.LEFT)
+            # Keep the DAQ label so the dashboard loop can rewrite it to name
+            # the ACTIVE backend (Korean DAQ / HK Digitizer) -- see
+            # _refresh_daq_backend_label. A bigger, colored badge sits next to
+            # it so an operator can tell at a glance which data path is live.
+            if key == "DAQ":
+                self._daq_backend_lbl = lbl
+                self._daq_backend_badge = ttk.Label(frame, text="", font=("Helvetica", 11, "bold"))
+                self._daq_backend_badge.pack(side=tk.LEFT, padx=(6, 0))
 
             self.status_widgets[key] = {"led": led, "canvas": canvas}
 
+        self._refresh_daq_backend_label()
+
         ttk.Separator(dashboard, orient="horizontal").pack(fill=tk.X, pady=(10, 5))
+        self._create_status_dashboard_tail(dashboard)
+
+    def _refresh_daq_backend_label(self):
+        """Rewrite the DAQ System entry to name the ACTIVE data backend --
+        'Korean DAQ (CAEN)' vs 'HK Digitizer' -- so which acquisition path is
+        live is obvious from the System Connection Overview at a glance,
+        instead of only being visible on the Control Panel's small toggle."""
+        lbl = getattr(self, "_daq_backend_lbl", None)
+        badge = getattr(self, "_daq_backend_badge", None)
+        if lbl is None or badge is None:
+            return
+        backend = getattr(getattr(self.controller, "auto_mgr", None), "daq_backend", "caen")
+        if backend == "hk":
+            lbl.config(text="DAQ System:")
+            badge.config(text="🖧 HK Digitizer", foreground="#8e44ad")
+        else:
+            lbl.config(text="DAQ System:")
+            badge.config(text="🇰🇷 Korean DAQ (CAEN)", foreground="#0a84ff")
+
+    def _create_status_dashboard_tail(self, dashboard):
         self.global_job_status_label = ttk.Label(dashboard, text="📊 Pipeline Monitor: Idle", 
                                                  font=("Helvetica", 11, "bold"), foreground="gray", anchor="center")
         self.global_job_status_label.pack(fill=tk.X, expand=True, pady=2)
@@ -3499,6 +3965,16 @@ class UIManager:
             font=("Helvetica", 11, "bold"), bg="#dc3545", fg="white")
         self._lock_text_lbl.pack(side=tk.LEFT, padx=8)
 
+        # Update & Restart badge, mirrored here because this banner sits at the
+        # top of the DAQ tab and is always visible, unlike the bottom status bar
+        # which can be pushed off-screen when window content is taller than the
+        # screen.
+        self._banner_update_lbl = tk.Label(
+            self._lock_banner, textvariable=self.controller.update_badge_var,
+            font=("Helvetica", 10, "bold"), fg="white", bg="#28a745", cursor="hand2")
+        self._banner_update_lbl.pack(side=tk.RIGHT, padx=12)
+        self._banner_update_lbl.bind("<Button-1>", lambda e: self.controller._on_update_badge_click())
+
         self._update_lock_banner()
 
     def _update_lock_banner(self):
@@ -3517,6 +3993,7 @@ class UIManager:
             self._banner_unlock_btn.config(
                 text="🔓  Lock", bg="#1e7e34", fg="white",
                 font=("Helvetica", 10, "bold"))
+            self._banner_update_lbl.config(bg="#28a745")
         else:
             # 잠금 상태: 키 큰 빨간 배너로 강하게 경고한다.
             self._lock_banner.config(bg="#dc3545")
@@ -3528,33 +4005,79 @@ class UIManager:
             self._banner_unlock_btn.config(
                 text="🔒  Unlock Controls", bg="#f0ad4e", fg="black",
                 font=("Helvetica", 13, "bold"))
+            self._banner_update_lbl.config(bg="#dc3545")
 
         self.master.after(1000, self._update_lock_banner)
 
     def _update_dashboard_loop(self):
+        """Every 2s, refresh the DAQ/HV/Env/Laser/UPS/B-field status LEDs.
+
+        HV/Env used to come from controller.get_system_status(), which shells
+        out to `pgrep -f monitoring_app.py` via subprocess.run() -- run
+        directly here, that blocked the whole GUI on every tick for the
+        entire session. DAQ/Laser/UPS/B-field are just attribute/StringVar
+        reads (cheap, and must stay on the main thread since Tk widgets
+        aren't thread-safe), so those still update immediately every tick;
+        only the pgrep check is offloaded to a background thread, with its
+        two LEDs updated a beat later via .after(0, ...) once it returns."""
+        import threading
+
         if getattr(self.controller, '_shutting_down', False):
             return
-        statuses = self.controller.get_system_status()
 
-        statuses["B-field"] = getattr(self, "web_connection_status", False)
+        # Keep the "Korean DAQ / HK Digitizer" badge current even if the
+        # backend was switched by something other than the toggle handler.
+        self._refresh_daq_backend_label()
 
-        tab_map = {"DAQ": 0, "Laser": 1, "B-field": 2, "UPS": 3}
+        statuses = {
+            "DAQ": getattr(self, 'daq_connected_flag', False),
+            "Laser": False,
+            "UPS": False,
+            "B-field": self._bfield_log_is_fresh(),
+        }
+        if hasattr(self.controller, 'laser_mgr') and self.controller.laser_mgr.laser_instances:
+            statuses["Laser"] = any(inst.is_connected() for inst in self.controller.laser_mgr.laser_instances.values())
+        if hasattr(self.controller, 'ups_mgr') and self.controller.ups_mgr.ups_serial and self.controller.ups_mgr.ups_serial.is_open:
+            msg = self.ups_vars["status_msg"].get()
+            if "Normal" in msg or "Battery" in msg:
+                statuses["UPS"] = True
 
-        for key, connected in statuses.items():
-            color = "#28a745" if connected else "#dc3545"
-            img = self.tab_led_green if connected else self.tab_led_red
+        self._apply_dashboard_statuses(statuses)
 
-            if key in self.status_widgets:
-                self.status_widgets[key]["canvas"].itemconfig(self.status_widgets[key]["led"], fill=color)
+        def check_hv_env():
+            hv_env = self.controller._check_hv_env_process()
+            self.master.after(0, lambda: self._apply_dashboard_statuses({"HV": hv_env, "Env": hv_env}, reschedule=True))
 
-            if key in tab_map:
-                idx = tab_map[key]
-                try:
-                    self.main_notebook.tab(idx, image=img, compound=tk.RIGHT)
-                except Exception:
-                    pass
+        threading.Thread(target=check_hv_env, daemon=True).start()
 
-        self.master.after(2000, self._update_dashboard_loop)
+    def _apply_dashboard_statuses(self, statuses, reschedule=False):
+        # The reschedule (when requested) drives the whole dashboard loop, so
+        # it MUST survive any per-widget error -- hence try/finally. Since the
+        # reschedule now rides on the HV/Env background-thread callback
+        # (reschedule=True), a widget glitch swallowing it would otherwise
+        # freeze the LEDs for the rest of the session.
+        try:
+            tab_map = {"DAQ": 0, "Laser": 1, "B-field": 2, "UPS": 3}
+            for key, connected in statuses.items():
+                color = "#28a745" if connected else "#dc3545"
+                img = self.tab_led_green if connected else self.tab_led_red
+
+                if key in self.status_widgets:
+                    try:
+                        self.status_widgets[key]["canvas"].itemconfig(self.status_widgets[key]["led"], fill=color)
+                    except Exception:
+                        pass
+
+                if key in tab_map:
+                    idx = tab_map[key]
+                    try:
+                        self.main_notebook.tab(idx, image=img, compound=tk.RIGHT)
+                    except Exception:
+                        pass
+        finally:
+            if reschedule and not getattr(self.controller, '_shutting_down', False) \
+                    and self.master.winfo_exists():
+                self.master.after(2000, self._update_dashboard_loop)
 
     def _create_contact_tab(self, parent):
         container = ttk.Frame(parent, padding=20)
@@ -3609,13 +4132,18 @@ class UIManager:
                 for btn_key in ["ld_on_btn", "ld_off_btn", "tec_on_btn", "tec_off_btn", "curr_apply_btn_obj"]:
                     if btn_key in vars_dict:
                         btn = vars_dict[btn_key]
-                        btn.config(state=state)
-                        
-                        # [보완] 비활성화 시 시각적으로 '꺼진' 효과 부여
+                        # .configure works for both ttk.Button and CTkButton
+                        # ('.config' is blocked on CTk widgets).
+                        btn.configure(state=state)
+
+                        # [보완] 비활성화 시 시각적으로 '꺼진' 효과 부여. This was
+                        # always a no-op on ttk buttons (they ignore bg/fg -> the
+                        # TclError was swallowed); CTkButton's disabled state
+                        # already dims it, so skip the manual recolor for it too.
                         if not is_unlocked:
                             try:
-                                btn.config(bg=bg_locked, fg=fg_locked)
-                            except tk.TclError:
+                                btn.configure(bg=bg_locked, fg=fg_locked)
+                            except (tk.TclError, AttributeError, ValueError):
                                 pass
 
         if hasattr(self.controller, 'auto_ui'):
@@ -3711,14 +4239,41 @@ class UIManager:
         return survivors
 
     def _poll_global_pipeline_flags(self):
-        """Sweeps flag directory every 1s to project centralized process tracking onto the global frame layout."""
-        import glob
-        import os
+        """Sweeps flag directory every 150ms to project centralized process tracking
+        onto the global frame layout.
+
+        The actual sweep (glob + _purge_stale_flags, which shells out to `pgrep`
+        via subprocess.run whenever a DAQ flag is present) used to run directly
+        on this Tk callback, i.e. on the main GUI thread, every 150ms for the
+        entire session -- and worst of all, precisely WHILE a run is active
+        (that's when daq_*.flag files exist and the pgrep subprocess actually
+        fires), stalling the UI at the exact moment an operator is watching
+        progress. Now the sweep runs in a background thread; the result is
+        handed back to the main thread through a queue and picked up by a
+        short main-thread poll, and the next sweep is scheduled from that
+        same callback so sweeps never overlap.
+
+        IMPORTANT: the worker thread must never call self.master.after(...)
+        (or any other Tk method) directly -- Tk's .after() calls
+        tk.createcommand() internally, which requires running on the thread
+        that owns the Tcl interpreter's main loop. Calling it from a
+        background thread intermittently raised
+        "RuntimeError: main thread is not in main loop" and killed this poll
+        loop for the rest of the session. The queue hand-off below avoids
+        any Tk call from the worker thread."""
+        import threading
+        import queue
 
         if getattr(self.controller, '_shutting_down', False):
             return
+        if not (hasattr(self, 'master') and self.master.winfo_exists()):
+            return
 
-        if hasattr(self, 'master') and self.master.winfo_exists():
+        result_q = queue.Queue()
+
+        def sweep():
+            import glob
+            import os
             try:
                 daq_flags  = glob.glob(os.path.join(self.pipeline_flag_dir, "daq_*.flag"))
                 prod_flags = glob.glob(os.path.join(self.pipeline_flag_dir, "prod_*.flag"))
@@ -3747,7 +4302,32 @@ class UIManager:
                 active_prod_run = get_latest_run_from_flags(prod_flags)
                 active_read_run = get_latest_run_from_flags(read_flags)
                 active_cont_run = get_latest_run_from_flags(cont_flags)
+                result_q.put(("ok", active_daq_run, active_prod_run, active_read_run, active_cont_run))
+            except Exception as e:
+                result_q.put(("error", str(e)))
 
+        def poll_result():
+            if getattr(self.controller, '_shutting_down', False) or not self.master.winfo_exists():
+                return
+            try:
+                item = result_q.get_nowait()
+            except queue.Empty:
+                self.master.after(30, poll_result)
+                return
+            if item[0] == "error":
+                print(f"[WARNING] Centralized pipeline monitoring glitch: {item[1]}")
+                reschedule()
+            else:
+                _, active_daq_run, active_prod_run, active_read_run, active_cont_run = item
+                apply_result(active_daq_run, active_prod_run, active_read_run, active_cont_run)
+
+        def apply_result(active_daq_run, active_prod_run, active_read_run, active_cont_run):
+            # reschedule() MUST run even if a .config() below throws, otherwise
+            # a single transient widget error would silently kill the poll loop
+            # for the rest of the session (the old code kept its reschedule
+            # outside the try for exactly this reason -- preserve that here).
+            import os
+            try:
                 if active_daq_run:
                     self.cached_active_run = active_daq_run
                     self.global_job_status_label.config(text=f"📡 [Run {active_daq_run}] DAQ: Stream Recording Active... (Live Collecting)", foreground="#dc3545")
@@ -3773,6 +4353,13 @@ class UIManager:
                     else:
                         self.global_job_status_label.config(text="📊 Pipeline Monitor: Idle", foreground="gray")
             except Exception as e:
-                print(f"[WARNING] Centralized pipeline monitoring glitch: {e}")
+                print(f"[WARNING] Pipeline monitor label update glitch: {e}")
+            finally:
+                reschedule()
 
-            self.master.after(150, self._poll_global_pipeline_flags)
+        def reschedule():
+            if not getattr(self.controller, '_shutting_down', False) and self.master.winfo_exists():
+                self.master.after(150, self._poll_global_pipeline_flags)
+
+        threading.Thread(target=sweep, daemon=True).start()
+        self.master.after(30, poll_result)

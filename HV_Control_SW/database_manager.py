@@ -26,6 +26,10 @@ class DatabaseManager:
                 columns.append(f"Ch{ch}_I_H REAL")
             else:
                 columns.append(f"Ch{ch}_I REAL")
+            # Channel status bit-field (trip cause) -- NULL whenever V/I are
+            # NULL too (disconnected), so a real trip (status set, V=0) stays
+            # distinguishable from a comm dropout (everything NULL).
+            columns.append(f"Ch{ch}_Stat REAL")
         return columns
 
     def _check_and_update_schema(self):
@@ -57,6 +61,7 @@ class DatabaseManager:
                 cols.extend([f'Ch{ch}_I_L', f'Ch{ch}_I_H']); values.extend([hv_data.get('il'), hv_data.get('ih')]); placeholders.extend(['?', '?'])
             else:
                 cols.append(f'Ch{ch}_I'); values.append(hv_data.get('i')); placeholders.append('?')
+            cols.append(f'Ch{ch}_Stat'); values.append(hv_data.get('stat')); placeholders.append('?')
         
         sql = f"INSERT OR REPLACE INTO monitoring_data ({', '.join(cols)}) VALUES ({', '.join(placeholders)})"
         try:

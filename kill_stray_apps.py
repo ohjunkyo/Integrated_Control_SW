@@ -4,9 +4,8 @@
 """
 Stray Process Killer
 -
-This script finds and terminates Python processes related to the
-DAQ, HV, and Laser control applications that might still be running
-in the background (zombie or stray processes).
+Finds Python processes related to the DAQ, HV, and Laser control
+applications and lets you terminate genuine DUPLICATES/zombies.
 
 Requires 'psutil':
   pip3 install psutil
@@ -14,104 +13,132 @@ Requires 'psutil':
 
 import psutil
 import os
-import sys
+import time
 
 # --- 찾고자 하는 스크립트 이름 ---
-# 이 목록에 포함된 이름이 커맨드 라인에 있으면 종료 대상으로 간주합니다.
+# 이 목록에 포함된 이름이 커맨드 라인에 있으면 대상으로 간주합니다.
 TARGET_SCRIPTS = [
     "main.py",            # DAQ Control
     "monitoring_app.py",  # HV Monitor
     "laser_gui.py",       # Laser Control
 ]
 
-def find_stray_processes():
-    """
-    현재 실행 중인 모든 프로세스를 스캔하여
-    TARGET_SCRIPTS 목록에 있는 Python 프로세스를 찾습니다.
-    """
-    stray_processes = []
-    
-    # 현재 스크립트의 PID (종료 대상에서 제외하기 위함)
-    my_pid = os.getpid()
 
-    # 모든 실행 중인 프로세스 반복
+def find_matches():
+    """Scan all processes; return {target: [proc, ...]} grouped by which
+    TARGET_SCRIPTS name matched. Only genuine python-interpreter processes
+    count -- NOT a bash/shell process that merely mentions the filename in
+    its arguments (e.g. this app's own detached restart-watcher runs
+    `bash -c "... exec python3 .../main.py ..."`, and a plain substring
+    search would misidentify that watcher itself as "another main.py"."""
+    my_pid = os.getpid()
+    groups = {t: [] for t in TARGET_SCRIPTS}
+
     for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
         try:
-            # 프로세스 정보 가져오기
             pid = proc.info['pid']
             cmdline = proc.info['cmdline']
-            
-            # 본인 자신은 건너뛰기
-            if pid == my_pid:
+            if pid == my_pid or not cmdline:
                 continue
 
-            # Python으로 실행된 스크립트인지 확인
-            if cmdline and 'python' in cmdline[0].lower():
-                # 커맨드 라인 전체를 문자열로 합쳐서 검색
-                cmd_str = " ".join(cmdline)
-                
-                for target in TARGET_SCRIPTS:
-                    if target in cmd_str:
-                        stray_processes.append(proc)
-                        # 중복 추가 방지
-                        break
-                        
+            exe = cmdline[0].lower()
+            if 'python' not in exe and not exe.rstrip('0123456789.').endswith('/python'):
+                continue
+
+            cmd_str = " ".join(cmdline)
+            for target in TARGET_SCRIPTS:
+                if target in cmd_str:
+                    groups[target].append(proc)
+                    break
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-            # 이미 종료되었거나 권한 없는 프로세스는 무시
             pass
-            
-    return stray_processes
+
+    return groups
+
 
 def kill_processes(processes):
-    """
-    주어진 프로세스 목록을 종료(terminate)합니다.
-    """
     if not processes:
-        print("No stray processes found to terminate.")
         return
-
-    print("\nTerminating the following processes:")
+    print("\nTerminating:")
     for proc in processes:
         try:
             pid = proc.pid
-            proc.terminate() # SIGTERM (정상 종료 시도)
-            print(f"  - Terminated PID {pid} ({' '.join(proc.cmdline())})")
+            proc.terminate()  # SIGTERM (graceful)
         except psutil.NoSuchProcess:
             print(f"  - PID {pid} was already gone.")
+            continue
         except Exception as e:
             print(f"  - Failed to terminate PID {pid}: {e}")
+            continue
+        # Confirm it actually died -- terminate() is fire-and-forget; a stuck
+        # process that ignores SIGTERM would otherwise silently stay a stray.
+        try:
+            proc.wait(timeout=3)
+            print(f"  - Terminated PID {pid} (confirmed dead)")
+        except psutil.TimeoutExpired:
+            print(f"  - PID {pid} did not exit within 3s after SIGTERM, force-killing (SIGKILL)...")
+            try:
+                proc.kill()
+                proc.wait(timeout=2)
+                print(f"  - PID {pid} killed.")
+            except Exception as e:
+                print(f"  - Could not force-kill PID {pid}: {e}")
+
 
 def main():
-    print("--- Stray Application Process Killer ---")
-    
+    print("--- Stray Application Process Killer ---\n")
+
     try:
-        processes_to_kill = find_stray_processes()
-        
-        if not processes_to_kill:
-            print("✅ No stray 'main.py', 'monitoring_app.py', or 'laser_gui.py' processes found.")
-            return
-
-        print("\nFound the following stray processes:")
-        for proc in processes_to_kill:
-            try:
-                print(f"  - PID: {proc.pid:<7} | CMD: {' '.join(proc.cmdline())}")
-            except Exception:
-                pass # 이미 사라진 프로세스 무시
-
-        print("\n" + "="*30)
-        answer = input("Do you want to terminate all these processes? (y/n): ").strip().lower()
-        
-        if answer == 'y':
-            kill_processes(processes_to_kill)
-        else:
-            print("Termination cancelled by user.")
-
+        groups = find_matches()
     except ImportError:
-        print("\n[Error] 'psutil' library not found.")
-        print("Please install it first by running:")
-        print("  pip3 install psutil")
+        print("[Error] 'psutil' library not found. Run:  pip3 install psutil")
+        return
     except Exception as e:
-        print(f"\nAn error occurred: {e}")
+        print(f"An error occurred while scanning: {e}")
+        return
+
+    any_found = any(procs for procs in groups.values())
+    if not any_found:
+        print("✅ No matching processes found at all.")
+        return
+
+    to_kill = []
+    for target, procs in groups.items():
+        if not procs:
+            continue
+        print(f"[{target}] {len(procs)} process(es) found:")
+        for proc in procs:
+            try:
+                print(f"  - PID {proc.pid:<7} | {' '.join(proc.cmdline())}")
+            except Exception:
+                pass
+
+        if len(procs) == 1:
+            # A single instance is very likely your ONE legitimate, currently
+            # running app -- NOT a stray/duplicate. Killing it just shuts down
+            # your working program instead of fixing anything, which is the
+            # exact mistake this tool used to make silently. Require an
+            # explicit extra opt-in before touching it.
+            print("  ⚠ Only ONE instance -- this is probably your live, working app, not a duplicate.")
+            ans = input("  Kill it anyway? (y/N): ").strip().lower()
+            if ans == 'y':
+                to_kill.extend(procs)
+            else:
+                print("  Skipped (left running).")
+        else:
+            print(f"  ⚠ {len(procs)} instances -- this IS a real duplicate.")
+            ans = input(f"  Terminate all {len(procs)}? (y/N): ").strip().lower()
+            if ans == 'y':
+                to_kill.extend(procs)
+            else:
+                print("  Skipped (left running).")
+        print()
+
+    if to_kill:
+        kill_processes(to_kill)
+    else:
+        print("Nothing terminated.")
+
 
 if __name__ == "__main__":
     main()

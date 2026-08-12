@@ -27,4 +27,16 @@ venv/
 
 # Runtime state (not source)
 DAQ_Control_SW/handover_notes.jsonl
+DAQ_Control_SW/laser_sequence.json
+DAQ_Control_SW/scan_recovery_state.json
+DAQ_Control_SW/ui_prefs.json
+DAQ_Control_SW/hk_config.json
+DAQ_Control_SW/queued_schedules.json
 *.swp
+
+# Ad-hoc UI backup snapshot (not a real release/tag)
+DAQ_Control_SW/_ui_backup_20260722_185041/
+
+# Data, not code: HV monitoring logs and DB snapshots taken before migrations
+HV_Control_SW/LOG/
+*.db.bak_*

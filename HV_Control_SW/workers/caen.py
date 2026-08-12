@@ -77,10 +77,30 @@ class CaenHvWorker(QObject):
                 if self.is_dual_current:
                     imon_l = self.device.get_ch_param(0, [ch_mon], self.params['i_mon_low'])[0]
                     imon_h = self.device.get_ch_param(0, [ch_mon], self.params['i_mon_high'])[0]
-                    results.append({'ch': ch_mon, 'v': vmon, 'il': imon_l, 'ih': imon_h})
+                    entry = {'ch': ch_mon, 'v': vmon, 'il': imon_l, 'ih': imon_h}
                 else:
                     imon = self.device.get_ch_param(0, [ch_mon], self.params['i_mon'])[0]
-                    results.append({'ch': ch_mon, 'v': vmon, 'i': imon})
+                    entry = {'ch': ch_mon, 'v': vmon, 'i': imon}
+
+                # Trip cause + early-warning support: the channel's live status
+                # bit-field (CAEN standard layout: bit3 OVC, bit4 OVV, bit6 MAXV,
+                # bit7 TRIP, bit11 KILL, bit12 external INTERLOCK) and its trip
+                # current threshold (ISet doubles as the compliance/trip current
+                # on this module family). Best-effort: if the parameter name is
+                # wrong for this firmware, skip it silently rather than break
+                # voltage/current polling, which is the safety-critical part.
+                try:
+                    status_param = self.params.get('status')
+                    if status_param:
+                        entry['stat'] = self.device.get_ch_param(0, [ch_mon], status_param)[0]
+                except Exception:
+                    pass
+                try:
+                    entry['iset'] = self.device.get_ch_param(0, [ch_mon], self.params['i_set'])[0]
+                except Exception:
+                    pass
+
+                results.append(entry)
             self.data_ready.emit(results)
 
         except self.hv.Error as e:
