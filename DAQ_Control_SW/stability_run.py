@@ -36,6 +36,13 @@ class StabilityRunUI:
     # Fixed cost per iteration outside the acquisition itself: board open, DAC
     # settle, file close, analysis chain launch. Measured ~20-30 s.
     OVERHEAD_S = 25.0
+    # RAW file size, measured on run 20260817_000: 923,609,147 bytes for
+    # 300,000 events at TimeWindow=1024 -> 3079 B/event, i.e. ~3.007 B per
+    # event per sample after ROOT compression. Scaling by TimeWindow keeps the
+    # estimate roughly right when the record length changes; it is an estimate
+    # either way, so the UI marks it with "~".
+    BYTES_PER_EVENT_SAMPLE = 3078.7 / 1024.0
+    DEFAULT_TIME_WINDOW = 1024
 
     def __init__(self, parent, controller):
         self.controller = controller
@@ -57,22 +64,26 @@ class StabilityRunUI:
         # ── inputs ──────────────────────────────────────────────────────
         box = ttk.LabelFrame(wrap, text=" Run parameters ", padding=10)
         box.pack(fill=tk.X)
-        for c in (1, 3):
-            box.columnconfigure(c, weight=1)
+        # Only the LAST column absorbs slack. Giving the entry column weight
+        # stretched the entries and shoved the unit labels to the far right
+        # edge, leaving a comically wide gap mid-row (2026-08-26).
+        box.columnconfigure(3, weight=1)
 
         self.v_events = tk.StringVar()
         self.v_rate = tk.StringVar(value=f"{self.DEFAULT_RATE_HZ:.0f}")
         self.v_interval = tk.StringVar(value="600")
         self.v_count = tk.StringVar(value="100")
+        self.v_window = tk.StringVar(value=str(self.DEFAULT_TIME_WINDOW))
 
         def row(r, label, var, unit, tip=""):
             ttk.Label(box, text=label).grid(row=r, column=0, sticky="w", pady=3)
             e = ttk.Entry(box, textvariable=var, width=12)
             e.grid(row=r, column=1, sticky="w", padx=(6, 4))
-            ttk.Label(box, text=unit, foreground="#666").grid(row=r, column=2, sticky="w")
+            ttk.Label(box, text=unit, foreground="#666", width=7,
+                      anchor="w").grid(row=r, column=2, sticky="w")
             if tip:
                 ttk.Label(box, text=tip, foreground="#888",
-                          font=("Helvetica", 9)).grid(row=r, column=3, sticky="w", padx=(10, 0))
+                          font=("Helvetica", 9)).grid(row=r, column=3, sticky="w")
             var.trace_add("write", lambda *a: self._recalc())
             return e
 
@@ -100,21 +111,28 @@ class StabilityRunUI:
                                foreground="#1a5fb4")
         self.l_end.grid(row=2, column=1, sticky="w", padx=(8, 0), pady=(4, 0))
 
-        ttk.Separator(calc, orient="horizontal").grid(row=3, column=0, columnspan=4,
+        # Disk is the constraint that actually stopped a run before (local hit
+        # 96% on 2026-08-22), so it belongs next to the duration rather than
+        # being something to work out afterwards.
+        ttk.Label(calc, text="Disk needed:").grid(row=3, column=0, sticky="w", pady=(4, 0))
+        self.l_disk = ttk.Label(calc, text="—", font=("Helvetica", 11, "bold"))
+        self.l_disk.grid(row=3, column=1, columnspan=3, sticky="w", padx=(8, 0), pady=(4, 0))
+
+        ttk.Separator(calc, orient="horizontal").grid(row=4, column=0, columnspan=4,
                                                       sticky="ew", pady=8)
 
         # Reverse direction: give it a window, get the count that fits.
-        ttk.Label(calc, text="Or: available time").grid(row=4, column=0, sticky="w")
+        ttk.Label(calc, text="Or: available time").grid(row=5, column=0, sticky="w")
         self.v_hours = tk.StringVar(value="12")
         e = ttk.Entry(calc, textvariable=self.v_hours, width=10)
-        e.grid(row=4, column=1, sticky="w", padx=(8, 4))
-        ttk.Label(calc, text="hours", foreground="#666").grid(row=4, column=2, sticky="w")
+        e.grid(row=5, column=1, sticky="w", padx=(8, 4))
+        ttk.Label(calc, text="hours", foreground="#666").grid(row=5, column=2, sticky="w")
         self.v_hours.trace_add("write", lambda *a: self._recalc())
         self.l_fit = ttk.Label(calc, text="—", foreground="#1a5fb4",
                                font=("Helvetica", 11, "bold"))
-        self.l_fit.grid(row=5, column=0, columnspan=4, sticky="w", pady=(4, 0))
+        self.l_fit.grid(row=6, column=0, columnspan=4, sticky="w", pady=(4, 0))
         ttk.Button(calc, text="Use this count",
-                   command=self._apply_fitted_count).grid(row=5, column=3, sticky="e")
+                   command=self._apply_fitted_count).grid(row=6, column=3, sticky="e")
 
         # ── run control ────────────────────────────────────────────────
         ctrl = ttk.Frame(wrap)
@@ -147,14 +165,38 @@ class StabilityRunUI:
 
     # ------------------------------------------------------------- helpers
     def _load_events_from_config(self):
-        try:
-            val = self.controller.config_manager.get_config_value("Events")
-            if val:
-                self.v_events.set(str(val).strip())
-        except Exception:
-            pass
-        if not self.v_events.get():
-            self.v_events.set("300000")
+        for key, var, default in (("Events", self.v_events, "300000"),
+                                  ("TimeWindow", self.v_window, str(self.DEFAULT_TIME_WINDOW))):
+            try:
+                val = self.controller.config_manager.get_config_value(key)
+                if val:
+                    var.set(str(val).strip())
+            except Exception:
+                pass
+            if not var.get():
+                var.set(default)
+
+    def _raw_dir(self):
+        """Where RAW files land, for the free-space check."""
+        getp = getattr(self.controller, "_get_daq_path", None)
+        base = None
+        if getp:
+            try:
+                base = getp()
+            except Exception:
+                base = None
+        base = base or os.path.expanduser("~/ADC/ADC_test")
+        d = os.path.join(base, "Data", "RAW", "Laser")
+        return d if os.path.isdir(d) else os.path.expanduser("~")
+
+    @staticmethod
+    def _fmt_size(nbytes):
+        gb = nbytes / (1024 ** 3)
+        if gb >= 1024:
+            return f"{gb / 1024:.2f} TB"
+        if gb >= 1:
+            return f"{gb:.2f} GB"
+        return f"{nbytes / (1024 ** 2):.0f} MB"
 
     def _nums(self):
         """Parsed inputs, or None when any field isn't usable yet."""
@@ -196,6 +238,34 @@ class StabilityRunUI:
                                f"(acquisition {self._fmt(ev / rate)} + overhead {int(self.OVERHEAD_S)}s)")
         self.l_total.config(text=f"{self._fmt(total)}   ({total / 3600:.2f} h)")
         self.l_end.config(text=(datetime.now() + timedelta(seconds=total)).strftime("%Y-%m-%d %H:%M:%S"))
+
+        # Disk: RAW dominates (the produced/result files are ~3% of it), and
+        # RAW is written locally before the nightly backup moves it off.
+        try:
+            window = float(self.v_window.get())
+        except (ValueError, TypeError):
+            window = self.DEFAULT_TIME_WINDOW
+        per_run = ev * window * self.BYTES_PER_EVENT_SAMPLE
+        need = per_run * cnt
+        try:
+            st = os.statvfs(self._raw_dir())
+            free = st.f_bavail * st.f_frsize
+        except OSError:
+            free = None
+        txt = f"~{self._fmt_size(need)}  ({self._fmt_size(per_run)} x {cnt})"
+        if free is None:
+            self.l_disk.config(text=txt, foreground="#333")
+        elif need > free:
+            self.l_disk.config(
+                text=f"{txt}   —   only {self._fmt_size(free)} free, WILL NOT FIT",
+                foreground="#b91c1c")
+        elif need > free * 0.8:
+            self.l_disk.config(
+                text=f"{txt}   —   {self._fmt_size(free)} free, leaves little margin",
+                foreground="#a15c00")
+        else:
+            self.l_disk.config(text=f"{txt}   —   {self._fmt_size(free)} free",
+                               foreground="#1a7f37")
 
         try:
             hours = float(self.v_hours.get())
@@ -268,11 +338,35 @@ class StabilityRunUI:
         total = cnt * (ev / rate + self.OVERHEAD_S) + max(0, cnt - 1) * iv
         end = (datetime.now() + timedelta(seconds=total)).strftime("%Y-%m-%d %H:%M:%S")
 
+        try:
+            window = float(self.v_window.get())
+        except (ValueError, TypeError):
+            window = self.DEFAULT_TIME_WINDOW
+        need = ev * window * self.BYTES_PER_EVENT_SAMPLE * cnt
+        try:
+            st = os.statvfs(self._raw_dir())
+            free = st.f_bavail * st.f_frsize
+        except OSError:
+            free = None
+
+        disk_line = f"Estimated disk:     ~{self._fmt_size(need)}"
+        if free is not None:
+            disk_line += f"   ({self._fmt_size(free)} free)"
+        if free is not None and need > free:
+            if not messagebox.askyesno(
+                    "Not enough disk space",
+                    f"This run needs about {self._fmt_size(need)} but only "
+                    f"{self._fmt_size(free)} is free.\n\n"
+                    "It will fill the disk and the run will fail partway through.\n\n"
+                    "Start anyway?", icon="warning"):
+                return
+
         if not messagebox.askyesno(
                 "Start Stability Run",
                 f"{cnt} acquisitions of {int(ev):,} events, {int(iv)} s apart.\n\n"
                 f"Estimated duration: {self._fmt(total)}\n"
-                f"Estimated finish:   {end}\n\n"
+                f"Estimated finish:   {end}\n"
+                f"{disk_line}\n\n"
                 "The stage will NOT move — make sure the PMTs are already at the "
                 "angle you want to measure.\n\nStart now?"):
             return
