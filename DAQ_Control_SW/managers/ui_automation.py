@@ -405,11 +405,22 @@ class AutomationUI:
             
             t_v = tk.DoubleVar(value=0.0); r_v = tk.DoubleVar(value=0.0)
             
+            # Show the mechanical limits next to each entry. A move outside
+            # them is already rejected (rotation_control._angle_in_range), but
+            # only AFTER the operator types it and clicks -- there was nothing
+            # on screen saying what the limits are (2026-08-25).
+            tilt_rng = getattr(self.controller.auto_mgr, "scan_range", {"start": -55, "end": 55})
+            rot_rng  = getattr(self.controller.auto_mgr, "rot_range",  {"start": 0, "end": 135})
+
             ttk.Label(input_f, text="Tilt:", font=("Helvetica", 10, "bold")).pack(side=tk.LEFT, padx=(0, 4))
-            ttk.Entry(input_f, textvariable=t_v, width=8, font=("Helvetica", 12, "bold"), justify="center").pack(side=tk.LEFT, padx=(0, 10))
+            ttk.Entry(input_f, textvariable=t_v, width=8, font=("Helvetica", 12, "bold"), justify="center").pack(side=tk.LEFT, padx=(0, 2))
+            ttk.Label(input_f, text=f"[{tilt_rng['start']:g}~{tilt_rng['end']:g}°]",
+                      font=("Helvetica", 8), foreground="#888").pack(side=tk.LEFT, padx=(0, 10))
 
             ttk.Label(input_f, text="Rot:", font=("Helvetica", 10, "bold")).pack(side=tk.LEFT, padx=(0, 4))
-            ttk.Entry(input_f, textvariable=r_v, width=8, font=("Helvetica", 12, "bold"), justify="center").pack(side=tk.LEFT)
+            ttk.Entry(input_f, textvariable=r_v, width=8, font=("Helvetica", 12, "bold"), justify="center").pack(side=tk.LEFT, padx=(0, 2))
+            ttk.Label(input_f, text=f"[{rot_rng['start']:g}~{rot_rng['end']:g}°]",
+                      font=("Helvetica", 8), foreground="#888").pack(side=tk.LEFT)
             
             self.manual_vars[sn] = (t_v, r_v)
             
@@ -643,6 +654,17 @@ class AutomationUI:
 
         self._matrix_popup = None
         self._update_matrix_tab_color()
+
+        # --- Stability Run 탭 ---
+        # A second automated run mode: fixed angle, repeated acquisitions,
+        # driven by script_v7.sh's own NumSequences/IntervalTime loop rather
+        # than by the Python point loop General Scan uses. Lives beside the
+        # scan controls because it is the same kind of thing (start a long
+        # unattended run and walk away), just without stage motion.
+        stability_tab = ttk.Frame(self.upper_notebook)
+        self.upper_notebook.add(stability_tab, text=" Stability Run ")
+        from stability_run import StabilityRunUI
+        self.stability_run_ui = StabilityRunUI(stability_tab, self.controller)
 
         # --- 2. Schedule Managers 탭 ---
         schedule_tab = ttk.Frame(self.upper_notebook, padding=10)
