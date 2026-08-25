@@ -28,11 +28,13 @@ from datetime import datetime, timedelta
 
 
 class StabilityRunUI:
-    # Effective acquisition rate, events/second. The DAQ's own summary line
-    # ("Total Events : 300000 / Elapsed Time : 300.1 s") gives 1000 Hz; it is
-    # exposed in the UI because it depends on trigger rate and can be
-    # re-measured rather than trusted forever.
-    DEFAULT_RATE_HZ = 1000.0
+    # Effective acquisition rate, events/second, from the DAQ's own summary
+    # line ("Total Events : 300000 / Elapsed Time : 300.1 s"). A constant, not
+    # an input: it is set by the laser trigger rate, which the operator does
+    # not change per run, and an editable field for it was just one more way
+    # to end up with a wrong estimate. The value is shown in the per-
+    # acquisition breakdown so the assumption stays visible.
+    RATE_HZ = 1000.0
     # Fixed cost per iteration outside the acquisition itself: board open, DAC
     # settle, file close, analysis chain launch. Measured ~20-30 s.
     OVERHEAD_S = 25.0
@@ -70,7 +72,6 @@ class StabilityRunUI:
         box.columnconfigure(3, weight=1)
 
         self.v_events = tk.StringVar()
-        self.v_rate = tk.StringVar(value=f"{self.DEFAULT_RATE_HZ:.0f}")
         self.v_interval = tk.StringVar(value="600")
         self.v_count = tk.StringVar(value="100")
         self.v_window = tk.StringVar(value=str(self.DEFAULT_TIME_WINDOW))
@@ -88,9 +89,8 @@ class StabilityRunUI:
             return e
 
         row(0, "Events per acquisition", self.v_events, "events", "from config3.h (Events)")
-        row(1, "Acquisition rate", self.v_rate, "Hz", "measured; edit if the trigger rate changed")
-        row(2, "Interval between acquisitions", self.v_interval, "s", "script_v7.sh IntervalTime")
-        row(3, "Number of acquisitions", self.v_count, "count", "script_v7.sh NumSequences")
+        row(1, "Interval between acquisitions", self.v_interval, "s", "script_v7.sh IntervalTime")
+        row(2, "Number of acquisitions", self.v_count, "count", "script_v7.sh NumSequences")
 
         # ── calculator ─────────────────────────────────────────────────
         calc = ttk.LabelFrame(wrap, text=" Duration ⇄ count ", padding=10)
@@ -202,7 +202,7 @@ class StabilityRunUI:
         """Parsed inputs, or None when any field isn't usable yet."""
         try:
             ev = float(self.v_events.get())
-            rate = float(self.v_rate.get())
+            rate = self.RATE_HZ
             iv = float(self.v_interval.get())
             cnt = int(float(self.v_count.get()))
         except (ValueError, TypeError):
@@ -235,7 +235,8 @@ class StabilityRunUI:
         total = cnt * acq + max(0, cnt - 1) * iv
 
         self.l_per.config(text=f"{self._fmt(acq)}   "
-                               f"(acquisition {self._fmt(ev / rate)} + overhead {int(self.OVERHEAD_S)}s)")
+                               f"(acquisition {self._fmt(ev / rate)} at {rate:.0f} Hz "
+                               f"+ overhead {int(self.OVERHEAD_S)}s)")
         self.l_total.config(text=f"{self._fmt(total)}   ({total / 3600:.2f} h)")
         self.l_end.config(text=(datetime.now() + timedelta(seconds=total)).strftime("%Y-%m-%d %H:%M:%S"))
 
