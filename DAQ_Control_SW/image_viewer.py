@@ -3,6 +3,7 @@ from tkinter import messagebox, Listbox, filedialog
 import os
 import time
 import threading
+import subprocess
 from datetime import datetime
 
 import customtkinter as ctk
@@ -109,25 +110,26 @@ class ImageViewer(ctk.CTkToplevel):
         ctk.CTkLabel(bar, text="Files", font=ctk.CTkFont(size=20, weight="bold"),
                      anchor="w").grid(row=0, column=0, sticky="ew", padx=18, pady=(16, 8))
 
-        # 뷰 모드: 라디오 버튼 한 줄 (기존 UX 그대로 -- 드롭다운보다 클릭
-        # 한 번에 바로 전환되는 게 편하다는 피드백에 따라 되돌림).
-        # NOTE: grid + equal weight columns를 썼더니 CTkRadioButton은 ttk와
-        # 달리 렌더링 폭이 고정돼 있어, 칸이 좁아지면 텍스트가 줄어들지
-        # 않고 그냥 잘려나갔다 ("Uniformity" -> "Uni"). pack(expand=True)로
-        # 되돌리면 각 버튼이 필요한 만큼만 자리를 쓰고 나머지 여백을
-        # 나눠 가져서 잘리지 않는다 (원래 ttk 버전과 동일한 방식).
-        # 세로 배치: 한 줄에 6개를 넣으면 CTkRadioButton 이 텍스트를 줄이지
-        # 못하고 잘려서(Uniformity -> "U"...), 폭은 그대로 두고 세로로 쌓는다.
-        # 2열 그리드로 세로 공간을 아끼면서 전 라벨이 온전히 보이게 한다.
+        # 폴더 선택: 드롭다운.
+        # Radio buttons worked while the folder list was a hardcoded six, but
+        # the list now comes from the filesystem (17 and growing), and 17
+        # radio buttons in a 2-column grid is 9 rows -- it would swallow the
+        # sidebar that the file list needs. A dropdown stays one row however
+        # many folders appear (2026-08-25).
         mode_frame = ctk.CTkFrame(bar, corner_radius=10, fg_color="#f6f7f9")
         mode_frame.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 10))
-        mode_frame.grid_columnconfigure((0, 1), weight=1)
-        modes = ["All", "ByProduce", "ByAnalysis", "Contour", "Uniformity", "Rate"]
-        for i, m in enumerate(modes):
-            ctk.CTkRadioButton(
-                mode_frame, text=m.replace("By", ""), variable=self.view_mode, value=m,
-                command=self.load_image_list, fg_color=COL_ACCENT, hover_color=COL_ACCENT_HV
-            ).grid(row=i // 2, column=i % 2, sticky="w", padx=14, pady=7)
+        mode_frame.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(mode_frame, text="Folder", anchor="w").grid(
+            row=0, column=0, sticky="w", padx=(14, 8), pady=10)
+        # Folder list comes from the filesystem, not a fixed list, so report
+        # directories added later (Stability, Summary, ScanReport, ...) appear
+        # without editing this file -- see discover_subdirs().
+        modes = ["All"] + self.discover_subdirs()
+        self.mode_menu = ctk.CTkOptionMenu(
+            mode_frame, values=modes, variable=self.view_mode,
+            command=lambda _v: self.load_image_list(),
+            fg_color=COL_ACCENT, button_color=COL_ACCENT, button_hover_color=COL_ACCENT_HV)
+        self.mode_menu.grid(row=0, column=1, sticky="ew", padx=(0, 14), pady=10)
 
         # 검색창
         self.search_entry = ctk.CTkEntry(bar, textvariable=self.search_var,
@@ -167,12 +169,64 @@ class ImageViewer(ctk.CTkToplevel):
         actions = ctk.CTkFrame(bar, fg_color="transparent")
         actions.grid(row=5, column=0, sticky="ew", padx=18, pady=(0, 16))
         actions.grid_columnconfigure(0, weight=1)
+        # Hand off to the desktop: this viewer is convenient for browsing, but
+        # the system image/PDF app is better for zooming, printing, or opening
+        # several at once -- and the file manager is the fastest way to get to
+        # everything else sitting in that folder (2026-08-25).
+        open_row = ctk.CTkFrame(actions, fg_color="transparent")
+        open_row.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        open_row.grid_columnconfigure((0, 1), weight=1)
+        ctk.CTkButton(open_row, text="🖼  Open externally", height=36,
+                      fg_color=COL_ACCENT, hover_color=COL_ACCENT_HV,
+                      command=self.open_in_system_viewer).grid(row=0, column=0, sticky="ew", padx=(0, 3))
+        ctk.CTkButton(open_row, text="📂  Open folder", height=36,
+                      fg_color=COL_GRAY, hover_color=COL_GRAY_HV,
+                      command=self.open_containing_folder).grid(row=0, column=1, sticky="ew", padx=(3, 0))
+
         ctk.CTkButton(actions, text="📄  Convert Selected to PDF", height=38,
                       fg_color=COL_GREEN, hover_color=COL_GREEN_HV,
-                      command=self.convert_to_pdf).grid(row=0, column=0, sticky="ew", pady=(0, 6))
+                      command=self.convert_to_pdf).grid(row=1, column=0, sticky="ew", pady=(0, 6))
         ctk.CTkButton(actions, text="🗑  Delete Selected", height=38,
                       fg_color="#c0392b", hover_color="#a93226",
-                      command=self.delete_selected).grid(row=1, column=0, sticky="ew")
+                      command=self.delete_selected).grid(row=2, column=0, sticky="ew")
+
+    # ── 외부 앱으로 열기 ────────────────────────────────────────────────
+    def _selected_paths(self):
+        return [self.display_paths[i] for i in self.listbox.curselection()
+                if 0 <= i < len(self.display_paths)]
+
+    def open_in_system_viewer(self):
+        """Open the selected file(s) in the desktop's default application."""
+        paths = self._selected_paths()
+        if not paths:
+            messagebox.showinfo("Open externally", "Select a file first.")
+            return
+        # Cap the burst: xdg-open spawns one app window per file, and a stray
+        # select-all would otherwise open hundreds.
+        if len(paths) > 10:
+            if not messagebox.askyesno("Open externally",
+                                       f"This will open {len(paths)} separate windows. Continue?"):
+                return
+        for p in paths:
+            try:
+                subprocess.Popen(["xdg-open", p], start_new_session=True,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception as e:
+                messagebox.showerror("Open externally", f"Could not open:\n{p}\n\n{e}")
+                return
+
+    def open_containing_folder(self):
+        """Open the folder holding the selection (or the image root) in the
+        desktop file manager."""
+        paths = self._selected_paths()
+        target = os.path.dirname(paths[0]) if paths else self.base_image_dir
+        if not os.path.isdir(target):
+            target = self.base_image_dir
+        try:
+            subprocess.Popen(["xdg-open", target], start_new_session=True,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            messagebox.showerror("Open folder", f"Could not open:\n{target}\n\n{e}")
 
     def _build_thumb_panel(self):
         self.thumb_frame = ctk.CTkFrame(self, width=180, corner_radius=0, fg_color=COL_THUMB_BG)
@@ -302,16 +356,44 @@ class ImageViewer(ctk.CTkToplevel):
             self._thumb_shown = False
 
     # ═══════════════════════════════════════════════════════ 파일 목록
+    def _valid_ext(self):
+        ext = ['.png', '.jpg', '.jpeg']
+        if PDF_SUPPORT:
+            ext.append('.pdf')
+        return tuple(ext)
+
+    def discover_subdirs(self):
+        """Every subfolder of the image dir that actually holds viewable files.
+
+        Was a hardcoded five (ByProduce/ByAnalysis/Contour/Uniformity/Rate),
+        which silently hid everything added since -- Stability, Summary,
+        ScanReport, Bfield, IntWindowStudy and the rest were unreachable from
+        the viewer even though reports were being written there (2026-08-25).
+        Discovering them means a new report directory shows up on its own."""
+        valid = self._valid_ext()
+        found = []
+        try:
+            for d in sorted(os.listdir(self.base_image_dir)):
+                full = os.path.join(self.base_image_dir, d)
+                if not os.path.isdir(full):
+                    continue
+                try:
+                    if any(f.lower().endswith(valid) for f in os.listdir(full)):
+                        found.append(d)
+                except OSError:
+                    continue
+        except OSError:
+            pass
+        return found
+
     def load_image_list(self):
         self.full_image_paths.clear()
         mode = self.view_mode.get()
-        valid_ext = ['.png', '.jpg', '.jpeg']
-        if PDF_SUPPORT:
-            valid_ext.append('.pdf')
-        valid_ext = tuple(valid_ext)
+        valid_ext = self._valid_ext()
 
-        sub_dirs = ["ByProduce", "ByAnalysis", "Contour", "Uniformity", "Rate"]
-        target_dirs = [os.path.join(self.base_image_dir, d) for d in (sub_dirs if mode == "All" else [mode])]
+        sub_dirs = self.discover_subdirs()
+        target_dirs = [os.path.join(self.base_image_dir, d)
+                       for d in (sub_dirs if mode == "All" else [mode])]
         for d in target_dirs:
             if os.path.exists(d):
                 for f in os.listdir(d):
@@ -340,7 +422,16 @@ class ImageViewer(ctk.CTkToplevel):
             if self.view_mode.get() == "All":
                 category = os.path.basename(os.path.dirname(p))
                 name = f"[{category}] {name}"
-            self.listbox.insert(tk.END, name)
+            # Modification time, same as the Data Files tab shows -- with
+            # reports regenerated repeatedly under the same filename, "which
+            # of these is the one I just made" is otherwise unanswerable.
+            try:
+                # Same format as the Data Files tab, so timestamps read the
+                # same way in both places.
+                ts = datetime.fromtimestamp(os.path.getmtime(p)).strftime("%Y-%m-%d %H:%M:%S")
+            except OSError:
+                ts = "  --  "
+            self.listbox.insert(tk.END, f"{ts}  {name}")
 
     def on_listbox_select(self, event):
         idx = self.listbox.curselection()

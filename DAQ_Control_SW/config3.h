@@ -19,7 +19,7 @@ const std::string ImagePath = "/home/precalkor/ADC/ADC_test/Data/image/";
 const std::string LogDir = "/home/precalkor/ADC/ADC_test/LOG/DAQ/";
 
 // --- DAQ Common Settings --- //
-const int Events = 700000;
+const int Events = 300000;
 const int TimeWindow = 1024;
 const int PostTrigger = 60;
 const std::string ChannelMask = "00001111";
@@ -54,11 +54,11 @@ const std::string direction3 = "B";
 const std::string RotateAngle1 = "0";
 const std::string TiltAngle1 = "0";
 
-const std::string RotateAngle2 = "135";
-const std::string TiltAngle2 = "-15";
+const std::string RotateAngle2 = "0";
+const std::string TiltAngle2 = "0";
 
-const std::string RotateAngle3 = "45";
-const std::string TiltAngle3 = "-15";
+const std::string RotateAngle3 = "0";
+const std::string TiltAngle3 = "0";
 
 // --- High Voltage --- //
 const std::string HV1 = "1670";

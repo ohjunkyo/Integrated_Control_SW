@@ -31,12 +31,15 @@ class _Tooltip:
 from tkinter import ttk, scrolledtext, messagebox, font, simpledialog
 import os
 import json
+import csv
 import math
 import re
 import subprocess
+import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import pandas as pd
+from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from image_viewer import ImageViewer
 from config_window import ConfigWindow
@@ -337,12 +340,12 @@ class UIManager:
         # UI 안에서 실시간으로 보여준다(터미널 잔여물 제거).
         # 가장 자주 보게 되는 탭이므로 Helper 바로 옆(눈에 띄는 위치)에 둔다.
         self.console_tab = ttk.Frame(self.notebook, padding=10)
-        self.notebook.add(self.console_tab, text="📟 Output")
+        self.notebook.add(self.console_tab, text="Output")
         self._create_console_viewer(self.console_tab)
 
         # Tab 3: Waveform Inspection (embedded, replaces external ROOT terminal)
         self.waveform_tab = ttk.Frame(self.notebook)
-        self.notebook.add(self.waveform_tab, text="🔬 Waveform")
+        self.notebook.add(self.waveform_tab, text="Waveform")
         self._create_waveform_viewer(self.waveform_tab)
 
         # Tab 4: Data Files (Treeview 자체 스크롤바 사용)
@@ -350,14 +353,46 @@ class UIManager:
         self.notebook.add(data_tab, text="Data Files")
         self._create_data_viewer(data_tab)
 
+        # Tab 4b: PMT Info -- per-PMT representative values accumulated across
+        # repeat scans. Sits next to Data Files so the tab order reads
+        # measurement -> data -> results, with the operations/diagnostics tabs
+        # (Log/Backup/DAQ Diag) grouped after it; it was previously wedged
+        # between Backup and DAQ Diag, i.e. among tabs it has nothing to do
+        # with. Still being built out (see the WIP banner inside), so the tab
+        # title carries the marker too: an operator opening it should know the
+        # numbers are not final before reading any of them.
+        pmt_tab = ttk.Frame(self.notebook, padding=10)
+        self.notebook.add(pmt_tab, text="PMT Info (WIP)")
+        self._create_pmt_info_viewer(pmt_tab)
+
+        # Tab 4c: Images -- NOT a real tab page. Selecting it pops the
+        # ImageViewer window and bounces the selection back to where the user
+        # was. The viewer works better as its own window (second monitor,
+        # side-by-side with a running scan, its own 3-column layout), but as a
+        # window it was only reachable via Ctrl+I, which nobody discovers. A
+        # tab-shaped entry point gets it both (2026-08-25).
+        self._images_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self._images_tab, text="Images ↗")
+        self._last_real_tab = None
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_main_tab_changed, add="+")
+
         # Tab 5: Log (ScrolledText 자체 스크롤바 사용)
         log_tab = ttk.Frame(self.notebook, padding=10)
         self.notebook.add(log_tab, text="Log")
         self._create_log_viewer(log_tab)
 
+        # Tab 5b: Backup -- lifecycle of RAW files (local -> External HDD1 ->
+        # verified -> local copy reclaimed). Its own tab rather than a Log
+        # sub-view because the question it answers ("was my data safely moved
+        # off, and is anything stuck on local?") is one an operator asks
+        # deliberately, not while scrolling general logs.
+        backup_tab = ttk.Frame(self.notebook, padding=10)
+        self.notebook.add(backup_tab, text="Backup")
+        self._create_backup_viewer(backup_tab)
+
         # Tab 6: DAQ Diagnostics
         diag_tab = ttk.Frame(self.notebook, padding=10)
-        self.notebook.add(diag_tab, text="🔧 DAQ Diag")
+        self.notebook.add(diag_tab, text="DAQ Diag")
         self._create_daq_diagnostics_tab(diag_tab)
 
         #  2: Laser Control
@@ -368,7 +403,7 @@ class UIManager:
 
         # 3b: Signal Lamp (PATLITE NE-USB) manual control
         self.lamp_main_frame = ttk.Frame(self.main_notebook)
-        self.main_notebook.add(self.lamp_main_frame, text=" 🚨 Signal Lamp ")
+        self.main_notebook.add(self.lamp_main_frame, text=" Signal Lamp ")
         self._create_signal_lamp_tab(self.lamp_main_frame)
 
         # 4: UPS Status
@@ -379,7 +414,7 @@ class UIManager:
         # 5: Integrated Log Center (read-only viewer over all scattered logs)
         try:
             self.log_center_frame = ttk.Frame(self.main_notebook)
-            self.main_notebook.add(self.log_center_frame, text=" 📑 Logs ")
+            self.main_notebook.add(self.log_center_frame, text=" Logs ")
             self._create_log_center_tab(self.log_center_frame)
         except Exception as e:
             print(f"[WARNING] Log Center tab init failed (non-fatal): {e}")
@@ -387,14 +422,14 @@ class UIManager:
         # 6: Quick Start guide (English)
         try:
             self.quick_start_frame = ttk.Frame(self.main_notebook)
-            self.main_notebook.add(self.quick_start_frame, text=" 📖 Quick Start ")
+            self.main_notebook.add(self.quick_start_frame, text=" Quick Start ")
             self._create_quick_start_tab(self.quick_start_frame)
         except Exception as e:
             print(f"[WARNING] Quick Start tab init failed (non-fatal): {e}")
 
         # 7: Emergency Contact
         self.contact_frame = ttk.Frame(self.main_notebook)
-        self.main_notebook.add(self.contact_frame, text=" ☎️ Emergency ")
+        self.main_notebook.add(self.contact_frame, text=" Emergency ")
         self._create_contact_tab(self.contact_frame)
 
     def on_config_loaded(self):
@@ -1179,20 +1214,49 @@ class UIManager:
 
         # ── 9. DY1 / DY2 ──────────────────────────────────────────────────
         # DY1 sits on the A (+Y) side, DY2 directly behind it (opposite side).
-        dy_r = 15
-        dy1_ang = a_ang
-        dy2_ang = a_ang + 180
-        dy1_x, dy1_y = get_pos(dy1_ang, dy_r)
-        dy2_x, dy2_y = get_pos(dy2_ang, dy_r)
-        canvas.create_oval(C_X - 2, C_Y - 2, C_X + 2, C_Y + 2, fill="gray", outline="")
-        sq = 7  # DY1: square
-        canvas.create_rectangle(dy1_x - sq, dy1_y - sq, dy1_x + sq, dy1_y + sq,
-                                outline=txt_fill, width=2)
-        rw, rh = 5, 9  # DY2: rectangle (narrower, taller)
-        canvas.create_rectangle(dy2_x - rw, dy2_y - rh, dy2_x + rw, dy2_y + rh,
-                                outline=txt_fill, width=2)
-        canvas.create_text(dy1_x, dy1_y - sq - 10, text="DY1", font=("Helvetica", 9, "bold"), fill=txt_fill)
-        canvas.create_text(dy2_x, dy2_y - rh - 10, text="DY2", font=("Helvetica", 9, "bold"), fill=txt_fill)
+        # Both boxes are drawn as rotated polygons (long axis pointing along
+        # the radial direction, i.e. toward/away from the tube center) rather
+        # than axis-aligned rectangles -- an axis-aligned box only looked
+        # right at the handful of angles where "radial" happened to line up
+        # with the screen's x/y axes, and looked wrong (just translated, not
+        # turned) everywhere else (2026-08-22, user: "각도에 맞게 저게
+        # 틀어져야하는데 ... 우스꽝스럽게 되어있어").
+        def draw_rotated_rect(cx, cy, half_w, half_h, angle_deg, **kw):
+            """half_w = half-extent tangentially, half_h = half-extent
+            radially, so the box's long side points at the center."""
+            rad = math.radians(angle_deg)
+            radial = (math.cos(rad), -math.sin(rad))       # matches get_pos()
+            tangent = (-radial[1], radial[0])               # rotate 90 deg
+            corners = []
+            for sw, sh in ((-1, -1), (1, -1), (1, 1), (-1, 1)):
+                corners.append(cx + sw * half_w * tangent[0] + sh * half_h * radial[0])
+                corners.append(cy + sw * half_w * tangent[1] + sh * half_h * radial[1])
+            return canvas.create_polygon(*corners, **kw)
+
+        # Geometry per operator correction: DY1 is centered exactly on the
+        # tube's own center (not offset out toward the rim), DY2 is a
+        # smaller box of the SAME width sitting directly below DY1 in the
+        # assembly's own rotated frame -- i.e. local (0,0) / (0,-1), not two
+        # boxes on opposite sides of the tube (2026-08-22).
+        dy1_ang = a_ang     # whole DY1+DY2 assembly turns together with cable A
+        rad = math.radians(dy1_ang)
+        radial = (math.cos(rad), -math.sin(rad))        # matches get_pos()
+
+        hw = 9                    # DY1: half-width, both boxes share this width
+        dy1_hh = 9                 # DY1: half-height (square)
+        dy2_hh = 5                 # DY2: half-height (shorter -> smaller rectangle)
+        gap = 1
+        dy1_x, dy1_y = C_X, C_Y
+        offset = dy1_hh + gap + dy2_hh
+        dy2_x = dy1_x - radial[0] * offset
+        dy2_y = dy1_y - radial[1] * offset
+
+        draw_rotated_rect(dy1_x, dy1_y, hw, dy1_hh, dy1_ang,
+                          outline=txt_fill, width=2, fill="")
+        draw_rotated_rect(dy2_x, dy2_y, hw, dy2_hh, dy1_ang,
+                          outline=txt_fill, width=2, fill="")
+        canvas.create_text(dy1_x, dy1_y - dy1_hh - 10, text="DY1", font=("Helvetica", 9, "bold"), fill=txt_fill)
+        canvas.create_text(dy2_x, dy2_y - dy2_hh - 10, text="DY2", font=("Helvetica", 9, "bold"), fill=txt_fill)
 
         canvas.create_text(C_X, 244, text="TOP VIEW", font=("Helvetica", 9, "bold"), fill="#888")
 
@@ -1872,6 +1936,399 @@ class UIManager:
         self.log_text.yview_moveto(1)
 
     # ------------------------------------------------------------------
+    # Backup tab -- RAW file lifecycle (sync_data_v2.sh)
+    # ------------------------------------------------------------------
+    BACKUP_LIFECYCLE_LOG = os.path.expanduser("~/logs/backup_lifecycle.jsonl")
+
+    def _create_backup_viewer(self, parent):
+        """Renders sync_data_v2.sh's JSON-lines lifecycle log as a table.
+
+        The script writes one JSON object per event (copy/verify/delete/...),
+        which is what makes this readable as a table instead of prose -- the
+        alternative (grepping a human-readable log) breaks the moment the
+        wording changes."""
+        # ── summary strip ──────────────────────────────────────────────
+        top = ttk.Frame(parent)
+        top.pack(fill=tk.X, pady=(0, 8))
+
+        self._backup_summary = ttk.Label(
+            top, text="Not loaded yet.", font=("Helvetica", 11, "bold"))
+        self._backup_summary.pack(side=tk.LEFT)
+
+        ttk.Button(top, text="🔄 Refresh",
+                   command=self.refresh_backup_view).pack(side=tk.RIGHT)
+        ttk.Button(top, text="▶ Run backup now",
+                   command=self._run_backup_now).pack(side=tk.RIGHT, padx=(0, 6))
+        ttk.Button(top, text="🧪 Dry run",
+                   command=lambda: self._run_backup_now(dry_run=True)).pack(side=tk.RIGHT, padx=(0, 6))
+
+        self._backup_disk = ttk.Label(top, text="", font=("Helvetica", 9),
+                                      foreground="#666")
+        self._backup_disk.pack(side=tk.LEFT, padx=(14, 0))
+
+        # ── failures banner (only shown when something needs attention) ──
+        self._backup_warn = tk.Label(parent, text="", bg="#f8d7da", fg="#721c24",
+                                     font=("Helvetica", 10, "bold"), anchor="w",
+                                     padx=10, pady=6)
+        # packed/unpacked dynamically by refresh_backup_view
+
+        # ── event table ────────────────────────────────────────────────
+        cols = ("time", "event", "status", "file", "detail")
+        self._backup_tree = ttk.Treeview(parent, columns=cols, show="headings", height=20)
+        for c, w in zip(cols, (150, 90, 80, 330, 300)):
+            self._backup_tree.heading(c, text=c.capitalize())
+            self._backup_tree.column(c, width=w, anchor="w")
+        vsb = ttk.Scrollbar(parent, orient="vertical", command=self._backup_tree.yview)
+        self._backup_tree.configure(yscrollcommand=vsb.set)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        self._backup_tree.pack(fill=tk.BOTH, expand=True)
+
+        self._backup_tree.tag_configure("ok",   foreground="#1a7f37")
+        self._backup_tree.tag_configure("fail", foreground="#b91c1c")
+        self._backup_tree.tag_configure("skip", foreground="#8a8a8a")
+
+        self.refresh_backup_view()
+
+    _BACKUP_MAX_ROWS = 500   # newest N events; the file itself keeps everything
+
+    def refresh_backup_view(self):
+        """Re-read the lifecycle log and repaint the table."""
+        tree = getattr(self, "_backup_tree", None)
+        if tree is None:
+            return
+        tree.delete(*tree.get_children())
+
+        path = self.BACKUP_LIFECYCLE_LOG
+        if not os.path.exists(path):
+            self._backup_summary.config(
+                text="No backup has run yet.", foreground="#8a8a8a")
+            self._backup_disk.config(
+                text=f"(expected log: {path})")
+            return
+
+        events = []
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        events.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue        # tolerate a half-written last line
+        except OSError as e:
+            self._backup_summary.config(text=f"Cannot read log: {e}", foreground="#b91c1c")
+            return
+
+        # Summary comes from the most recent completed run, so the header
+        # describes one coherent run rather than mixing several.
+        last_done = next((e for e in reversed(events)
+                          if e.get("event") == "run" and e.get("status") == "done"), None)
+        if last_done:
+            failed = int(last_done.get("failed", 0) or 0)
+            self._backup_summary.config(
+                text=(f"Last backup {last_done.get('ts','')[:16].replace('T',' ')}  ·  "
+                      f"{last_done.get('deleted','0')} files reclaimed  ·  "
+                      f"{last_done.get('freed_gb','0')} GB freed"),
+                foreground="#b91c1c" if failed else "#1a7f37")
+            self._backup_disk.config(
+                text=(f"local free {last_done.get('local_free_before','?')}"
+                      f" → {last_done.get('local_free_after','?')}"))
+        else:
+            self._backup_summary.config(text="No completed run in log yet.",
+                                        foreground="#8a8a8a")
+
+        # Any file left behind is the thing worth surfacing loudly: it means a
+        # run is still occupying local disk because its copy could not be
+        # trusted.
+        stuck = [e for e in events
+                 if e.get("event") in ("verify", "delete", "copy") and e.get("status") == "fail"]
+        if stuck:
+            names = ", ".join(e.get("file", e.get("subdir", "?")) for e in stuck[-5:])
+            self._backup_warn.config(
+                text=(f"⚠ {len(stuck)} file(s) were NOT reclaimed and remain on local disk "
+                      f"(latest: {names}). They were kept on purpose — their backup "
+                      f"could not be verified."))
+            self._backup_warn.pack(fill=tk.X, pady=(0, 6), before=self._backup_tree)
+        else:
+            self._backup_warn.pack_forget()
+
+        for e in events[-self._BACKUP_MAX_ROWS:]:
+            status = e.get("status", "")
+            detail = " ".join(f"{k}={v}" for k, v in e.items()
+                              if k not in ("ts", "event", "status", "file"))
+            tree.insert("", tk.END, tags=(status,), values=(
+                e.get("ts", "")[:19].replace("T", " "),
+                e.get("event", ""),
+                status,
+                e.get("file", e.get("subdir", "")),
+                detail,
+            ))
+        children = tree.get_children()
+        if children:
+            tree.see(children[-1])
+
+    def _run_backup_now(self, dry_run=False):
+        """Run sync_data_v2.sh through the Console so its progress is visible
+        and it can be stopped, rather than blocking the UI thread."""
+        script = os.path.expanduser("~/sync_data_v2.sh")
+        if not os.path.exists(script):
+            messagebox.showerror("Backup", f"Script not found:\n{script}")
+            return
+        if not dry_run:
+            if not messagebox.askyesno(
+                    "Run backup now",
+                    "Copy RAW files to External HDD1, verify them, and delete the\n"
+                    "verified local copies to free disk space?\n\n"
+                    "Files whose backup cannot be verified are always kept."):
+                return
+        cmd = [script] + (["--dry-run"] if dry_run else [])
+        self.ensure_console_pane("backup")
+        self.controller._run_job_in_console(
+            cmd, job_name="Backup (sync_data_v2)", slot="backup",
+            on_complete=lambda *_: self.master.after(500, self.refresh_backup_view))
+        self.focus_console("backup")
+
+    # ------------------------------------------------------------------
+    # PMT Info tab  (WORK IN PROGRESS)
+    # ------------------------------------------------------------------
+    PMT_REP_CSV = os.path.expanduser("~/ADC/ADC_test/Data/summary/pmt_representative.csv")
+    PMT_SUMMARY_CSV = os.path.expanduser("~/ADC/ADC_test/Data/summary/pmt_uniformity_summary.csv")
+
+    def _create_pmt_info_viewer(self, parent):
+        """Per-PMT representative values (mean over repeats +- reproducibility).
+
+        Reads the CSV that PMT_Representative.C writes rather than
+        recomputing here: the ROOT macro is the single definition of how a
+        representative value is formed, and a second implementation in Python
+        would be one more thing to keep in sync."""
+        # ---- WIP banner ---------------------------------------------------
+        wip = tk.Label(parent,
+                       text="⚠  WORK IN PROGRESS -- this tab is still being built. "
+                            "Numbers shown are for checking the pipeline, not for reporting.",
+                       bg="#fff3cd", fg="#7a5b00", font=("Helvetica", 10, "bold"),
+                       anchor="w", padx=10, pady=6)
+        wip.pack(fill=tk.X, pady=(0, 8))
+
+        top = ttk.Frame(parent)
+        top.pack(fill=tk.X, pady=(0, 6))
+        self._pmt_summary_lbl = ttk.Label(top, text="Not loaded yet.",
+                                          font=("Helvetica", 11, "bold"))
+        self._pmt_summary_lbl.pack(side=tk.LEFT)
+        ttk.Button(top, text="🔄 Refresh", command=self.refresh_pmt_info).pack(side=tk.RIGHT)
+        ttk.Button(top, text="↻ Recompute (ROOT)",
+                   command=self._recompute_pmt_representative).pack(side=tk.RIGHT, padx=(0, 6))
+
+        # Tables on the left, curve on the right: the numbers say how much a
+        # PMT varies between repeats, but only the curve says WHERE on the
+        # cathode it varies, and the two are read together.
+        split = ttk.Frame(parent)
+        split.pack(fill=tk.BOTH, expand=True)
+        split.columnconfigure(0, weight=5)
+        split.columnconfigure(1, weight=5)
+        split.rowconfigure(0, weight=1)
+
+        left = ttk.Frame(split)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        right = ttk.Frame(split)
+        right.grid(row=0, column=1, sticky="nsew")
+
+        # ---- representative table ----------------------------------------
+        rep_frame = ttk.LabelFrame(left, text=" Representative values (mean over repeats) ",
+                                   padding=4)
+        rep_frame.pack(fill=tk.BOTH, expand=True)
+        cols = ("serial", "axis", "R", "cs_ratio", "cs_err", "cs_repro",
+                "sigma1000", "sig_err", "sig_repro")
+        self._pmt_tree = ttk.Treeview(rep_frame, columns=cols, show="headings", height=10)
+        widths = (80, 60, 34, 80, 70, 78, 80, 70, 78)
+        for c, w in zip(cols, widths):
+            self._pmt_tree.heading(c, text=c)
+            self._pmt_tree.column(c, width=w, anchor="center")
+        vsb = ttk.Scrollbar(rep_frame, orient="vertical", command=self._pmt_tree.yview)
+        self._pmt_tree.configure(yscrollcommand=vsb.set)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        self._pmt_tree.pack(fill=tk.BOTH, expand=True)
+        self._pmt_tree.tag_configure("single", foreground="#8a6d00")
+        self._pmt_tree.bind("<<TreeviewSelect>>", self._on_pmt_row_selected)
+
+        # ---- per-measurement detail --------------------------------------
+        det_frame = ttk.LabelFrame(left, text=" Individual measurements ", padding=4)
+        det_frame.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
+        dcols = ("timestamp", "serial", "tag", "axis", "n_points", "cs_ratio", "sigma1000")
+        self._pmt_det = ttk.Treeview(det_frame, columns=dcols, show="headings", height=8)
+        for c, w in zip(dcols, (130, 75, 140, 60, 70, 80, 80)):
+            self._pmt_det.heading(c, text=c)
+            self._pmt_det.column(c, width=w, anchor="center")
+        vsb2 = ttk.Scrollbar(det_frame, orient="vertical", command=self._pmt_det.yview)
+        self._pmt_det.configure(yscrollcommand=vsb2.set)
+        vsb2.pack(side=tk.RIGHT, fill=tk.Y)
+        self._pmt_det.pack(fill=tk.BOTH, expand=True)
+
+        # ---- curve panel --------------------------------------------------
+        plot_frame = ttk.LabelFrame(right, text=" Uniformity curve ", padding=4)
+        plot_frame.pack(fill=tk.BOTH, expand=True)
+        self._pmt_plot_hint = ttk.Label(
+            plot_frame, text="Select a PMT row on the left to plot its curve.",
+            foreground="#888888", anchor="center")
+        self._pmt_plot_hint.pack(fill=tk.X, pady=(2, 4))
+
+        self._pmt_fig = Figure(figsize=(5.6, 5.2), dpi=100)
+        self._pmt_ax = self._pmt_fig.add_subplot(111)
+        self._pmt_fig.subplots_adjust(left=0.15, right=0.97, top=0.93, bottom=0.12)
+        self._pmt_canvas = FigureCanvasTkAgg(self._pmt_fig, master=plot_frame)
+        self._pmt_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        self._pmt_draw_placeholder()
+
+        self.refresh_pmt_info()
+
+    # ---- PMT curve plotting -------------------------------------------
+    PMT_UNIFORMITY_DIR = os.path.expanduser("~/ADC/ADC_test/Data/UNIFORMITY")
+    PMT_PLOT_METRIC = "MonNorm_CorrRawQE"
+
+    def _pmt_draw_placeholder(self, msg="No curve selected."):
+        self._pmt_ax.clear()
+        self._pmt_ax.text(0.5, 0.5, msg, ha="center", va="center",
+                          transform=self._pmt_ax.transAxes, color="#888", fontsize=10)
+        self._pmt_ax.set_xticks([]); self._pmt_ax.set_yticks([])
+        self._pmt_canvas.draw_idle()
+
+    def _on_pmt_row_selected(self, _event=None):
+        sel = self._pmt_tree.selection()
+        if not sel:
+            return
+        vals = self._pmt_tree.item(sel[0]).get("values") or []
+        if len(vals) < 2:
+            return
+        self._plot_pmt_curve(str(vals[0]), str(vals[1]))
+
+    def _plot_pmt_curve(self, serial, axis):
+        """Overlay every repeat of one PMT/axis, plus their point-wise mean.
+
+        The mean band is the spread ACROSS repeats at each angle -- the same
+        reproducibility the table quotes as a single number, shown here per
+        angle so a PMT that only disagrees at the edges is distinguishable
+        from one that disagrees everywhere."""
+        try:
+            import uproot
+        except ImportError:
+            self._pmt_draw_placeholder("uproot not installed.")
+            return
+
+        # "pooled" has no graph of its own; it is X and Y together.
+        axes = ["X", "Y"] if axis == "pooled" else [axis]
+        tags = []
+        for r in self._read_csv_rows(self.PMT_SUMMARY_CSV):
+            if r.get("serial") == serial and r.get("tag") not in tags:
+                tags.append(r.get("tag"))
+        if not tags:
+            self._pmt_draw_placeholder(f"No measurements found for {serial}.")
+            return
+
+        self._pmt_ax.clear()
+        self._pmt_ax.grid(alpha=0.3)
+        curves = []
+        for ax_name in axes:
+            for i, tag in enumerate(tags):
+                path = os.path.join(self.PMT_UNIFORMITY_DIR, f"Graphs_Uniformity_{tag}.root")
+                if not os.path.exists(path):
+                    continue
+                try:
+                    with uproot.open(path) as f:
+                        g = f[f"gr_{serial}_{ax_name}_{self.PMT_PLOT_METRIC}"]
+                        x = np.asarray(g.member("fX"), dtype=float)
+                        y = np.asarray(g.member("fY"), dtype=float)
+                except Exception:
+                    continue
+                good = y > 0
+                if not good.any():
+                    continue
+                order = np.argsort(x[good])
+                xs, ys = x[good][order], y[good][order]
+                curves.append((xs, ys))
+                self._pmt_ax.plot(xs, ys, marker="o", ms=3, lw=0.8, alpha=0.55,
+                                  label=f"{tag} {ax_name}" if len(axes) > 1 else tag)
+
+        if not curves:
+            self._pmt_draw_placeholder(f"No curve data for {serial} {axis}.")
+            return
+
+        # Point-wise mean +- spread, on the angle grid of the first curve.
+        ref_x = curves[0][0]
+        stacked = []
+        for xs, ys in curves:
+            stacked.append(np.interp(ref_x, xs, ys))
+        stacked = np.vstack(stacked)
+        mean = stacked.mean(axis=0)
+        if stacked.shape[0] >= 2:
+            sd = stacked.std(axis=0, ddof=1)
+            self._pmt_ax.fill_between(ref_x, mean - sd, mean + sd, color="#d62728",
+                                      alpha=0.18, label="mean ± repro")
+        self._pmt_ax.plot(ref_x, mean, color="#d62728", lw=2, label="mean")
+
+        self._pmt_ax.set_xlabel("Position angle [degree]")
+        self._pmt_ax.set_ylabel("Monitor-normalized QE [a.u.]")
+        self._pmt_ax.set_title(f"{serial}  ({axis})", fontsize=11)
+        # Headroom so the legend never lands on the curve.
+        lo, hi = self._pmt_ax.get_ylim()
+        self._pmt_ax.set_ylim(lo, hi + (hi - lo) * 0.28)
+        self._pmt_ax.legend(fontsize=7, ncol=2, framealpha=0.9, loc="upper right")
+        self._pmt_plot_hint.config(
+            text=f"{serial} {axis} — {len(curves)} curve(s) from {len(tags)} measurement(s)")
+        self._pmt_canvas.draw_idle()
+
+    def _read_csv_rows(self, path):
+        """Small CSV reader -> list of dicts. Returns [] when absent."""
+        if not os.path.exists(path):
+            return []
+        try:
+            with open(path, newline="", encoding="utf-8") as f:
+                return list(csv.DictReader(f))
+        except OSError:
+            return []
+
+    def refresh_pmt_info(self):
+        tree = getattr(self, "_pmt_tree", None)
+        if tree is None:
+            return
+        tree.delete(*tree.get_children())
+        self._pmt_det.delete(*self._pmt_det.get_children())
+
+        rep = self._read_csv_rows(self.PMT_REP_CSV)
+        if not rep:
+            self._pmt_summary_lbl.config(
+                text="No representative values yet — run  ./analyze.sh pmtrep",
+                foreground="#8a8a8a")
+        else:
+            serials = {r.get("serial", "") for r in rep}
+            self._pmt_summary_lbl.config(
+                text=f"{len(serials)} PMT(s), {len(rep)} rows", foreground="#1a7f37")
+            for r in rep:
+                single = not r.get("cs_err")      # blank -> only one measurement
+                tree.insert("", tk.END, tags=("single",) if single else (), values=(
+                    r.get("serial", ""), r.get("axis", ""), r.get("n_repeats", ""),
+                    r.get("cs_ratio", ""), r.get("cs_err", "—"),
+                    r.get("cs_reproducibility", "—"),
+                    r.get("sigma1000", ""), r.get("sigma1000_err", "—"),
+                    r.get("sigma1000_reproducibility", "—")))
+
+        for r in self._read_csv_rows(self.PMT_SUMMARY_CSV):
+            self._pmt_det.insert("", tk.END, values=(
+                r.get("timestamp", ""), r.get("serial", ""), r.get("tag", ""),
+                r.get("axis", ""), r.get("n_points", ""),
+                r.get("cs_ratio", ""), r.get("sigma1000", "")))
+
+    def _recompute_pmt_representative(self):
+        """Re-run PMT_Representative.C, then reload the table it writes."""
+        adc = os.path.expanduser("~/ADC/ADC_test")
+        self.ensure_console_pane("analysis")
+        self.controller._run_job_in_console(
+            [f"cd {adc} && ./analyze.sh pmtrep"],
+            job_name="PMT Representative", slot="analysis",
+            on_complete=lambda *_: self.master.after(500, self.refresh_pmt_info))
+        self.focus_console("analysis")
+
+    # ------------------------------------------------------------------
     # DAQ Diagnostics tab
     # ------------------------------------------------------------------
     def _create_daq_diagnostics_tab(self, parent):
@@ -2150,15 +2607,24 @@ class UIManager:
         sub_nb.add(daq_frame, text="⚫ DAQ Stream")
         self._build_console_pane(daq_frame, "daq", mono)
 
-    def ensure_console_pane(self, slot):
-        """Lazily create a sub-tab/pane the first time a parallel slot is used
-        (produce_1/2/3, analysis_1/2/3). Each parallel job gets its own output tab."""
+    def ensure_console_pane(self, slot, parent=None):
+        """Lazily create a pane the first time a slot is used (produce_1/2/3,
+        analysis_1/2/3, ...) -- each parallel job gets its own output pane.
+
+        `parent`: build the pane directly inside this widget instead of adding
+        a new sub-tab under the Output tab's notebook. Used for slot=
+        "general_scan", whose console lives beside the (now tilt-as-rows,
+        so there's room) Scan Progress Matrix -- an operator watching the
+        matrix fill in shouldn't have to also keep the Output tab open."""
         if slot in self.console_panes:
             return
         mono = self._pick_mono_font()
-        frame = ttk.Frame(self.console_subnb)
-        label = self._SLOT_LABELS.get(slot, slot)
-        self.console_subnb.add(frame, text=f"⚫ {label}")
+        if parent is not None:
+            frame = parent
+        else:
+            frame = ttk.Frame(self.console_subnb)
+            label = self._SLOT_LABELS.get(slot, slot)
+            self.console_subnb.add(frame, text=f"⚫ {label}")
         self._build_console_pane(frame, slot, mono)
 
     # 터미널 ANSI SGR → Tk 텍스트 색상 매핑 (어두운 콘솔에서 읽기 좋은 톤)
@@ -2195,14 +2661,23 @@ class UIManager:
         pane["ansi_tag"] = tag
         return tag
 
+    # Palette matched to the approved console mockup (2026-08-15, "저 색감과
+    # 글씨체, 저 배경색" -- user asked for the exact colors, not just the
+    # muted-telemetry behavior). Bluish-slate instead of the old flat gray/
+    # black VSCode-terminal look.
+    _CONSOLE_BAR_BG = "#1b1f2a"
+    _CONSOLE_BODY_BG = "#151821"
+    _CONSOLE_ACCENT = "#3ddc84"
+
     def _build_console_pane(self, parent, slot, mono):
-        """슬롯(daq/analysis) 하나에 대한 헤더바 + 출력 ScrolledText 를 만든다."""
-        bar = tk.Frame(parent, bg="#2d2d2d")
+        """슬롯(daq/analysis) 하나에 대한 헤더바 + 진행률바 + 출력 ScrolledText 를 만든다."""
+        bar_bg, body_bg, accent = self._CONSOLE_BAR_BG, self._CONSOLE_BODY_BG, self._CONSOLE_ACCENT
+        bar = tk.Frame(parent, bg=bar_bg)
         bar.pack(fill=tk.X)
 
         status_var = tk.StringVar(value="● Idle")
         status_lbl = tk.Label(bar, textvariable=status_var,
-                              font=(mono, 12, "bold"), bg="#2d2d2d", fg="#808080",
+                              font=(mono, 12, "bold"), bg=bar_bg, fg="#8b95a8",
                               anchor="w", padx=10, pady=6)
         status_lbl.pack(side=tk.LEFT)
 
@@ -2212,32 +2687,47 @@ class UIManager:
                   activebackground="#c44").pack(side=tk.RIGHT, padx=(4, 10), pady=4)
         tk.Button(bar, text="🧹 Clear",
                   command=lambda s=slot: self.clear_console(s),
-                  bg="#444", fg="white", relief="flat", padx=10,
-                  activebackground="#555").pack(side=tk.RIGHT, padx=4, pady=4)
+                  bg="#33384a", fg="white", relief="flat", padx=10,
+                  activebackground="#3f4559").pack(side=tk.RIGHT, padx=4, pady=4)
         term_btn = tk.Button(bar, text="🖥 Terminal",
                   command=lambda s=slot: self._open_last_cmd_in_terminal(s),
-                  bg="#2d5a27", fg="white", relief="flat", padx=10,
-                  activebackground="#3a7a34")
+                  bg="#1f5c46", fg="white", relief="flat", padx=10,
+                  activebackground="#277a5c")
         term_btn.pack(side=tk.RIGHT, padx=4, pady=4)
         autoscroll = tk.BooleanVar(value=True)
         tk.Checkbutton(bar, text="Auto-scroll", variable=autoscroll,
-                       bg="#2d2d2d", fg="#d4d4d4", selectcolor="#2d2d2d",
-                       activebackground="#2d2d2d", activeforeground="white",
+                       bg=bar_bg, fg="#c7cedb", selectcolor=bar_bg,
+                       activebackground=bar_bg, activeforeground="white",
                        relief="flat").pack(side=tk.RIGHT, padx=8)
+
+        # Thin progress bar (only meaningful for slots that report point
+        # progress, e.g. general_scan -- harmless 0-width sliver otherwise).
+        progress_track = tk.Frame(parent, bg="#2a2f3d", height=3)
+        progress_track.pack(fill=tk.X)
+        progress_track.pack_propagate(False)
+        progress_fill = tk.Frame(progress_track, bg=accent)
+        progress_fill.place(relx=0, rely=0, relwidth=0.0, relheight=1.0)
 
         text = scrolledtext.ScrolledText(
             parent, wrap=tk.NONE, state="disabled",
-            bg="#1e1e1e", fg="#d4d4d4", insertbackground="#d4d4d4",
+            bg=body_bg, fg="#c7cedb", insertbackground="#c7cedb",
             padx=10, pady=8, relief="flat", borderwidth=0,
             font=(mono, 11))
         text.pack(fill=tk.BOTH, expand=True)
-        text.tag_config("info",     foreground="#4fc1ff")
-        text.tag_config("ok",       foreground="#73c991")
+        text.tag_config("info",     foreground="#5b8cff")
+        text.tag_config("ok",       foreground=accent)
         text.tag_config("err",      foreground="#f48771")
-        text.tag_config("warn",     foreground="#e5c07b")
+        text.tag_config("warn",     foreground="#e8b13d")
         text.tag_config("progress", foreground="#c678dd")
         text.tag_config("header",   foreground="#ffd479", font=(mono, 11, "bold"))
-        text.tag_config("cmd",      foreground="#888888", font=(mono, 10))
+        text.tag_config("cmd",      foreground="#6b7488", font=(mono, 10))
+        text.tag_config("evt",      foreground="#5c6577", font=(mono, 10))
+        # Per-point collapsible section header: click to fold/unfold the
+        # telemetry lines that follow it (console_begin_point/console_write
+        # wire this up -- see below).
+        text.tag_config("pt_header", foreground="#7fd2ff", font=(mono, 11, "bold"))
+        text.tag_bind("pt_header", "<Enter>", lambda e, w=text: w.config(cursor="hand2"))
+        text.tag_bind("pt_header", "<Leave>", lambda e, w=text: w.config(cursor=""))
 
         # ANSI(터미널) 색상 태그 — 스크립트가 내보내는 \x1b[..m 코드를 실제 색으로 칠한다.
         for code, color in self.ANSI_FG.items():
@@ -2248,13 +2738,13 @@ class UIManager:
         # 입력창 — nested ssh 등 대화형 프롬프트(예: DPB Setup의 root 비밀번호)에
         # 응답할 방법이 없던 문제를 해결. 기본은 비밀번호 마스킹(show="*"),
         # 체크박스로 평문 표시 전환 가능 (일반 확인 프롬프트 y/n 등에 유용).
-        input_bar = tk.Frame(parent, bg="#2d2d2d")
+        input_bar = tk.Frame(parent, bg=bar_bg)
         input_bar.pack(fill=tk.X)
-        tk.Label(input_bar, text="⌨ Input:", font=(mono, 10), bg="#2d2d2d", fg="#808080",
+        tk.Label(input_bar, text="⌨ Input:", font=(mono, 10), bg=bar_bg, fg="#8b95a8",
                  padx=10).pack(side=tk.LEFT)
         input_var = tk.StringVar()
         input_entry = tk.Entry(input_bar, textvariable=input_var, show="*",
-                               bg="#1e1e1e", fg="#d4d4d4", insertbackground="#d4d4d4",
+                               bg=body_bg, fg="#c7cedb", insertbackground="#c7cedb",
                                relief="flat", font=(mono, 11))
         input_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4), pady=6)
 
@@ -2273,18 +2763,20 @@ class UIManager:
         def _toggle_mask(entry=input_entry, var=show_plain):
             entry.config(show="" if var.get() else "*")
         tk.Checkbutton(input_bar, text="show", variable=show_plain, command=_toggle_mask,
-                       bg="#2d2d2d", fg="#d4d4d4", selectcolor="#2d2d2d",
-                       activebackground="#2d2d2d", activeforeground="white",
+                       bg=bar_bg, fg="#c7cedb", selectcolor=bar_bg,
+                       activebackground=bar_bg, activeforeground="white",
                        relief="flat").pack(side=tk.LEFT, padx=4)
         tk.Button(input_bar, text="Send ⏎", command=_send,
-                  bg="#2d5a27", fg="white", relief="flat", padx=10,
-                  activebackground="#3a7a34").pack(side=tk.LEFT, padx=(0, 10), pady=4)
+                  bg="#1f5c46", fg="white", relief="flat", padx=10,
+                  activebackground="#277a5c").pack(side=tk.LEFT, padx=(0, 10), pady=4)
 
         self.console_panes[slot] = {
             "frame": parent, "text": text,
             "status_var": status_var, "status_lbl": status_lbl,
             "autoscroll": autoscroll, "term_btn": term_btn,
             "input_var": input_var, "input_entry": input_entry,
+            "progress_fill": progress_fill,
+            "cur_body_tag": None, "pt_counter": 0,
             "ansi_tag": None, "ansi_bold": False, "ansi_fg": None}
 
     def _pick_mono_font(self):
@@ -2300,7 +2792,19 @@ class UIManager:
         return "TkFixedFont"
 
     def focus_console(self, slot):
-        """Console 탭을 띄우고, 해당 슬롯(daq/analysis) 서브탭을 앞으로 가져온다."""
+        """Console 탭을 띄우고, 해당 슬롯(daq/analysis) 서브탭을 앞으로 가져온다.
+
+        slot="general_scan" lives inside the Scan Progress Matrix tab (see
+        ensure_console_pane's `parent` param), not the Output tab's
+        sub-notebook, so it needs its own tab to raise instead."""
+        if slot == "general_scan":
+            try:
+                auto_ui = getattr(self.controller, 'auto_ui', None)
+                if auto_ui is not None and hasattr(auto_ui, 'matrix_tab'):
+                    auto_ui.upper_notebook.select(auto_ui.matrix_tab)
+            except Exception:
+                pass
+            return
         try:
             self.notebook.select(self.console_tab)
             pane = self.console_panes.get(slot)
@@ -2373,10 +2877,32 @@ class UIManager:
                 return tag
         return None
 
+    # Lines the script emits wrapped in its own ANSI colour (usually the same
+    # green for everything, see console_write's override note below) that we
+    # want visually de-emphasized instead of shouting at the same brightness
+    # as real INFO/WARN/ERROR lines (2026-08-15, user: "너무 칙칙해"/all-green).
+    _TELEMETRY_OVERRIDE_RE = re.compile(r'^\[Evt:\s*\d+\]')
+
     def _write_segment(self, widget, text, tag, pane):
         """Insert text into widget, applying ANSI colours or keyword tags."""
         if tag:
             widget.insert(tk.END, self.ANSI_RE.sub('', text), tag)
+            return
+
+        # Telemetry lines (e.g. "[Evt: N] Pedestal -> ...") get a fixed muted
+        # tag regardless of any ANSI colour the script wrapped them in --
+        # otherwise a script that colours all of its own output the same
+        # green makes routine per-event spam visually indistinguishable from
+        # actual status lines. Split first so this can apply per-line even
+        # when the chunk also contains ANSI-colored non-telemetry lines.
+        if self._TELEMETRY_OVERRIDE_RE.search(text) and '\x1b[' in text:
+            body_tag = pane.get("cur_body_tag")
+            for line in re.split(r'(?<=\n)', text):
+                if self._TELEMETRY_OVERRIDE_RE.match(line):
+                    tags = ("evt", body_tag) if body_tag else "evt"
+                    widget.insert(tk.END, self.ANSI_RE.sub('', line), tags)
+                else:
+                    self._write_segment(widget, line, None, pane)
             return
 
         # If the text has ANSI codes, delegate to ANSI renderer (no keyword coloring).
@@ -2394,10 +2920,64 @@ class UIManager:
                 widget.insert(tk.END, tail, cur if cur else ())
             return
 
-        # No ANSI: apply keyword-based line colouring.
+        # No ANSI: apply keyword-based line colouring. Only telemetry lines
+        # get folded into the current point's collapsible body -- banners,
+        # file/dir info, and started/finished markers stay visible even when
+        # a point is collapsed (2026-08-15, user: "필요한 정보가 접히고 있는데
+        # ... 파일과 시간, 폴더 이런것들" -- those must never fold away).
+        body_tag = pane.get("cur_body_tag")
         for line in re.split(r'(?<=\n)', text):   # split but keep \n attached
-            ktag = self._keyword_tag(line)
-            widget.insert(tk.END, line, ktag if ktag else ())
+            if self._TELEMETRY_OVERRIDE_RE.match(line):
+                widget.insert(tk.END, line, ("evt", body_tag) if body_tag else "evt")
+            else:
+                ktag = self._keyword_tag(line)
+                widget.insert(tk.END, line, ktag if ktag else ())
+
+    def console_set_progress(self, current, total, slot="analysis"):
+        """Update the thin progress bar under a console's header (0..1)."""
+        pane = self.console_panes.get(slot)
+        if not pane:
+            return
+        frac = 0.0 if not total else max(0.0, min(1.0, current / total))
+        try:
+            pane["progress_fill"].place(relwidth=frac)
+        except tk.TclError:
+            pass
+
+    def console_begin_point(self, slot, label):
+        """Start a new collapsible section: folds the previous point's body
+        (only the current point stays expanded, matching the approved
+        mockup) and inserts a clickable '▸ label' header line. Everything
+        console_write()s into this slot afterwards is tagged into this
+        point's body until the next console_begin_point() call."""
+        pane = self.console_panes.get(slot)
+        if not pane:
+            return
+        widget = pane["text"]
+        widget.config(state="normal")
+
+        prev_tag = pane.get("cur_body_tag")
+        if prev_tag:
+            widget.tag_config(prev_tag, elide=True)
+
+        pane["pt_counter"] += 1
+        body_tag = f"ptbody{pane['pt_counter']}"
+        header_tag = f"pthdr{pane['pt_counter']}"
+        widget.tag_config(header_tag, elide=False)
+
+        def _toggle(event=None, w=widget, t=body_tag):
+            try:
+                elided = w.tag_cget(t, "elide")
+            except tk.TclError:
+                return
+            w.tag_config(t, elide=not (elided in ("1", 1, True)))
+        widget.tag_bind(header_tag, "<Button-1>", _toggle)
+
+        widget.insert(tk.END, f"▸ {label}\n", ("pt_header", header_tag))
+        pane["cur_body_tag"] = body_tag
+        widget.config(state="disabled")
+        if pane["autoscroll"].get():
+            widget.yview_moveto(1)
 
     def console_write(self, text, tag=None, slot="analysis"):
         """Write to console. Must be called from the main thread (master.after)."""
@@ -2480,6 +3060,8 @@ class UIManager:
     }
     _SLOT_LABELS = {
         "daq":        "DAQ Stream",
+        "general_scan": "General Scan",
+        "backup":     "Backup",
         "hk":         "HK Digitizer",
         "analysis":   "Rate Scan",
         "contour":    "Contour",
@@ -2784,6 +3366,32 @@ class UIManager:
             match = re.search(r'(\d+)(?=[^\d]*\.root$)', filename)
             extracted_run = match.group(1) if match else "0"
             self.run_number_var.set(extracted_run)
+
+    def _on_main_tab_changed(self, _event=None):
+        """Make the "Images" tab behave as a launcher, not a page.
+
+        Selecting it opens the ImageViewer window and immediately restores the
+        previously selected tab, so the notebook never actually displays the
+        empty placeholder frame."""
+        images = getattr(self, "_images_tab", None)
+        if images is None:
+            return
+        try:
+            current = self.notebook.select()
+        except tk.TclError:
+            return
+        if current != str(images):
+            self._last_real_tab = current      # remember where to bounce back to
+            return
+        # Bounce first, then open: selecting the previous tab inside the same
+        # event keeps the placeholder from ever being painted.
+        back = self._last_real_tab
+        if back:
+            try:
+                self.notebook.select(back)
+            except tk.TclError:
+                pass
+        self.master.after(0, self.open_image_viewer)
 
     def open_image_viewer(self):
         if self.image_viewer_window and self.image_viewer_window.winfo_exists():

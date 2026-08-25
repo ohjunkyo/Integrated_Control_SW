@@ -2,6 +2,7 @@ from datetime import datetime, timezone, timedelta
 import threading
 import time
 import os
+import re
 import json
 import glob
 import subprocess
@@ -127,6 +128,16 @@ class AutomationManager:
         # step. See _wait_for_motors / _move_safely_stepped.
         self.motor_rate_ema = None
 
+        # Worst DAQ start-up latency seen this session (seconds), used to size
+        # the launch grace period in _execute_daq_point. Deliberately a MAXIMUM,
+        # not an EMA like the two above: start-up is usually a few seconds but
+        # spikes when the previous point's analysis chain is grinding a ~2 GB
+        # raw file, and an average would be dragged down by the common fast case
+        # and re-create the too-tight window that corrupted 2026-08-13's Y scan.
+        # Learning here only ever RELAXES the bound -- too short corrupts data,
+        # too long merely wastes time on a genuine launch failure.
+        self.daq_startup_max = 0.0
+
         self.schedule_file = os.path.join(self.controller.base_dir, "queued_schedules.json")
         self.schedules = [] 
         self._load_schedules_from_disk()
@@ -234,6 +245,7 @@ class AutomationManager:
         start = time.time()
         while time.time() - start < seconds:
             if not self.is_running and not bypass_check: break
+            if self._reset_cancel: break   # Reset dialog's Cancel, honored even with bypass_check=True
             self.pause_event.wait()
             if not self.is_running and not bypass_check: break
             time.sleep(0.5)
@@ -264,6 +276,11 @@ class AutomationManager:
         t_start = time.time()
         waited = 0.0
         while self.is_running or bypass_check:
+            if self._reset_cancel:   # Reset dialog's Cancel, honored even with bypass_check=True
+                self.controller._log(
+                    "[INFO] _wait_for_motors: Reset cancelled -- no longer waiting out "
+                    "the full arrival timeout.")
+                return False
             is_moving_2 = self.controller.rot_mgr.is_moving.get(2, False)
             is_moving_3 = self.controller.rot_mgr.is_moving.get(3, False)
             if not is_moving_2 and not is_moving_3:
@@ -370,6 +387,42 @@ class AutomationManager:
             f"(cable {cfg.get('direction2','B')}/{cfg.get('direction3','B')}).")
         return r2, r3
 
+    def _force_single_sequence_config(self):
+        """General Scan moves the stage between every acquisition, so
+        script_v7.sh's built-in NumSequences/IntervalTime repeat loop (meant
+        for a Stability run's fixed-angle repeats) must never fire here: since
+        the loop's rot2/tilt2/... args are fixed for its whole lifetime, any
+        sequence after the first records stale angle metadata once the stage
+        has moved on to the scan's next point -- and the Python watchdog only
+        waits for the FIRST sequence's execute_DAQ_v2 to exit before advancing,
+        so the remaining sequences run on as an orphaned background loop the
+        scan has no handle to. On 2026-08-15 a leftover NumSequences=100 /
+        IntervalTime=600 from an earlier Stability run left ~20+ of these
+        orphans piled up in the GeneralScan tmux pane, still issuing
+        acquisitions with wrong angles hours after the scan (and even a GUI
+        restart) had moved on. Forcing 1/0 here, unconditionally, at the start
+        of every General Scan closes that off regardless of what a previous
+        session left in config3.h."""
+        path = self.controller.config_manager.filepath
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            new_content = re.sub(r'const int NumSequences\s*=\s*\d+\s*;',
+                                 'const int NumSequences = 1;', content)
+            new_content = re.sub(r'const int IntervalTime\s*=\s*\d+\s*;',
+                                 'const int IntervalTime = 0;', new_content)
+            if new_content != content:
+                self.controller._log(
+                    "[WARNING] General Scan start: NumSequences/IntervalTime were left over "
+                    "from a different run mode (e.g. Stability) -- forced back to 1/0 to "
+                    "prevent stale-angle orphan acquisitions.")
+                tmp = path + ".tmp"
+                with open(tmp, 'w', encoding='utf-8') as f:
+                    f.write(new_content); f.flush(); os.fsync(f.fileno())
+                os.replace(tmp, path)
+        except Exception as e:
+            self.controller._log(f"[ERROR] Could not verify/force NumSequences=1 in config3.h: {e}")
+
     def start_general_scan(self, skip_validation=False):
         self.is_skipping_validation = skip_validation
 
@@ -377,8 +430,22 @@ class AutomationManager:
             if not self.controller.access_mgr.unlocked:
                 messagebox.showwarning("Locked", "🔒 Please click 'Unlock Controls' first.")
                 return
-        
+
         if self.is_running: return
+
+        self._force_single_sequence_config()
+
+        # Jump the operator to the Live Scan tab automatically -- previously
+        # they had to remember to click over, and a scan could run for a
+        # while with no one actually watching the plot (2026-08-22, user:
+        # "General Scan하면 바로 저기로 옮겨지게 해줘").
+        try:
+            if hasattr(self.controller, 'auto_ui') and hasattr(self.controller.auto_ui, 'matrix_tab'):
+                self.controller.auto_ui.upper_notebook.select(self.controller.auto_ui.matrix_tab)
+            if hasattr(self.controller.auto_ui, 'live_scan_view'):
+                self.controller.auto_ui.live_scan_view.reset()
+        except Exception:
+            pass
 
         os.environ["SCAN_START_DATE"] = datetime.now().strftime("%Y%m%d")
 
@@ -708,11 +775,16 @@ class AutomationManager:
                 f"🔄 Recovery Mode: Target position -> {start_axis}-Axis, {start_tilt}°"
                 + (f" (block {start_wl_idx + 1}/{n_wl})" if n_wl > 1 else ""))
 
+        # A stray "GeneralScan" tmux session from an old run is exactly the
+        # failure mode this whole class of code used to create -- an orphan
+        # queue surviving both Stop and an app restart (2026-08-15). Now that
+        # run_daq() launches General Scan points through the Console tab
+        # (a tracked subprocess.Popen per point, see main.py run_daq) instead
+        # of `tmux send-keys`, no gnome-terminal/tmux session is used or
+        # needed here any more. Still clean up a session from a PRE-fix
+        # session in case one is lingering on this machine.
         if not is_dummy:
             subprocess.run(['tmux', 'kill-session', '-t', 'GeneralScan'], capture_output=True)
-            term_cmd = ['gnome-terminal', '--title=General Scan DAQ', '--', 'tmux', 'new-session', '-s', 'GeneralScan']
-            subprocess.Popen(term_cmd)
-            time.sleep(2.0)
 
         completed_blocks, skipped_blocks = [], []
         try:
@@ -901,6 +973,20 @@ class AutomationManager:
                     
                     self.controller.auto_ui.update_cell(sn2_name, tilt, axis, "move")
                     self.controller.auto_ui.update_cell(sn3_name, tilt, axis, "move")
+                    # Surface "moving vs acquiring" on the Run Control status
+                    # line itself, not just the matrix cell color -- operators
+                    # not currently looking at the Scan Progress Matrix tab had
+                    # no way to tell a motor move from a stall (2026-08-15).
+                    self.controller.auto_ui.update_start_button(
+                        True, status_text=f"SYSTEM STATUS: MOVING to {tilt}° ({axis}-Axis)")
+                    if hasattr(self.controller, 'ui'):
+                        self.controller.ui.console_set_status(
+                            f"▶ Running: General Scan DAQ  ·  Point {current_step + 1}/{total_steps}"
+                            f"  ·  Tilt {tilt}° ({axis}-Axis)  ·  moving",
+                            slot="general_scan", state="running")
+                        self.controller.ui.console_begin_point(
+                            "general_scan",
+                            f"Point {current_step + 1}/{total_steps} · Tilt {tilt}° ({axis}-Axis)")
 
                     # 2. 개별 스텝 이동 및 물리적 확인
                     if not is_dummy:
@@ -932,7 +1018,14 @@ class AutomationManager:
 
                     self.controller.auto_ui.update_cell(sn2_name, tilt, axis, "daq")
                     self.controller.auto_ui.update_cell(sn3_name, tilt, axis, "daq")
-                    
+                    self.controller.auto_ui.update_start_button(
+                        True, status_text=f"SYSTEM STATUS: ACQUIRING at {tilt}° ({axis}-Axis)")
+                    if hasattr(self.controller, 'ui'):
+                        self.controller.ui.console_set_status(
+                            f"▶ Running: General Scan DAQ  ·  Point {current_step + 1}/{total_steps}"
+                            f"  ·  Tilt {tilt}° ({axis}-Axis)  ·  acquiring",
+                            slot="general_scan", state="running")
+
                     current_step += 1
                     self._update_progress_ui(current_step, total_steps)
 
@@ -1347,13 +1440,56 @@ class AutomationManager:
         daq_launch_time = time.time()
         self.controller.run_daq(tilt=tilt, r2=r2, r3=r3)
 
+        # Wait for execute_DAQ_v2 to actually appear. script_v7.sh has to open
+        # the board and settle the DAC before it execs the binary, and that
+        # start-up competes with the previous point's background analysis chain
+        # (prod_ntp_v7 on a ~2 GB raw file), so this can legitimately take far
+        # longer than the 15 s this used to allow.
+        #
+        # Falling through on timeout is NOT safe: the watchdog loop below would
+        # immediately see no process and report "DAQ finished in 0s", i.e. treat
+        # "never started" as "already done". The scan then advanced to the next
+        # angle and launched ANOTHER run while the previous one was still queued
+        # on the single CAEN board. On 2026-08-13 that queued three launches and
+        # produced run 113 stamped tilt=-55 but physically acquired at -25, plus
+        # two 15 MB zombie files when the watchdog's pkill caught the backlog.
+        # So: give it a generous window, and if it still never starts, treat it
+        # as a failed launch and clear the backlog instead of marching on.
+        # Floor of 90 s until this session has actually measured a start-up;
+        # after that, the slowest real start-up seen so far plus a wide margin
+        # (see self.daq_startup_max for why it tracks the max, not an average).
+        DAQ_STARTUP_FLOOR_S = 90
+        grace = max(DAQ_STARTUP_FLOOR_S, int(self.daq_startup_max * 1.5) + 30)
+        daq_started = False
         startup_wait = 0
-        while startup_wait < 15:
+        t_launch = time.time()
+        while startup_wait < grace:
             if not self.is_running: return "stopped"
             check = subprocess.run('pgrep -x execute_DAQ_v2 | xargs -r ps -o args= -p 2>/dev/null | grep -v -- "-j"', shell=True, capture_output=True, text=True, timeout=15)
             if check.stdout.strip():
+                daq_started = True
+                observed = time.time() - t_launch
+                if observed > self.daq_startup_max:
+                    self.daq_startup_max = observed
+                    self.controller._log(
+                        f"[INFO] DAQ start-up took {observed:.0f}s (new session maximum); "
+                        f"launch grace is now {max(DAQ_STARTUP_FLOOR_S, int(observed * 1.5) + 30)}s.")
                 break
             time.sleep(1); startup_wait += 1
+
+        if not daq_started:
+            # Kill the launcher too, not just the binary: a script_v7.sh still
+            # working its way toward exec would otherwise start acquiring after
+            # we have already moved the stage, writing a file whose recorded
+            # angles no longer match where the PMTs actually are.
+            self.controller._log(
+                f"[CRITICAL] execute_DAQ_v2 never started within {grace}s "
+                f"({axis}-Axis {tilt}°). Clearing any queued launch and skipping this point.")
+            subprocess.run(['pkill', '-f', 'script_v7.sh'], capture_output=True)
+            self._graceful_kill_daq()
+            self._mark_point_error(sn2_name, sn3_name, axis, tilt,
+                                   "DAQ never started (launch timed out)")
+            return None
 
         # Dynamically switch watchdog directory based on the active configuration mode (Dark vs Laser)
         run_mode_str = cfg.get("RunMode", "Laser")
@@ -1465,9 +1601,17 @@ class AutomationManager:
             point_file = max(_fresh_files(), key=os.path.getctime, default=None)
         if not daq_hung and point_file:
             self._verify_file_integrity(point_file)
-            # Persist (axis, tilt) -> RAW file so the Scan Matrix point card
-            # can open this point's data later.
-            self._record_scan_point(axis, tilt, r2, r3, point_file, tag=tag)
+            # Only record the point if the file actually describes THIS point --
+            # a complete-looking file whose RunInfo angles disagree with the
+            # commanded ones is worse than a missing one, because analysis
+            # cannot tell it apart from good data (see _verify_recorded_angles).
+            if self._verify_recorded_angles(point_file, tilt, r2, r3):
+                # Persist (axis, tilt) -> RAW file so the Scan Matrix point card
+                # can open this point's data later.
+                self._record_scan_point(axis, tilt, r2, r3, point_file, tag=tag)
+            else:
+                self._mark_point_error(sn2_name, sn3_name, axis, tilt,
+                                       "recorded angles do not match the commanded point")
 
         if self.is_running:
             self.controller._log("[INFO] DAQ Done. Waiting 5s for safety...")
@@ -1744,6 +1888,8 @@ class AutomationManager:
         self.scan_last_done_t = time.time()
         self.scan_total_steps = total
         self.scan_current_step = current
+        if hasattr(self.controller, 'ui'):
+            self.controller.ui.console_set_progress(current, total, slot="general_scan")
 
     def get_eta_seconds(self):
         """완료된 스텝들의 실측 평균으로 남은 시간을 추정한다.
@@ -1834,6 +1980,14 @@ class AutomationManager:
         is_dummy = self.controller.auto_ui.dummy_var.get()
         if not is_dummy:
             subprocess.run(['pkill', '-f', 'execute_DAQ_v2'])
+            # Also stop the General Scan console job directly (kills the whole
+            # script_v7.sh process group via stop_console_job's os.killpg), so
+            # the "general_scan" console slot is freed the instant Abort is
+            # pressed instead of waiting out script_v7.sh's own post-kill
+            # cleanup -- matters if the operator immediately switches to
+            # Manual and clicks Run DAQ right after Abort.
+            if hasattr(self.controller, 'stop_console_job'):
+                self.controller.stop_console_job('general_scan')
 
         if os.path.exists(self.state_file):
             try:
@@ -1980,6 +2134,29 @@ class AutomationManager:
 
         def _reset_sequence():
             try:
+                # TEST RUN (Simulation Mode) must never touch the real motors --
+                # every other DAQ/scan path already checks dummy_var, but this
+                # one never did, so a Reset Angle click during a TEST RUN scan
+                # physically moved the stage (2026-08-15, user: "테스트 런하고
+                # 있는데 ... Reset 누르니까 진짜 각도가 움직이네"). Simulate the
+                # same phased dialog experience instead of calling into rot_mgr.
+                if self.controller.auto_ui.dummy_var.get():
+                    self.controller._log(
+                        "[INFO] Reset Angle (TEST RUN): simulating -- no hardware move issued.")
+                    _set_status("Phase 1 / 2 · Moving TILT → 0° (simulated)")
+                    self._safe_sleep(1.0, bypass_check=True)
+                    if not self._reset_cancel:
+                        _set_status("Phase 2 / 2 · Moving ROTATION → 0° (simulated)")
+                        self._safe_sleep(1.0, bypass_check=True)
+                    if self._reset_cancel:
+                        self.controller._log("[INFO] Reset Angle (TEST RUN) cancelled.")
+                        self.controller.master.after(0, lambda: messagebox.showinfo(
+                            "Reset Cancelled", "Simulated reset was cancelled."))
+                    else:
+                        self.controller._log("✅ Reset Completed (TEST RUN, simulated).")
+                        _set_status("✅ Reset complete (simulated)")
+                    return
+
                 # 1단계: 기울기부터 0도로 이동. bypass_check=True ignores is_running/
                 # pause; both _move_safely_stepped and _wait_for_physical_angle
                 # time out on their own (2026-07-13 hang fix) and now also honour
@@ -2040,6 +2217,58 @@ class AutomationManager:
         self.controller.auto_ui.update_start_button(False)
         
         self.controller._log("[INFO] Scan Aborted: Process stopped and UI initialized.")
+
+    def _verify_recorded_angles(self, file_path, tilt, r2, r3):
+        """Confirm the file's own RunInfo matches the point we just acquired.
+
+        A file can be complete, correctly sized, and still be the WRONG data:
+        on 2026-08-13 a queued launch started acquiring only after the stage
+        had moved on, so run 113 carried tilt=-55 in RunInfo while physically
+        sitting at -25. Nothing downstream could tell -- it looked like a
+        perfectly good point and went straight into the uniformity fit.
+
+        Returns True when the angles agree (or when they cannot be read, so a
+        ROOT hiccup never fails a good run), False on a real mismatch.
+        """
+        macro = (
+            'TFile f("%s");'
+            'if (f.IsZombie()) { printf("ANGLES ERR zombie\\n"); }'
+            'else { TTree* ri=(TTree*)f.Get("RunInfo");'
+            '  if (!ri) printf("ANGLES ERR noruninfo\\n");'
+            '  else { int a,b,c; ri->SetBranchAddress("RawTiltAngle2",&a);'
+            '    ri->SetBranchAddress("RawRotateAngle2",&b);'
+            '    ri->SetBranchAddress("RawRotateAngle3",&c); ri->GetEntry(0);'
+            '    printf("ANGLES OK %%d %%d %%d\\n", a, b, c); } }'
+        ) % file_path
+        try:
+            p = subprocess.run(['root', '-l', '-b', '-q', '-e', macro],
+                               capture_output=True, text=True, timeout=60)
+        except Exception as e:
+            self.controller._log(f"[WARNING] Angle verification could not run ({e}); skipping check.")
+            return True
+
+        line = next((l for l in p.stdout.splitlines() if l.startswith("ANGLES ")), "")
+        if not line:
+            self.controller._log("[WARNING] Angle verification produced no result; skipping check.")
+            return True
+        if line.startswith("ANGLES ERR"):
+            self.controller._log(f"[CRITICAL] {os.path.basename(file_path)}: unreadable RunInfo "
+                                 f"({line.split()[-1]}) — file is not usable.")
+            return False
+
+        try:
+            got_t2, got_r2, got_r3 = (int(v) for v in line.split()[2:5])
+        except Exception:
+            return True
+        want = (int(round(tilt)), int(round(r2)), int(round(r3)))
+        if (got_t2, got_r2, got_r3) != want:
+            self.controller._log(
+                f"[CRITICAL] {os.path.basename(file_path)}: recorded angles "
+                f"(tilt {got_t2}, rot2 {got_r2}, rot3 {got_r3}) do NOT match the commanded point "
+                f"(tilt {want[0]}, rot2 {want[1]}, rot3 {want[2]}). "
+                "The stage most likely moved before this acquisition started — treating as a failed point.")
+            return False
+        return True
 
     def _verify_file_integrity(self, file_path):
         """Checks if the recorded file has a valid size. Thread-safe version."""

@@ -105,7 +105,7 @@ class AutomationUI:
 
     def _create_tab(self):
         self.tab = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab, text=" 🤖 General Scan ")
+        self.notebook.add(self.tab, text=" General Scan ")
 
         self.sn2_val = self.controller.config_manager.get_config_value("SN2") or "SN2"
         self.sn3_val = self.controller.config_manager.get_config_value("SN3") or "SN3"
@@ -121,7 +121,7 @@ class AutomationUI:
 
         # --- 1. Quick Setup 탭 ---
         info_tab = ttk.Frame(self.upper_notebook, padding=15)
-        self.upper_notebook.add(info_tab, text=" 📋 Quick Setup ")
+        self.upper_notebook.add(info_tab, text=" Quick Setup ")
 
         self.qs_vars = {
                 "Shift_worker": tk.StringVar(), "Expert": tk.StringVar(), "NOTE": tk.StringVar(),
@@ -218,7 +218,7 @@ class AutomationUI:
         self._create_handover_notes(info_tab)
 
         dash_tab = ttk.Frame(self.upper_notebook, padding=10)
-        self.upper_notebook.add(dash_tab, text=" 🎛️ Control Panel (Master) ")
+        self.upper_notebook.add(dash_tab, text=" Control Panel (Master) ")
 
         dash_tab.columnconfigure(0, weight=6)
         dash_tab.columnconfigure(1, weight=4)
@@ -578,60 +578,80 @@ class AutomationUI:
         # height instead of splitting dash_tab's limited vertical space.
         # Added here (before Schedule Manager below) so it lands right after
         # Control Panel (Master) in tab order.
+        #
+        # 2026-08-22: replaced the inline 46-cell grid with a live QE-vs-angle
+        # plot (live_scan_view.LiveScanView) -- a cell only ever said OK/ERR,
+        # never whether the data was any good, so a bad point sat undiscovered
+        # until the Uniformity report ran hours later. The full grid still
+        # exists, just moved into the Expand popup (_open_matrix_popup) for
+        # when someone wants the exhaustive per-cell view.
         self.matrix_tab = ttk.Frame(self.upper_notebook, padding=10)
-        self.upper_notebook.add(self.matrix_tab, text=" 📊 Scan Progress Matrix ")
+        # "Scan Progress Matrix" no longer fits -- there's no matrix on the
+        # main view any more (2026-08-22, user: "탭에서 Scan Progress Matrix가
+        # 아니라 다른 명칭으로 해야할 듯"). The grid still exists behind "Full
+        # Grid" for anyone who wants it.
+        self.upper_notebook.add(self.matrix_tab, text=" Live Scan ")
 
         # No title here -- the tab itself is already labeled "Scan Progress
         # Matrix", so a second identical LabelFrame title right below it
         # would just be redundant.
+        #
+        # Layout (2026-08-22, per operator's explicit sketch):
+        #   row 0 (full width): toggle toolbar (metric / axis / etc)
+        #   row 1: Live Console (weight 4)  |  plot (weight 6)
+        # Console pane reuses the same _build_console_pane the Output tab's
+        # DAQ/Produce/Analysis slots use (slot="general_scan"), so General
+        # Scan's live output shows up right next to the plot it's filling in,
+        # not just in a separate tab.
         matrix_outer = ttk.Frame(self.matrix_tab)
         matrix_outer.pack(fill=tk.BOTH, expand=True)
-        matrix_outer.columnconfigure(0, weight=1)
+        matrix_outer.columnconfigure(0, weight=4)
+        matrix_outer.columnconfigure(1, weight=6)
         matrix_outer.rowconfigure(1, weight=1)
 
-        ttk.Button(matrix_outer, text="🔍 Expand", command=self._open_matrix_popup).grid(
-            row=0, column=0, sticky="e", pady=(0, 3))
+        toolbar_row = ttk.Frame(matrix_outer)
+        toolbar_row.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 3))
+        ttk.Button(toolbar_row, text="🔍 Full Grid", command=self._open_matrix_popup).pack(
+            side=tk.RIGHT)
 
-        self.matrix_canvas = tk.Canvas(matrix_outer, highlightthickness=0)
-        self.matrix_scrollbar = ttk.Scrollbar(matrix_outer, orient="vertical",
-                                              command=self.matrix_canvas.yview)
-        self.matrix_scroll_frame = ttk.Frame(self.matrix_canvas)
+        # "Output" clashes with the top-level Output tab (a different console
+        # collection for Analysis/Produce/etc) -- "Live Console" makes clear
+        # this is General Scan's own, separately-placed console (2026-08-15,
+        # user: "Output이 두 개잖아").
+        console_col = ttk.LabelFrame(matrix_outer, text=" Live Console ", padding=4)
+        console_col.grid(row=1, column=0, sticky="nsew", padx=(0, 10))
+        # Built lazily via ensure_console_pane the first time a scan actually
+        # runs (matches every other console slot); a placeholder keeps the
+        # tab from looking broken/empty before that.
+        self._matrix_console_placeholder = ttk.Label(
+            console_col, text="General Scan output will appear here once a scan starts.",
+            foreground="#888888", anchor="center", justify="center", wraplength=300)
+        self._matrix_console_placeholder.pack(fill=tk.BOTH, expand=True, pady=40)
+        self._matrix_console_frame = console_col
 
-        self.matrix_scroll_frame.bind(
-            "<Configure>",
-            lambda e: self.matrix_canvas.configure(scrollregion=self.matrix_canvas.bbox("all"))
-        )
+        plot_col = ttk.Frame(matrix_outer)
+        plot_col.grid(row=1, column=1, sticky="nsew")
+        from live_scan_view import LiveScanView
+        self.live_scan_view = LiveScanView(toolbar_row, plot_col, self.controller)
 
-        self.matrix_window_id = self.matrix_canvas.create_window(
-            (0, 0), window=self.matrix_scroll_frame, anchor="nw")
-        self.matrix_canvas.bind(
-            "<Configure>",
-            lambda e: self.matrix_canvas.itemconfig(self.matrix_window_id, width=e.width)
-        )
-        self.matrix_canvas.configure(yscrollcommand=self.matrix_scrollbar.set)
-
-        self.matrix_canvas.grid(row=1, column=0, sticky="nsew")
-        self.matrix_scrollbar.grid(row=1, column=1, sticky="ns")
-
+        # Popup-only matrix bookkeeping. self.matrix_frames/self.cells are
+        # populated lazily the first time _open_matrix_popup() runs; until
+        # then update_cell() simply finds no entry for a key and no-ops (see
+        # its `if (sn, tilt, axis) in self.cells:` guard) -- harmless, since
+        # the live plot above is now the primary progress indicator anyway.
         self.matrix_frames = {}
-        for sn in [self.sn2_val, self.sn3_val]:
-            f = ttk.LabelFrame(self.matrix_scroll_frame,
-                               text=f" {sn} Scan Progress Matrix ", padding=10)
-            f.pack(side=tk.TOP, fill=tk.BOTH, expand=True, pady=5)
-            self.matrix_frames.setdefault(sn, []).append(f)
-            self._build_horizontal_table(f, sn)
 
         self._matrix_popup = None
         self._update_matrix_tab_color()
 
         # --- 2. Schedule Managers 탭 ---
         schedule_tab = ttk.Frame(self.upper_notebook, padding=10)
-        self.upper_notebook.add(schedule_tab, text=" ⏰ Schedule Manager ")
+        self.upper_notebook.add(schedule_tab, text=" Schedule Manager ")
         self._build_schedule_tab(schedule_tab)
 
         # --- 3. Logs 탭 ---
         log_tab = ttk.Frame(self.upper_notebook, padding=10)
-        self.upper_notebook.add(log_tab, text=" 📝 Live Scan Logs ")
+        self.upper_notebook.add(log_tab, text=" Live Scan Logs ")
         
         self.log_display = scrolledtext.ScrolledText(log_tab, font=("Consolas", 12, "bold"), bg="#1e1e1e", fg="#e0e0e0")
         self.log_display.pack(fill=tk.BOTH, expand=True)
@@ -645,33 +665,68 @@ class AutomationUI:
 
         # --- 4. Scan History ---
         history_tab = ttk.Frame(self.upper_notebook, padding=10)
-        self.upper_notebook.add(history_tab, text=" 📊 Scan History ")
+        self.upper_notebook.add(history_tab, text=" Scan History ")
         self._build_history_tab(history_tab)
 
 
-    def _build_horizontal_table(self, parent, sn, big=False):
+    def _build_horizontal_table(self, parent, sn, big=False, vertical=True):
+        """Builds the (sn, tilt, axis)-keyed cell grid. Two orientations:
+
+        vertical=True  (main dashboard): tilt-as-rows, axis-as-columns. With
+          the step tight enough to reach 13-23 tilt values, tilt-as-columns
+          made the matrix very wide and short -- no room beside it for the
+          console pane (see build_scan_tab's layout).
+        vertical=False (Expand popup): tilt-as-columns, axis-as-rows -- the
+          original wide/short layout. The popup has its own window and no
+          console to share space with, and the tall vertical list there was
+          reported as "way too long" to scroll through (2026-08-15).
+
+        Cell LOOKUP is unaffected either way: self.cells is keyed by
+        (sn, tilt, axis), not by grid position."""
         angles = self._current_tilt_angles()
         h_font = ("Helvetica", 16, "bold") if big else ("Helvetica", 13, "bold")
         d_font = ("Helvetica", 15, "bold") if big else ("Helvetica", 12, "bold")
         cell_w = 8 if big else 6
-        cell_ipady = 24 if big else 16
+        cell_ipady = 10 if big else 6
 
-        parent.columnconfigure(0, weight=0, minsize=110)
-        for col in range(1, len(angles) + 1):
+        if not vertical:
+            parent.columnconfigure(0, weight=0, minsize=90)
+            for col in range(1, len(angles) + 1):
+                parent.columnconfigure(col, weight=1)
+
+            ttk.Label(parent, text="Axis \\ Tilt", font=h_font, anchor="center").grid(
+                row=0, column=0, sticky="nsew", pady=5)
+            for i, tilt in enumerate(angles):
+                ttk.Label(parent, text=f"{tilt}°", font=d_font, anchor="center").grid(
+                    row=0, column=i + 1, sticky="nsew", padx=5)
+
+            for r_idx, axis in enumerate(["X", "Y"]):
+                ttk.Label(parent, text=f"{axis}-Axis", font=h_font, anchor="center").grid(
+                    row=r_idx + 1, column=0, sticky="nsew", pady=5)
+                for i, tilt in enumerate(angles):
+                    c = tk.Label(parent, text="-", bg="#e9ecef", relief="groove", font=d_font,
+                                 width=cell_w, cursor="hand2")
+                    c.grid(row=r_idx + 1, column=i + 1, sticky="nsew", padx=2, pady=2, ipady=cell_ipady)
+                    c.bind("<Button-1>", lambda e, a=axis, t=tilt, s=sn: self._show_point_card(a, t, s))
+                    self.cells.setdefault((sn, tilt, axis), []).append(c)
+            return
+
+        parent.columnconfigure(0, weight=0, minsize=90)
+        for col in range(1, 3):
             parent.columnconfigure(col, weight=1)
 
-        ttk.Label(parent, text="Axis \\ Tilt", font=h_font, anchor="center").grid(row=0, column=0, sticky="nsew", pady=5)
+        ttk.Label(parent, text="Tilt \\ Axis", font=h_font, anchor="center").grid(row=0, column=0, sticky="nsew", pady=5)
+
+        for c_idx, axis in enumerate(["X", "Y"]):
+            ttk.Label(parent, text=f"{axis}-Axis", font=h_font, anchor="center").grid(row=0, column=c_idx+1, sticky="nsew", pady=5)
 
         for i, tilt in enumerate(angles):
-            ttk.Label(parent, text=f"{tilt}°", font=d_font, anchor="center").grid(row=0, column=i+1, sticky="nsew", pady=5)
+            ttk.Label(parent, text=f"{tilt}°", font=d_font, anchor="center").grid(row=i+1, column=0, sticky="nsew", padx=5)
 
-        for r_idx, axis in enumerate(["X", "Y"]):
-            ttk.Label(parent, text=f"{axis}-Axis", font=h_font, anchor="center").grid(row=r_idx+1, column=0, sticky="nsew", padx=5)
-
-            for i, tilt in enumerate(angles):
+            for c_idx, axis in enumerate(["X", "Y"]):
                 c = tk.Label(parent, text="-", bg="#e9ecef", relief="groove", font=d_font,
                              width=cell_w, cursor="hand2")
-                c.grid(row=r_idx+1, column=i+1, sticky="nsew", padx=2, pady=5, ipady=cell_ipady)
+                c.grid(row=i+1, column=c_idx+1, sticky="nsew", padx=2, pady=2, ipady=cell_ipady)
                 # Click a completed (OK) cell to open the point card for that
                 # scan point's data (recorded in LOG/ScanHistory/scanmap_*.json).
                 c.bind("<Button-1>", lambda e, a=axis, t=tilt, s=sn: self._show_point_card(a, t, s))
@@ -1556,10 +1611,15 @@ class AutomationUI:
         card.grid(row=0, column=0, sticky="ew", padx=20, pady=(0, 16))
         card.grid_columnconfigure(1, weight=1)
 
-        tilt_var   = tk.DoubleVar(value=auto_mgr.tilt_step)
-        rot_var    = tk.DoubleVar(value=auto_mgr.rot_step)
-        rest_var   = tk.DoubleVar(value=auto_mgr.rest_time)
-        settle_var = tk.DoubleVar(value=auto_mgr.daq_settle_time)
+        # StringVar, not DoubleVar: CTkEntry's textvariable callback calls
+        # var.get() on every keystroke to check for an empty field, and
+        # DoubleVar.get() raises TclError on "" instead of returning it --
+        # so simply select-all+backspacing one of these fields (to retype a
+        # new value) crashed the callback. Parsed to float in save_params().
+        tilt_var   = tk.StringVar(value=str(auto_mgr.tilt_step))
+        rot_var    = tk.StringVar(value=str(auto_mgr.rot_step))
+        rest_var   = tk.StringVar(value=str(auto_mgr.rest_time))
+        settle_var = tk.StringVar(value=str(auto_mgr.daq_settle_time))
 
         def _row(r, label, var, hint=None, width=110):
             ctk.CTkLabel(card, text=label, anchor="w",
@@ -1634,10 +1694,20 @@ class AutomationUI:
             row=3, column=0, sticky="w", padx=16, pady=(6, 14))
 
         def save_params():
-            auto_mgr.tilt_step = tilt_var.get()
-            auto_mgr.rot_step = rot_var.get()
-            auto_mgr.rest_time = rest_var.get()
-            auto_mgr.daq_settle_time = settle_var.get()
+            try:
+                new_tilt_step = float(tilt_var.get())
+                new_rot_step = float(rot_var.get())
+                new_rest_time = float(rest_var.get())
+                new_settle_time = float(settle_var.get())
+            except ValueError:
+                messagebox.showerror(
+                    "Invalid Value",
+                    "Tilt Step / Rot Step / Rest Time / Settle Time must all be numbers.")
+                return
+            auto_mgr.tilt_step = new_tilt_step
+            auto_mgr.rot_step = new_rot_step
+            auto_mgr.rest_time = new_rest_time
+            auto_mgr.daq_settle_time = new_settle_time
 
             new_angles = []   # stored as (tilt, rot)
             try:
@@ -2247,6 +2317,13 @@ class AutomationUI:
         self.log_display.delete('1.0', tk.END)
         self.eta_label.config(text="ETA: --:--:--")
         self._update_matrix_tab_color()
+        # Reset Angle is an explicit "back to scratch" action (re-homes both
+        # stages to 0deg) -- the Live Scan plot should clear along with
+        # everything else here rather than keep showing points from the
+        # attempt just abandoned (2026-08-22, user asked what Reset does to
+        # it; previously: nothing, which wasn't intentional, just missed).
+        if hasattr(self, 'live_scan_view'):
+            self.live_scan_view.reset()
 
     # ── Laser Sequence panel helpers (multi-wavelength scan) ────────────────
     def _seed_laser_seq_currents(self):
@@ -2375,7 +2452,7 @@ class AutomationUI:
 
         popup = tk.Toplevel(self.notebook)
         popup.title("Scan Progress Matrix")
-        popup.geometry("1400x800")
+        popup.geometry("1400x520")
         self._matrix_popup = popup
         popup_frames = []   # (sn, frame) added to self.matrix_frames by this popup
         popup_cells = []    # (key, widget) added to self.cells by this popup
@@ -2410,7 +2487,12 @@ class AutomationUI:
             self.matrix_frames.setdefault(sn, []).append(f)
             popup_frames.append((sn, f))
             n_before = {k: len(v) for k, v in self.cells.items()}
-            self._build_horizontal_table(f, sn, big=True)
+            # Popup keeps the original wide/short orientation (tilt-as-
+            # columns) instead of the main dashboard's tall vertical one --
+            # the vertical list scrolled forever here and the user asked for
+            # the old layout back (2026-08-15, "기존처럼 가로로 하는게 나을 것
+            # 같은데... 너무 길다").
+            self._build_horizontal_table(f, sn, big=False, vertical=False)
             for key, widgets in self.cells.items():
                 if len(widgets) > n_before.get(key, 0):
                     new_w = widgets[-1]

@@ -1041,6 +1041,50 @@ class App:
         dlg.wait_window()
         return None if cancelled[0] else result
 
+    _EVT_LINE_RE = re.compile(r'^\[Evt:\s*\d+\]')
+
+    def _throttle_evt_lines(self, chunk, slot):
+        """Collapse execute_DAQ_v2's per-1000-event progress spam ("[Evt: N]
+        Pedestal -> ...") to one line every ~2s per slot, instead of forwarding
+        every line to the console widget -- a 300000-event point prints ~300
+        of these, and a multi-point General Scan buries the messages that
+        actually matter (warnings, point-complete, errors) under thousands of
+        near-identical lines. Full text still reaches the on-disk taking log
+        via script_v7.sh's own tee; this only thins what the UI widget shows.
+        Any line that doesn't match the pattern is always kept as-is.
+
+        Chunks are 120ms buffer flushes, not necessarily line-aligned, so a
+        trailing partial line (no \\n yet) is held over and prepended to the
+        next chunk rather than filtered as if it were a complete line."""
+        if not hasattr(self, '_evt_throttle_state'):
+            self._evt_throttle_state = {}   # slot -> {"pending": str, "last_kept": float}
+        st = self._evt_throttle_state.setdefault(slot, {"pending": "", "last_kept": 0.0})
+
+        text = st["pending"] + chunk
+        # Keep any trailing partial line (after the last \n) for next time.
+        if text.endswith('\n'):
+            st["pending"] = ""
+            body = text
+        else:
+            last_nl = text.rfind('\n')
+            if last_nl == -1:
+                st["pending"] = text   # whole chunk is still one partial line
+                return ""
+            st["pending"] = text[last_nl + 1:]
+            body = text[:last_nl + 1]
+
+        now = time.time()
+        out_lines = []
+        for line in body.splitlines(keepends=True):
+            if self._EVT_LINE_RE.match(line):
+                if now - st["last_kept"] >= 2.0:
+                    st["last_kept"] = now
+                    out_lines.append(line)
+                # else: dropped -- same-second progress spam
+            else:
+                out_lines.append(line)
+        return "".join(out_lines)
+
     def _run_job_in_console(self, command, job_name="Job", env=None, slot="analysis", on_complete=None):
         """배치형 외부 작업(DAQ/Produce/Analysis 등)을 별도 터미널 대신 UI Console
         탭에서 실행하고 stdout/stderr 를 실시간으로 스트리밍한다.
@@ -1116,7 +1160,7 @@ class App:
             if buf:
                 chunk = "".join(buf)
                 buf.clear()
-                self.ui.console_write(chunk, slot=slot)
+                self.ui.console_write(self._throttle_evt_lines(chunk, slot), slot=slot)
             # Reschedule while process is alive
             if self._console_procs.get(slot) is proc and proc.poll() is None:
                 self.master.after(120, flush_buffer)
@@ -1147,6 +1191,8 @@ class App:
                         buf.clear()
                     # Release slot so the user can re-run immediately
                     self._console_procs[slot] = None
+                    if hasattr(self, '_evt_throttle_state'):
+                        self._evt_throttle_state.pop(slot, None)
                     if code == 0:
                         self.ui.console_write(
                             f"===== {job_name} finished (exit 0) =====\n\n", "ok", slot=slot)
@@ -1569,12 +1615,48 @@ class App:
             # NOT datetime.now(). Otherwise a scan that crosses midnight would switch to the
             # new day's date mid-run, and the run numbering would reset back to the 0-block.
             fixed_date = os.environ.get("SCAN_START_DATE") or datetime.now().strftime("%Y%m%d")
-            cmd_str = " ".join(command)
-            tmux_cmd = ['tmux', 'send-keys', '-t', 'GeneralScan',
-                        f'export SCAN_START_DATE={fixed_date}', 'C-m',
-                        f'export FILE_FORMAT={current_env["FILE_FORMAT"]}', 'C-m', 
-                        cmd_str, 'C-m']
-            subprocess.run(tmux_cmd)
+            current_env["SCAN_START_DATE"] = fixed_date
+            # Was `tmux send-keys` into a long-lived "GeneralScan" pane: that pane
+            # is an OS-level keystroke queue Python has no handle on. If a point's
+            # script_v7.sh ever ran long (e.g. a leftover Stability NumSequences
+            # loop), the NEXT point's send-keys just piled up behind it instead of
+            # replacing it, so the automation's own point loop could race ahead of
+            # what was actually executing -- and neither Stop nor even restarting
+            # the whole app could reach in and kill it, since the pane survives
+            # both (2026-08-15: ~20 stale-angle acquisitions queued up this way,
+            # some still firing hours after the scan had "finished").
+            # _run_job_in_console launches a real, Python-tracked subprocess.Popen
+            # per point instead -- one call, one process, .poll()/.kill()-able,
+            # and nothing left running once this point's job ends.
+            # Build directly inside the Scan Progress Matrix tab (beside the
+            # now-vertical matrix) instead of a separate Output sub-tab, the
+            # first time a scan actually runs -- see ensure_console_pane's
+            # `parent` param and AutomationUI's matrix-tab layout.
+            matrix_frame = getattr(getattr(self, 'auto_ui', None), '_matrix_console_frame', None)
+            placeholder = getattr(getattr(self, 'auto_ui', None), '_matrix_console_placeholder', None)
+            if placeholder is not None and placeholder.winfo_exists():
+                placeholder.destroy()
+            self.ui.ensure_console_pane("general_scan", parent=matrix_frame)
+            # rotation_manager.py's watchdog advances to the NEXT point as soon
+            # as execute_DAQ_v2 itself exits, but the wrapping script_v7.sh
+            # keeps running a few seconds longer after that (flag cleanup,
+            # launching the background analysis window) before this slot's
+            # Popen handle actually finishes. Without waiting for that, the
+            # very next point's run_daq call would find the "general_scan"
+            # slot still marked busy and _run_job_in_console would silently
+            # refuse to launch it (a messagebox from a background thread,
+            # easy to miss) -- dropping that point's acquisition entirely.
+            prev = getattr(self, '_console_procs', {}).get('general_scan')
+            if prev is not None:
+                wait_start = time.time()
+                while prev.poll() is None and time.time() - wait_start < 10:
+                    time.sleep(0.2)
+                if prev.poll() is None:
+                    self._log("[WARNING] Previous General Scan console job still busy after "
+                              "10s wait; launching anyway may be refused.")
+            self._run_job_in_console(
+                command, job_name="General Scan DAQ", env=current_env,
+                slot="general_scan", on_complete=None)
             self._log(f"[INFO] Auto Mode - Fixed Date Injected: {fixed_date}")
         else:
             if category == "manual":
