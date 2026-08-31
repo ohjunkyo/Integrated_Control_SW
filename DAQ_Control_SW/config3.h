@@ -36,10 +36,10 @@ const std::string Wavelength = "405";
 const std::string BField = "ON";
 // Per-axis coil current (A), set manually in Quick Setup so it's recorded
 // alongside the run instead of only living in a separate B-field log CSV.
-const std::string BField_X = "3.15";
-const std::string BField_Y = "2.8";
-const std::string BField_ZTop = "3.65";
-const std::string BField_ZBottom = "3.65";
+const std::string BField_X = "3.12";
+const std::string BField_Y = "2.9";
+const std::string BField_ZTop = "3.76";
+const std::string BField_ZBottom = "3.76";
 
 // --- PMT configuration --- //
 // Ch0 - monitor, Ch1 - PMT 1, Ch2 - PMT 2 same as High voltage setting
@@ -54,25 +54,25 @@ const std::string direction3 = "B";
 const std::string RotateAngle1 = "0";
 const std::string TiltAngle1 = "0";
 
-const std::string RotateAngle2 = "0";
-const std::string TiltAngle2 = "0";
+const std::string RotateAngle2 = "45";
+const std::string TiltAngle2 = "25";
 
-const std::string RotateAngle3 = "0";
-const std::string TiltAngle3 = "0";
+const std::string RotateAngle3 = "135";
+const std::string TiltAngle3 = "25";
 
 // --- High Voltage --- //
-const std::string HV1 = "1670";
-const std::string HV2 = "1680";
-const std::string HV3 = "1750";
+const std::string HV1 = "1669";
+const std::string HV2 = "1679";
+const std::string HV3 = "1749";
 
 // --- NOTE ---
-const std::string NOTE = "";
+const std::string NOTE = "B-field scan: general measurement nominal";
 
 // --- Trigger Channel ---
 const int TriggerCh = 3;
 
 // --- Shift Information ---
-const std::string Shift_worker = "Junkyo";
+const std::string Shift_worker = "Unik";
 const std::string Expert = "Junkyo";
 
 

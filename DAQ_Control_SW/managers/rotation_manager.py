@@ -13,6 +13,109 @@ from tkinter import messagebox, ttk
 from managers import angle_convert
 
 class AutomationManager:
+    # Whether Slack alerts name the Shifter/Expert. A single switch here (not
+    # a GUI toggle yet) per 2026-08-29 agreement -- flip to False to omit
+    # names from every alert without touching the call sites below.
+    NOTIFY_INCLUDE_OPERATOR = True
+
+    # See _mark_point_error: this many failures IN A ROW aborts the scan
+    # instead of running to completion skipping every point.
+    CONSECUTIVE_ERROR_LIMIT = 3
+
+    # reason substrings from _mark_point_error() -> a short, canned next step.
+    # Kept static rather than inferred: the failure reasons are already a
+    # small fixed set (see _mark_point_error call sites), so guessing a fix
+    # per-alert would be guessing, not measuring -- same principle as
+    # describe_motion_state() in rotation_control.py preferring "undetermined"
+    # over an unfounded diagnosis.
+    _ERROR_HINTS = (
+        ("motor comm timeout", "Scan continues automatically (retry+skip already applied); check the stage if this repeats."),
+        ("DAQ never started", "Console may have been busy with another job; check the Console tab."),
+        ("DAQ process hung", "execute_DAQ_v2 was force-killed by the watchdog; check the digitizer."),
+        ("angles do not match", "Data was written but the angle doesn't match target; treat that run as suspect."),
+        ("event count", "Run finished short of the expected event count; treat that run as suspect."),
+        ("HV changed mid-scan", "HV was changed from the HV panel during acquisition; the affected run(s) may be invalid."),
+        ("missing on disk", "RAW file not found in any known location (local or external); check Data Files."),
+    )
+
+    def _error_hint(self, reason):
+        for needle, hint in self._ERROR_HINTS:
+            if needle in reason:
+                return hint
+        return "See the log for detail."
+
+    def _operator_line(self, shifter=None, expert=None):
+        if not self.NOTIFY_INCLUDE_OPERATOR:
+            return ""
+        shifter = shifter or "-"
+        expert = expert or "-"
+        return f"Shifter: {shifter}  ·  Expert: {expert}"
+
+    def _notify_scan_started(self, cfg, sn2_name, sn3_name, shifter, expert):
+        notifier = getattr(self.controller, 'notifier', None)
+        if not notifier or not notifier.enabled:
+            return
+        try:
+            points_per_axis = len(self.build_tilt_angles())
+            n_wl = max(1, len(self.laser_sequence)) if getattr(self, 'laser_sequence', None) else 1
+            total_steps = points_per_axis * 2 * n_wl
+            is_dummy = self.controller.auto_ui.dummy_var.get()
+            nominal_per_pt = 1 if is_dummy else (220 if self.daq_backend != "hk" else 60)
+            eta_min = total_steps * nominal_per_pt / 60.0
+
+            wl_list = ", ".join(w for w, _b, _p in self.laser_sequence) if getattr(self, 'laser_sequence', None) else "-"
+            lines = [
+                f"SN2 {sn2_name} / SN3 {sn3_name}",
+                f"HV: {cfg.get('HV1','-')}/{cfg.get('HV2','-')}/{cfg.get('HV3','-')}   "
+                f"Tilt step: {self.tilt_step}°   Points: {total_steps}",
+                f"Wavelengths: {wl_list}",
+                f"Est. duration: ~{eta_min:.0f} min",
+            ]
+            op = self._operator_line(shifter, expert)
+            if op:
+                lines.append(op)
+            notifier.send("General Scan started", "\n".join(lines), level="info",
+                          dedupe_key=None, blocking=False)
+        except Exception as e:
+            self.controller._log(f"[WARNING] Scan-start notification failed: {type(e).__name__}.")
+
+    def _notify_scan_finished(self, start, end, shifter, errors):
+        notifier = getattr(self.controller, 'notifier', None)
+        if not notifier or not notifier.enabled:
+            return
+        try:
+            dur_min = (end - start).total_seconds() / 60.0
+            if errors:
+                # Group by KIND (which of the fixed _ERROR_HINTS this reason
+                # matches), not the full per-point text -- "핵심 로그, 해결
+                # 방법... 상세할 필요는 없고 어떤 종류인지" (2026-08-29). Each
+                # kind is shown once with its count and canned next step,
+                # instead of every point's full path/detail.
+                by_kind = {}
+                for e in errors:
+                    reason = e.split(":", 1)[1].strip() if ":" in e else e
+                    matched = next((needle for needle, _ in self._ERROR_HINTS if needle in reason), None)
+                    key = matched or reason
+                    by_kind.setdefault(key, []).append(reason)
+                lines = [f"{len(errors)} point(s) affected:"]
+                for kind, occurrences in by_kind.items():
+                    hint = self._error_hint(occurrences[0])
+                    lines.append(f"  • {kind} ×{len(occurrences)} — {hint}")
+                op = self._operator_line(shifter, getattr(self, '_current_expert', None))
+                if op:
+                    lines.append(op)
+                notifier.send(f"General Scan finished: BAD RUN ({len(errors)} error(s))",
+                              "\n".join(lines), level="warning", dedupe_key=None, blocking=False)
+            else:
+                lines = [f"Duration: {dur_min:.0f} min"]
+                op = self._operator_line(shifter, getattr(self, '_current_expert', None))
+                if op:
+                    lines.append(op)
+                notifier.send("General Scan finished: GOOD RUN", "\n".join(lines),
+                              level="info", dedupe_key=None, blocking=False)
+        except Exception as e:
+            self.controller._log(f"[WARNING] Scan-finish notification failed: {type(e).__name__}.")
+
     def __init__(self, controller):
         self.controller = controller
         self.is_running = False
@@ -250,7 +353,66 @@ class AutomationManager:
             if not self.is_running and not bypass_check: break
             time.sleep(0.5)
 
+    DAQ_FLAG_DIR = "/tmp/daq_flags"
+
+    def _daq_flag_active(self, since):
+        """Is execute_DAQ_v2 for THIS point currently running?
+
+        script_v7.sh brackets its `eval "$DAQ_COMMAND"` (the line that
+        actually runs execute_DAQ_v2) with `touch daq_<run>.flag` right
+        before and `rm -f` right after -- both plain bash builtins with no
+        gap, so the flag's presence is authoritative for exactly as long as
+        the DAQ command is running. This replaces the previous `pgrep -x
+        execute_DAQ_v2` check, which had a real race: pgrep can only see the
+        process once exec() has actually replaced it, so right at start-up
+        (board connect / DAC settle) or in the instant around exit, pgrep can
+        legitimately return empty while the point is still very much in
+        progress. On 2026-08-28 that false "not running" reading arrived 9s
+        into a run that kept acquiring for another 5+ minutes, and the scan
+        moved the stage out from under it -- run 242's file ended up
+        physically acquired at two different tilt angles. `touch`/`rm` don't
+        have that ambiguous window: the file's existence brackets the DAQ
+        command's actual lifetime with nothing in between.
+
+        `since`: only count a flag created at/after this point's own launch
+        (same `daq_launch_time - 2` slack used elsewhere in this file) --
+        otherwise a leftover flag from a previous point that failed to clean
+        up (crash, kill -9) would look like this point's own is still active.
+        """
+        try:
+            for name in os.listdir(self.DAQ_FLAG_DIR):
+                if not (name.startswith("daq_") and name.endswith(".flag")):
+                    continue
+                path = os.path.join(self.DAQ_FLAG_DIR, name)
+                try:
+                    if os.path.getctime(path) >= since - 2:
+                        return True
+                except OSError:
+                    continue
+        except FileNotFoundError:
+            # Flag dir doesn't exist yet (first run ever on this machine, or
+            # an old script_v7.sh without the flag lines) -- fall back to the
+            # process-name check rather than silently always reporting "not
+            # running", which would make every point look like an instant
+            # failure.
+            check = subprocess.run(
+                'pgrep -x execute_DAQ_v2 | xargs -r ps -o args= -p 2>/dev/null | grep -v -- "-j"',
+                shell=True, capture_output=True, text=True, timeout=15)
+            return bool(check.stdout.strip())
+        return False
+
     MOTOR_RATE_FLOOR_DEG_S = 0.5   # pessimistic until motor_rate_ema calibrates
+
+    # How many times a single safe-step is issued before the point is written
+    # off. 2 = one retry; see _move_safely_stepped for why a retry is the right
+    # response to "the drive answers but the motor did not move".
+    MOVE_ATTEMPTS = 2
+
+    # Upper bound on how long a step may keep extending its wait purely because
+    # the stage is still creeping toward target. Without a cap, a stage that
+    # inches along forever (mechanical bind) would hold the scan indefinitely --
+    # the exact overnight-stall shape this whole watchdog exists to prevent.
+    MOVE_CREEP_GRACE_S = 120.0
 
     def _wait_for_motors(self, bypass_check=False, timeout=None, step_deg=None):
         """Poll rot_mgr.is_moving until both devices clear their lock.
@@ -273,32 +435,42 @@ class AutomationManager:
             deg = step_deg if step_deg else 45.0   # matches the old fixed case's rot_step
             rate = self.motor_rate_ema or self.MOTOR_RATE_FLOOR_DEG_S
             timeout = max(30.0, deg / rate * 2.5 + 10.0)
+        rm = self.controller.rot_mgr
         t_start = time.time()
-        waited = 0.0
-        while self.is_running or bypass_check:
-            if self._reset_cancel:   # Reset dialog's Cancel, honored even with bypass_check=True
-                self.controller._log(
-                    "[INFO] _wait_for_motors: Reset cancelled -- no longer waiting out "
-                    "the full arrival timeout.")
+        deadline = t_start + timeout
+
+        def should_continue():
+            # Reset dialog's Cancel is honored even with bypass_check=True.
+            if self._reset_cancel:
                 return False
-            is_moving_2 = self.controller.rot_mgr.is_moving.get(2, False)
-            is_moving_3 = self.controller.rot_mgr.is_moving.get(3, False)
-            if not is_moving_2 and not is_moving_3:
-                if step_deg and waited >= 1.0:   # skip near-zero noops
-                    observed_rate = step_deg / (time.time() - t_start)
-                    self.motor_rate_ema = (observed_rate if self.motor_rate_ema is None
-                                           else 0.7 * self.motor_rate_ema + 0.3 * observed_rate)
-                return True
-            time.sleep(0.5)
-            waited += 0.5
-            if waited >= timeout:
-                stuck = [d for d, m in (("2", is_moving_2), ("3", is_moving_3)) if m]
+            return bool(self.is_running or bypass_check)
+
+        # The wait/timeout/diagnose/release policy itself lives in
+        # rot_mgr.wait_until_stopped -- the single place that knows how to give
+        # up on a stage. This method only owns the SCAN-side policy: how long a
+        # step of this size should take, and that a timeout means "skip this
+        # point" rather than "abort the run".
+        for dev in (2, 3):
+            remaining = max(0.0, deadline - time.time())
+            outcome = rm.wait_until_stopped(dev, remaining, should_continue=should_continue)
+            if outcome == rm.WAIT_CANCELLED:
                 self.controller._log(
-                    f"[CRITICAL] _wait_for_motors timeout ({timeout:.0f}s): "
-                    f"Device {', '.join(stuck)} never confirmed arrival "
-                    f"(Modbus comm failure suspected).")
+                    f"[INFO] _wait_for_motors: wait on Device {dev} cancelled "
+                    f"(stop/reset requested) -- not waiting out the full timeout.")
                 return False
-        return False
+            if outcome == rm.WAIT_TIMEOUT:
+                # wait_until_stopped already logged why (describe_motion_state)
+                # and dropped the stale lock so the next point is re-commanded
+                # instead of being refused with "already moving".
+                return False
+
+        if step_deg:
+            elapsed = time.time() - t_start
+            if elapsed >= 1.0:   # skip near-zero noops
+                observed_rate = step_deg / elapsed
+                self.motor_rate_ema = (observed_rate if self.motor_rate_ema is None
+                                       else 0.7 * self.motor_rate_ema + 0.3 * observed_rate)
+        return True
 
     def _move_safely_stepped(self, target_2, target_3, axis_type, bypass_check=False, step_override=None):
         """Returns True if the move completed, False if a motor lock never
@@ -319,6 +491,23 @@ class AutomationManager:
         while self.is_running or bypass_check:
             if self._reset_cancel:   # operator cancelled a Reset Angle mid-move
                 return False
+            # Pause takes effect at a STEP BOUNDARY, never mid-motor-move: by
+            # the time we loop back here the previous step's _wait_for_motors
+            # has already confirmed arrival, so holding leaves the stage
+            # settled rather than cutting motion. Until 2026-08-26 the loop's
+            # only pause check was the _safe_sleep(rest_time) between steps,
+            # which is skipped on the final step -- so any move short enough to
+            # be a single step (rot_step is 45 deg, and most General Scan
+            # rotations are <= that) ran to completion with Pause having no
+            # effect at all. Re-check is_running after the wait: emergency_stop
+            # sets is_running False *and* releases pause_event, so a Stop
+            # pressed while paused would otherwise fall through and issue
+            # another move. break (not return False) matches what the loop
+            # already does when is_running drops mid-move.
+            if not bypass_check:
+                self.pause_event.wait()
+                if not self.is_running:
+                    break
             diff2 = target_2 - c2
             diff3 = target_3 - c3
 
@@ -333,15 +522,72 @@ class AutomationManager:
 
             self.controller._log(f"[INFO] Safe Step {axis_type.upper()}: Dev2 -> {next2:.1f}, Dev3 -> {next3:.1f}")
 
-            if axis_type == "tilt":
-                if move2 != 0: self.controller.rot_mgr.move_tilt_only(2, next2, skip_lock=bypass_check)
-                if move3 != 0: self.controller.rot_mgr.move_tilt_only(3, next3, skip_lock=bypass_check)
-            else:
-                if move2 != 0: self.controller.rot_mgr.move_rot_only(2, next2, skip_lock=bypass_check)
-                if move3 != 0: self.controller.rot_mgr.move_rot_only(3, next3, skip_lock=bypass_check)
+            # Re-issue the step if the stage doesn't confirm arrival.
+            #
+            # The 2026-08-28 21:34 Device 2 loss was NOT a comm failure, even
+            # though that is what the log claimed: reconstructing c2 from the
+            # "Safe Step" lines shows read_angles(2) kept returning a healthy
+            # -15.0 for the following six minutes while the targets marched
+            # -5 -> +45 (only c2 = -15 makes every logged next2 come out -10;
+            # a failed read would have substituted c2 = target and produced a
+            # marching next2 instead). So the drive was answering fine and the
+            # motor simply never executed that one move. A second attempt is
+            # exactly what that needs -- and it is now possible, because a
+            # timed-out wait releases the motion lock instead of leaving the
+            # device permanently refusing commands.
+            rm = self.controller.rot_mgr
+            step_deg = max(abs(move2), abs(move3))
+            attempt = 0
+            issue_next = True
+            # Absolute bound so "still creeping" can never wait forever.
+            creep_deadline = time.time() + self.MOVE_CREEP_GRACE_S
 
-            if not self._wait_for_motors(bypass_check, step_deg=max(abs(move2), abs(move3))):
-                return False
+            while True:
+                if issue_next:
+                    attempt += 1
+                    if axis_type == "tilt":
+                        if move2 != 0: rm.move_tilt_only(2, next2, skip_lock=bypass_check)
+                        if move3 != 0: rm.move_tilt_only(3, next3, skip_lock=bypass_check)
+                    else:
+                        if move2 != 0: rm.move_rot_only(2, next2, skip_lock=bypass_check)
+                        if move3 != 0: rm.move_rot_only(3, next3, skip_lock=bypass_check)
+
+                if self._wait_for_motors(bypass_check, step_deg=step_deg):
+                    break
+
+                # Give up immediately on operator Stop / Reset-cancel: that is a
+                # deliberate abort, not a hardware hiccup worth retrying.
+                if self._reset_cancel or not (self.is_running or bypass_check):
+                    return False
+
+                # Only re-command a stage that has actually STOPPED short of
+                # target. Re-issuing a move pulses STOP first, so doing it to a
+                # stage that is merely travelling slower than the timeout
+                # allowed would CUT the motion it was about to finish -- a new
+                # failure the retry itself would have introduced. While any
+                # device is still creeping, wait again WITHOUT re-commanding.
+                creeping = [d for d in (2, 3)
+                            if rm.is_moving.get(d, False)
+                            and rm.classify_motion(d) == rm.MOTION_CREEPING]
+                if creeping and time.time() < creep_deadline:
+                    self.controller._log(
+                        f"[INFO] Device {', '.join(map(str, creeping))} still travelling "
+                        f"(angle changing) -- extending the wait instead of re-commanding.")
+                    issue_next = False
+                    continue
+
+                if attempt >= self.MOVE_ATTEMPTS:
+                    self.controller._log(
+                        f"[CRITICAL] Step {axis_type.upper()} still not confirmed after "
+                        f"{attempt} attempt(s) -- giving up on this point "
+                        f"(Dev2: {rm.classify_motion(2)}, Dev3: {rm.classify_motion(3)}).")
+                    return False
+
+                self.controller._log(
+                    f"[WARNING] Step {axis_type.upper()} not confirmed "
+                    f"(attempt {attempt}/{self.MOVE_ATTEMPTS}) -- re-issuing the move "
+                    f"(Dev2: {rm.classify_motion(2)}, Dev3: {rm.classify_motion(3)}).")
+                issue_next = True
 
             if abs(target_2 - next2) > 0.5 or abs(target_3 - next3) > 0.5:
                 self.controller._log(f"[INFO] Step reached. Waiting {self.rest_time}s for hardware safety...")
@@ -448,9 +694,53 @@ class AutomationManager:
             pass
 
         os.environ["SCAN_START_DATE"] = datetime.now().strftime("%Y%m%d")
+        # Wall-clock start, for Live Scan / Full Grid to tell "this scan's
+        # own files" from an earlier scan's -- see live_scan_view.py's
+        # _target_block and ui_automation.py's _backfill_matrix_from_scanmap.
+        # A run-NUMBER threshold (the old SCAN_START_MIN_RUN) breaks once
+        # _assign_run_block reuses a block a reclaimed-RAW earlier scan also
+        # used today; wall-clock time never repeats.
+        os.environ["SCAN_START_EPOCH"] = str(time.time())
+        self._write_active_scan_marker(os.environ["SCAN_START_DATE"])
+        # Live Scan view filters by date while a scan is running (see its
+        # _target_block()), but a SECOND General Scan run on the SAME date
+        # has no run-number filter to fall back on the way the idle view
+        # does, so it plotted every result file for today -- both scans'
+        # points mixed into one noisy-looking curve (2026-08-28, user: "여러번
+        # 쌓이면 이렇게 데이터가 모이던데"). Record the highest run number that
+        # already exists for today BEFORE this scan writes anything, so the
+        # live view can filter to "> this" and see only points this scan
+        # itself produced.
+        try:
+            date_tag = os.environ["SCAN_START_DATE"]
+            result_dir = os.path.join(os.path.expanduser("~/ADC/ADC_test"), "Data", "FinalResult")
+            existing = glob.glob(os.path.join(result_dir, f"precal_result_kor_run_{date_tag}_*.root"))
+            max_run = -1
+            for f in existing:
+                m = re.search(r"_(\d+)\.root$", os.path.basename(f))
+                if m:
+                    max_run = max(max_run, int(m.group(1)))
+            os.environ["SCAN_START_MIN_RUN"] = str(max_run)
+        except Exception as e:
+            os.environ["SCAN_START_MIN_RUN"] = "-1"
+            self.controller._log(f"[WARNING] Could not determine SCAN_START_MIN_RUN: {e}")
 
         cfg = self.controller.config_manager.get_all_variables()
         is_dummy = self.controller.auto_ui.dummy_var.get()
+
+        # Snapshot of "what this scan was supposed to record", read back at
+        # completion by _verify_scan_files() and compared against what each
+        # point's RAW file actually says. HV specifically: the Quick Setup
+        # sync warns if HV changes mid-scan (see ui_automation.py), but that
+        # only catches the moment it changes -- this catches it even if the
+        # warning was missed, by checking every file's own RunInfo against
+        # what the scan believed HV was when it started.
+        try:
+            self._scan_expected_hv = (cfg.get("HV1"), cfg.get("HV2"), cfg.get("HV3"))
+            self._scan_expected_events = int(cfg.get("Events", 0) or 0)
+        except Exception:
+            self._scan_expected_hv = (None, None, None)
+            self._scan_expected_events = 0
 
         # config3.h has no RunMode field -- config_manager.get_all_variables()
         # never returns one, so this was always defaulting to "Laser" below.
@@ -633,13 +923,30 @@ class AutomationManager:
         mode_dir = "Dark" if mode.lower() == "dark" else "Laser"
         search_path = os.path.join(raw_path, mode_dir, f"*_{date_tag}_*.root")
 
+        # Also check FinalResult, not just local RAW: the daily backup
+        # (~/sync_data_v2.sh) reclaims local RAW as soon as it verifies
+        # against the external copy, so a block used earlier today can look
+        # completely unused here once its RAW files are gone -- "which
+        # blocks are already spoken for" then silently forgets them, and a
+        # later scan the same day gets reassigned that SAME block. Today it
+        # only produced an empty Live Scan plot (SCAN_START_MIN_RUN's floor
+        # from the old block came out higher than this scan's new, reused-
+        # low run numbers), but the same gap could just as easily overwrite
+        # that day's earlier FinalResult/production files outright next time
+        # (2026-08-29). FinalResult is never touched by the backup reclaim,
+        # so it is a reliable record of every block actually used today,
+        # RAW-reclaimed or not.
+        final_search = os.path.join(os.path.expanduser("~/ADC/ADC_test/Data/FinalResult"),
+                                    f"precal_result_kor_run_{date_tag}_*.root")
+
         max_block = -100
-        for f in glob.glob(search_path):
-            match = re.search(r'_([0-9]{3})\.root', f)
-            if match:
-                num = int(match.group(1))
-                if num < 700:
-                    max_block = max(max_block, (num // 100) * 100)
+        for pattern in (search_path, final_search):
+            for f in glob.glob(pattern):
+                match = re.search(r'_([0-9]{3})\.root', f)
+                if match:
+                    num = int(match.group(1))
+                    if num < 700:
+                        max_block = max(max_block, (num // 100) * 100)
 
         self.current_scan_block = max_block + 100 if max_block >= 0 else 0
         self.controller._log(f"[INFO] New Scan Block Assigned: {self.current_scan_block:03d}")
@@ -733,6 +1040,13 @@ class AutomationManager:
         from the Laser Sequence panel (or a single legacy block when the panel
         is empty / dark mode / dummy)."""
         start_time = datetime.now()
+        # Reset the per-scan error tally. _mark_point_error() appends here as
+        # points fail; _show_scan_summary() reads it at the end so "GOOD RUN"
+        # only means that, instead of just "the scan didn't hang" (2026-08-28:
+        # a scan with a skipped point AND a mid-scan HV mismatch still showed
+        # a plain "GOOD RUN").
+        self._scan_errors = []
+        self._consecutive_errors = 0
         is_dummy = self.controller.auto_ui.dummy_var.get()
         cfg = self.controller.config_manager.get_all_variables()
         # Same RunMode injection as start_general_scan() -- see comment there.
@@ -747,6 +1061,9 @@ class AutomationManager:
 
         sn2_name = cfg.get("SN2", "SN2")
         sn3_name = cfg.get("SN3", "SN3")
+
+        self._current_expert = expert   # read back by _notify_scan_finished; _show_scan_summary only gets shifter
+        self._notify_scan_started(cfg, sn2_name, sn3_name, shifter, expert)
 
         points_per_axis = len(self.build_tilt_angles())
         steps_per_block = points_per_axis * 2
@@ -979,6 +1296,7 @@ class AutomationManager:
                     # no way to tell a motor move from a stall (2026-08-15).
                     self.controller.auto_ui.update_start_button(
                         True, status_text=f"SYSTEM STATUS: MOVING to {tilt}° ({axis}-Axis)")
+                    self._current_axis, self._current_tilt = axis, tilt
                     if hasattr(self.controller, 'ui'):
                         self.controller.ui.console_set_status(
                             f"▶ Running: General Scan DAQ  ·  Point {current_step + 1}/{total_steps}"
@@ -987,6 +1305,10 @@ class AutomationManager:
                         self.controller.ui.console_begin_point(
                             "general_scan",
                             f"Point {current_step + 1}/{total_steps} · Tilt {tilt}° ({axis}-Axis)")
+                        eta = self.get_eta_seconds()
+                        self.controller.ui.console_set_scan_progress(
+                            current_step + 1, total_steps, axis, tilt,
+                            eta_seconds=(eta[0] if eta else None), slot="general_scan")
 
                     # 2. 개별 스텝 이동 및 물리적 확인
                     if not is_dummy:
@@ -1465,8 +1787,7 @@ class AutomationManager:
         t_launch = time.time()
         while startup_wait < grace:
             if not self.is_running: return "stopped"
-            check = subprocess.run('pgrep -x execute_DAQ_v2 | xargs -r ps -o args= -p 2>/dev/null | grep -v -- "-j"', shell=True, capture_output=True, text=True, timeout=15)
-            if check.stdout.strip():
+            if self._daq_flag_active(daq_launch_time):
                 daq_started = True
                 observed = time.time() - t_launch
                 if observed > self.daq_startup_max:
@@ -1572,8 +1893,12 @@ class AutomationManager:
                 # Don't accumulate stagnation on stale files.
                 stagnant_count = 0
 
-            check_proc = subprocess.run('pgrep -x execute_DAQ_v2 | xargs -r ps -o args= -p 2>/dev/null | grep -v -- "-j"', shell=True, capture_output=True, text=True, timeout=15)
-            if not check_proc.stdout.strip():
+            if not self._daq_flag_active(daq_launch_time):
+                # See _daq_flag_active's docstring: the flag file brackets
+                # execute_DAQ_v2's actual lifetime with no ambiguous window
+                # (unlike the pgrep-by-name check this replaces), so a single
+                # negative read here is trustworthy -- no debounce/recheck
+                # needed the way the old pgrep-based version required.
                 self.controller._log(f"[INFO] DAQ finished in {elapsed}s.")
                 # Calibrate the watchdog's rate estimate from this real,
                 # successfully-completed point (EMA so one slow/fast outlier
@@ -1610,8 +1935,13 @@ class AutomationManager:
                 # can open this point's data later.
                 self._record_scan_point(axis, tilt, r2, r3, point_file, tag=tag)
             else:
+                # _verify_recorded_angles stashes the specific reason (e.g.
+                # "unreadable RunInfo (noruninfo)" vs a genuine angle
+                # mismatch) on self -- fall back to the old generic text if
+                # it somehow wasn't set, so this stays safe either way.
+                detail = getattr(self, '_last_angle_check_detail', None)
                 self._mark_point_error(sn2_name, sn3_name, axis, tilt,
-                                       "recorded angles do not match the commanded point")
+                                       detail or "recorded angles do not match the commanded point")
 
         if self.is_running:
             self.controller._log("[INFO] DAQ Done. Waiting 5s for safety...")
@@ -1817,6 +2147,12 @@ class AutomationManager:
         part of the normal scan range lands in its OWN entry instead of
         overwriting the original point -- both stay available for the
         analysis side to compare."""
+        # A point made it all the way to a written RAW file: whatever was
+        # failing has recovered, so the consecutive-failure streak resets
+        # (see _mark_point_error / CONSECUTIVE_ERROR_LIMIT). An occasional bad
+        # point in an otherwise-healthy scan must never accumulate toward the
+        # abort threshold.
+        self._consecutive_errors = 0
         try:
             wl = getattr(self, '_current_block_wl', None) or "-"
             date_tag = os.environ.get("SCAN_START_DATE") or datetime.now().strftime("%Y%m%d")
@@ -1853,6 +2189,58 @@ class AutomationManager:
         self.controller._log(f"[ERROR RUN] {axis}-Axis {tilt}° skipped: {reason}")
         self.controller.auto_ui.update_cell(sn2_name, tilt, axis, "error")
         self.controller.auto_ui.update_cell(sn3_name, tilt, axis, "error")
+        # Also tally in-memory so _show_scan_summary() can report an accurate
+        # status instead of an unconditional "GOOD RUN" (2026-08-28: a scan
+        # with a skipped point still showed GOOD RUN, because nothing read
+        # this back at the end -- it was only ever written to disk).
+        if not hasattr(self, '_scan_errors'):
+            self._scan_errors = []
+        self._scan_errors.append(f"{axis}-Axis {tilt}°: {reason}")
+
+        # Per-point Slack alert -- every skipped point, not just the
+        # consecutive-failure abort case below. Includes the axis/angle and
+        # the exact reason/log line so it's actionable from the phone without
+        # opening the GUI (2026-08-31, user: "에러가 생기면 Slack에 알림...
+        # 이유와 로그, 그리고 축에서 몇도인지").
+        notifier = getattr(self.controller, 'notifier', None)
+        if notifier and notifier.enabled:
+            try:
+                notifier.send(
+                    f"General Scan: point skipped ({axis}-Axis {tilt}°)",
+                    f"Reason: {reason}\n"
+                    f"Log: [ERROR RUN] {axis}-Axis {tilt}° skipped: {reason}",
+                    level="warning",
+                    dedupe_key=f"point_error_{axis}_{tilt}_{reason}",
+                    blocking=False)
+            except Exception as e:
+                self.controller._log(f"[WARNING] Point-error notification failed: {type(e).__name__}.")
+
+        # Abort after CONSECUTIVE_ERROR_LIMIT failures IN A ROW: a scan that
+        # keeps skipping every point (stage genuinely stuck, DAQ genuinely
+        # down) was allowed to run to completion, quietly producing hours of
+        # empty data (2026-08-29, user: "모터가 완전히 고착되었는데도 의미 없는
+        # 빈 데이터를 쌓으며 3~4시간을 허비하는 것을 막는 방어 기제"). A single
+        # success anywhere resets the streak (see _record_scan_point) -- this
+        # is about a STUCK failure mode, not an occasional bad point, which
+        # the retry/skip logic already handles fine on its own.
+        self._consecutive_errors = getattr(self, '_consecutive_errors', 0) + 1
+        if self._consecutive_errors >= self.CONSECUTIVE_ERROR_LIMIT and self.is_running:
+            self.controller._log(
+                f"[CRITICAL] {self._consecutive_errors} consecutive point failures -- "
+                f"aborting the scan instead of continuing to skip every remaining point.")
+            notifier = getattr(self.controller, 'notifier', None)
+            if notifier and notifier.enabled:
+                try:
+                    notifier.send(
+                        "General Scan ABORTED",
+                        f"{self._consecutive_errors} consecutive point failures "
+                        f"(latest: {axis}-Axis {tilt}°: {reason}).\n"
+                        f"Scan stopped automatically -- check the hardware before resuming.",
+                        level="critical", dedupe_key="consecutive_error_abort", blocking=False)
+                except Exception as e:
+                    self.controller._log(f"[WARNING] Abort notification failed: {type(e).__name__}.")
+            self.is_running = False
+            self.pause_event.set()   # don't leave a paused thread stuck waiting forever
         try:
             wl = getattr(self, '_current_block_wl', None) or "-"
             date_tag = os.environ.get("SCAN_START_DATE") or datetime.now().strftime("%Y%m%d")
@@ -1889,7 +2277,12 @@ class AutomationManager:
         self.scan_total_steps = total
         self.scan_current_step = current
         if hasattr(self.controller, 'ui'):
-            self.controller.ui.console_set_progress(current, total, slot="general_scan")
+            eta = self.get_eta_seconds()
+            eta_seconds = eta[0] if eta else None
+            self.controller.ui.console_set_scan_progress(
+                current, total, getattr(self, '_current_axis', None),
+                getattr(self, '_current_tilt', None), eta_seconds=eta_seconds,
+                slot="general_scan")
 
     def get_eta_seconds(self):
         """완료된 스텝들의 실측 평균으로 남은 시간을 추정한다.
@@ -1923,30 +2316,248 @@ class AutomationManager:
         eta = max(0.0, avg * remaining - into_current)
         return (eta, current, total)
 
+    # Marker telling OTHER processes (specifically ~/sync_data_v2.sh) that a
+    # General Scan is in flight and which date tag it is writing. The backup
+    # script reclaims local RAW files as soon as their external copy verifies,
+    # which is correct for finished data but raced this scan's own post-run
+    # audit: _verify_scan_files() re-opens every point's RAW file, and files
+    # already reclaimed mid-scan were reported as "recorded file missing on
+    # disk" -- 19 and 35 false errors on the 2026-08-28/29 runs, on scans that
+    # were otherwise clean. Contains "<date_tag> <pid>" so a stale marker from
+    # a crashed GUI cannot block backups forever: the reader ignores it once
+    # the pid is gone.
+    ACTIVE_SCAN_MARKER = "/tmp/daq_flags/active_scan"
+
+    def _write_active_scan_marker(self, date_tag):
+        try:
+            os.makedirs(os.path.dirname(self.ACTIVE_SCAN_MARKER), exist_ok=True)
+            with open(self.ACTIVE_SCAN_MARKER, "w", encoding="utf-8") as f:
+                f.write(f"{date_tag} {os.getpid()}\n")
+            self.controller._log(
+                f"[INFO] Backup hold marker set for {date_tag} "
+                f"-- sync_data_v2.sh will leave this scan's RAW files on local until it finishes.")
+        except Exception as e:
+            # Never let this stop a scan; worst case is the old false-positive.
+            self.controller._log(f"[WARNING] Could not write active-scan marker: {e}")
+
+    def _clear_active_scan_marker(self):
+        try:
+            if os.path.exists(self.ACTIVE_SCAN_MARKER):
+                os.remove(self.ACTIVE_SCAN_MARKER)
+                self.controller._log("[INFO] Backup hold marker cleared -- this scan's RAW files may now be reclaimed.")
+        except Exception as e:
+            self.controller._log(f"[WARNING] Could not clear active-scan marker: {e}")
+
+    # Every place a finished RAW file can legitimately live. The daily backup
+    # (~/sync_data_v2.sh) copies local RAW to the external HDD and then deletes
+    # the local original, so "not at the recorded path" does NOT mean the run
+    # was lost -- it usually means the backup already reclaimed it. Looking
+    # only at the recorded path produced 19 and 35 phantom "recorded file
+    # missing on disk" errors on the 2026-08-28/29 scans, both of which were
+    # otherwise clean. Search every known location instead, so the audit's
+    # result cannot depend on backup timing at all.
+    RAW_SEARCH_DIRS = (
+        "/home/precalkor/ADC/ADC_test/Data/RAW/Laser",
+        "/home/precalkor/Data/RAW/Laser",
+        "/home/precalkor/external_HDD_1_4T/Data_Backup/RAW/Laser",
+        "/media/precalkor/HD-EDS-E/Data_Backup/RAW/Laser",
+        "/home/precalkor/ADC/ADC_test/Data/RAW/Dark",
+        "/home/precalkor/Data/RAW/Dark",
+        "/home/precalkor/external_HDD_1_4T/Data_Backup/RAW/Dark",
+        "/media/precalkor/HD-EDS-E/Data_Backup/RAW/Dark",
+    )
+
+    def _locate_raw_file(self, recorded_path):
+        """Return a readable path for this run's RAW file, or None if it is
+        genuinely nowhere. Checks the recorded path first, then every other
+        known RAW location under the same basename."""
+        if not recorded_path:
+            return None
+        if os.path.exists(recorded_path):
+            return recorded_path
+        base = os.path.basename(recorded_path)
+        for d in self.RAW_SEARCH_DIRS:
+            cand = os.path.join(d, base)
+            if os.path.exists(cand):
+                return cand
+        return None
+
+    def _verify_scan_files(self):
+        """Post-hoc audit: open every point's own RAW file and check it
+        against what the scan intended, instead of only trusting whatever was
+        (or wasn't) flagged live via _mark_point_error(). That in-flight
+        tally can't catch a point that "succeeded" -- file written, no
+        launch/motor error -- but with WRONG metadata inside it. That is
+        exactly what happened on 2026-08-28: run 242 was written with no
+        error at all, but was physically acquired at two different tilt
+        angles (a watchdog false-positive moved the stage mid-acquisition),
+        and runs 243/244 recorded the OLD HV while the PMTs were actually
+        running at a HV changed 50V higher mid-scan. Appends any mismatch
+        found to self._scan_errors, same tally _show_scan_summary() reads.
+        """
+        try:
+            import uproot
+        except ImportError:
+            self.controller._log("[WARNING] Post-scan file verification skipped: uproot not installed.")
+            return
+        date_tag = os.environ.get("SCAN_START_DATE") or datetime.now().strftime("%Y%m%d")
+        map_path = os.path.join(self.controller.base_dir, "LOG", "ScanHistory", f"scanmap_{date_tag}.json")
+        if not os.path.exists(map_path):
+            return
+        try:
+            with open(map_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            self.controller._log(f"[WARNING] Post-scan verification: couldn't read {map_path}: {e}")
+            return
+
+        exp_hv = getattr(self, '_scan_expected_hv', (None, None, None))
+        exp_events = getattr(self, '_scan_expected_events', 0)
+        ANGLE_TOL_DEG = 1.0
+
+        for key, entry in data.items():
+            if entry.get("status") != "OK" or entry.get("kind", "scan") != "scan":
+                continue   # errors already tallied live; "repeat" points aren't part of the main scan range
+            path = self._locate_raw_file(entry.get("file"))
+            if path is None:
+                recorded = entry.get("file")
+                if not recorded:
+                    continue
+                self._scan_errors.append(f"{key}: recorded file missing on disk ({recorded})")
+                continue
+            try:
+                ri = uproot.open(path)["RunInfo"]
+                g = lambda k: ri[k].array(library="np")[0]
+                dec = lambda v: v.decode() if isinstance(v, bytes) else v
+
+                n_entries = uproot.open(path)["T"].num_entries
+                if exp_events and n_entries != exp_events:
+                    self._scan_errors.append(
+                        f"{key}: event count {n_entries} != expected {exp_events} (truncated/short run?)")
+
+                tilt = entry.get("tilt")
+                for dev, angle_key in ((2, "RawTiltAngle2"), (3, "RawTiltAngle3")):
+                    try:
+                        got = float(g(angle_key))
+                        if tilt is not None and abs(got - float(tilt)) > ANGLE_TOL_DEG:
+                            self._scan_errors.append(
+                                f"{key}: Dev{dev} tilt in file is {got:.1f}°, expected {tilt}° "
+                                f"(stage moved mid-acquisition?)")
+                    except Exception:
+                        pass
+
+                for hv_key, expected in zip(("HV2", "HV3"), exp_hv[1:]):
+                    if expected is None:
+                        continue
+                    try:
+                        got = str(dec(g(hv_key))).strip()
+                        if got and got != str(expected).strip():
+                            self._scan_errors.append(
+                                f"{key}: {hv_key} in file is {got}, expected {expected} "
+                                f"(HV changed mid-scan and not saved before this point?)")
+                    except Exception:
+                        pass
+            except Exception as e:
+                self._scan_errors.append(f"{key}: couldn't verify file ({e})")
+
     def _show_scan_summary(self, start, end, shifter):
         self.save_scan_history(start, end, shifter, is_success=True) # 성공 시 저장
-        
-        summary = (
+
+        if not hasattr(self, '_scan_errors'):
+            self._scan_errors = []
+        # Audit FIRST, release the backup hold second: _verify_scan_files()
+        # needs this scan's RAW files still on local disk to open them.
+        self._verify_scan_files()
+        self._clear_active_scan_marker()
+
+        # Accurate status instead of an unconditional "GOOD RUN" -- a scan
+        # that skipped a point (DAQ launch timeout, motor comm failure, ...)
+        # used to still show GOOD RUN because nothing here ever looked at
+        # _mark_point_error()'s tally (2026-08-28).
+        errors = list(getattr(self, '_scan_errors', []) or [])
+        if errors:
+            status_line = f"⚠ COMPLETED WITH {len(errors)} ERROR(S)"
+            error_block = "\n".join(f"   - {e}" for e in errors)
+        else:
+            status_line = "GOOD RUN"
+            error_block = None
+
+        # Compact by default -- the error list can get long on a bad scan, and
+        # most of the time (GOOD RUN) there's nothing to show anyway. Details
+        # are one click away instead of always taking up space, same idea as
+        # the old plain popup but without dumping everything at once.
+        compact = (
             f"📊 Scan Result Summary\n"
             f"--------------------------\n"
             f"• Start: {start.strftime('%H:%M:%S')}\n"
             f"• End: {end.strftime('%H:%M:%S')}\n"
             f"• Shifter: {shifter}\n"
             f"• Target: SN2, SN3\n"
-            f"• Run Status: GOOD RUN\n"
+            f"• Run Status: {status_line}\n"
             f"--------------------------\n"
             f"Start the NEXT RUN with UI reset?"
         )
-        ans = messagebox.askyesno("Scan Completed", summary)
-        if ans is True:
+        self.controller._log(
+            f"[INFO] Scan Result Summary: {status_line}"
+            + (f" ({len(errors)} point(s): {'; '.join(errors)})" if errors else ""))
+
+        self._notify_scan_finished(start, end, shifter, errors)
+
+        # Non-modal: no grab_set(), no wait_window(). A blocking askyesno()
+        # here stalls the ENTIRE Tk event loop -- including the thread that
+        # starts the NEXT scheduled scan (Schedule Manager allows up to 3
+        # queued runs) -- until a human clicks it. Nobody may be at the
+        # machine when an overnight scan finishes, so every queued scan after
+        # the first would sit stuck behind this exact dialog (same failure
+        # mode as the "Console Busy" popup that froze a scan for 3h20m on
+        # 2026-08-28, but this one fires on every normal completion, not just
+        # a watchdog misfire). The window stays open and answerable whenever
+        # someone does return; the scan pipeline itself doesn't wait on it.
+        win = tk.Toplevel(self.controller.master)
+        win.title("Scan Completed")
+        win.resizable(False, False)
+        frame = ttk.Frame(win, padding=16)
+        frame.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(frame, text=compact, justify=tk.LEFT,
+                 font=("Courier", 10)).pack(anchor="w")
+
+        details_frame = ttk.Frame(frame)   # populated + shown only on demand
+        details_visible = {"on": False}
+
+        def _toggle_details():
+            if details_visible["on"]:
+                details_frame.pack_forget()
+                toggle_btn.config(text=f"▸ View details ({len(errors)})")
+                details_visible["on"] = False
+            else:
+                details_frame.pack(fill=tk.X, pady=(8, 0), before=btn_row)
+                toggle_btn.config(text="▾ Hide details")
+                details_visible["on"] = True
+
+        if error_block:
+            ttk.Label(details_frame, text=error_block, justify=tk.LEFT,
+                     font=("Courier", 10), foreground="#b91c1c").pack(anchor="w")
+
+        def _on_yes():
             self.controller.auto_ui.reset_matrix()
             self.reset_all_angles()
             self.controller._log("User selected NEXT RUN. UI & Hardware Reset initiated.")
             self.controller.refresh_all_data()
+            win.destroy()
+
+        btn_row = ttk.Frame(frame)
+        btn_row.pack(fill=tk.X, pady=(12, 0))
+        ttk.Button(btn_row, text="Yes", command=_on_yes).pack(side=tk.RIGHT, padx=(6, 0))
+        ttk.Button(btn_row, text="No", command=win.destroy).pack(side=tk.RIGHT)
+        if error_block:
+            toggle_btn = ttk.Button(btn_row, text=f"▸ View details ({len(errors)})",
+                                    command=_toggle_details)
+            toggle_btn.pack(side=tk.LEFT)
 
     def stop_automation(self):
         """Safely stops the automation scan sequence and updates grid states."""
         self.is_running = False
+        self._clear_active_scan_marker()   # never leave the backup held by an aborted scan
         self.pause_event.set()
         
         for (sn, tilt, axis), cell in self.controller.auto_ui.cells.items():
@@ -1974,8 +2585,24 @@ class AutomationManager:
     def abort_run(self):
         if not self.is_running: return
 
+        current = getattr(self, 'scan_current_step', None)
+        total = getattr(self, 'scan_total_steps', None)
+        axis = getattr(self, '_current_axis', None)
+        tilt = getattr(self, '_current_tilt', None)
+
         self.is_running = False
-        self.pause_event.set() 
+        self._clear_active_scan_marker()   # never leave the backup held by an aborted scan
+        self.pause_event.set()
+
+        notifier = getattr(self.controller, 'notifier', None)
+        if notifier and notifier.enabled:
+            where = (f"at Point {current}/{total}" if current and total else "") + \
+                    (f", {axis}-Axis {tilt}°" if axis is not None else "")
+            try:
+                notifier.send("General Scan ABORTED", f"Aborted by operator {where}".strip(", "),
+                              level="warning", dedupe_key=None, blocking=False)
+            except Exception as e:
+                self.controller._log(f"[WARNING] Abort notification failed: {type(e).__name__}.")
 
         is_dummy = self.controller.auto_ui.dummy_var.get()
         if not is_dummy:
@@ -2185,6 +2812,13 @@ class AutomationManager:
                     self._wait_for_physical_angle(3, target_rot=0.0, bypass_check=True)
                     self.controller._log("✅ Reset Completed: All axes confirmed at (0.0, 0.0)")
                     _set_status("✅ Reset complete (0°, 0°)")
+                    notifier = getattr(self.controller, 'notifier', None)
+                    if notifier and notifier.enabled:
+                        try:
+                            notifier.send("Reset Angle completed", "Both stages confirmed at (0°, 0°).",
+                                          level="info", dedupe_key=None, blocking=False)
+                        except Exception as e:
+                            self.controller._log(f"[WARNING] Reset-complete notification failed: {type(e).__name__}.")
                 else:
                     self.controller._log(
                         "🚨 [ERROR] Reset Angle FAILED — a motor did not confirm arrival "
@@ -2195,6 +2829,16 @@ class AutomationManager:
                         "arrival (Modbus comm timeout). The stage is likely NOT at (0, 0).\n\n"
                         "Try Reset again, or move it manually with the Move Tilt/Rot controls\n"
                         "and verify the read-back angle."))
+                    notifier = getattr(self.controller, 'notifier', None)
+                    if notifier and notifier.enabled:
+                        try:
+                            rm = self.controller.rot_mgr
+                            notifier.send(
+                                "Reset Angle FAILED", "Stage may not be at (0,0) -- verify before resuming.\n"
+                                f"Dev2: {rm.describe_motion_state(2)}\nDev3: {rm.describe_motion_state(3)}",
+                                level="critical", dedupe_key="reset_failed", blocking=False)
+                        except Exception as e:
+                            self.controller._log(f"[WARNING] Reset-failure notification failed: {type(e).__name__}.")
             finally:
                 self.reset_in_progress = False
                 self._reset_cancel = False
@@ -2252,8 +2896,10 @@ class AutomationManager:
             self.controller._log("[WARNING] Angle verification produced no result; skipping check.")
             return True
         if line.startswith("ANGLES ERR"):
-            self.controller._log(f"[CRITICAL] {os.path.basename(file_path)}: unreadable RunInfo "
-                                 f"({line.split()[-1]}) — file is not usable.")
+            detail = (f"{os.path.basename(file_path)}: unreadable RunInfo "
+                     f"({line.split()[-1]}) — file is not usable")
+            self.controller._log(f"[CRITICAL] {detail}.")
+            self._last_angle_check_detail = detail
             return False
 
         try:
@@ -2262,11 +2908,12 @@ class AutomationManager:
             return True
         want = (int(round(tilt)), int(round(r2)), int(round(r3)))
         if (got_t2, got_r2, got_r3) != want:
-            self.controller._log(
-                f"[CRITICAL] {os.path.basename(file_path)}: recorded angles "
-                f"(tilt {got_t2}, rot2 {got_r2}, rot3 {got_r3}) do NOT match the commanded point "
-                f"(tilt {want[0]}, rot2 {want[1]}, rot3 {want[2]}). "
-                "The stage most likely moved before this acquisition started — treating as a failed point.")
+            detail = (f"{os.path.basename(file_path)}: recorded angles "
+                     f"(tilt {got_t2}, rot2 {got_r2}, rot3 {got_r3}) do NOT match the commanded point "
+                     f"(tilt {want[0]}, rot2 {want[1]}, rot3 {want[2]}) — "
+                     "the stage most likely moved before this acquisition started")
+            self.controller._log(f"[CRITICAL] {detail}.")
+            self._last_angle_check_detail = detail
             return False
         return True
 
@@ -2440,7 +3087,24 @@ class AutomationManager:
                 if hasattr(self.controller.auto_ui, 'refresh_schedule_list'):
                     self.controller.master.after(0, self.controller.auto_ui.refresh_schedule_list)
 
-                if not self.is_running:
+                # If the PREVIOUS scan ended with recorded errors, don't just
+                # blindly launch the next queued one -- an unresolved cause
+                # (motor comm fault, HV changed mid-scan, ...) will very
+                # likely fail the same way again, and unattended it would
+                # burn hours producing more bad data with nobody aware until
+                # someone happens to open the (now non-blocking) completion
+                # popup. Skip once, log loudly, and require the operator to
+                # re-queue after checking -- better than silently repeating a
+                # known-bad run (2026-08-28).
+                last_errors = getattr(self, '_scan_errors', None)
+                if last_errors:
+                    self.controller._log(
+                        f"[CRITICAL] Skipping next scheduled scan: the previous scan "
+                        f"completed with {len(last_errors)} error(s) "
+                        f"({'; '.join(last_errors)}). Resolve the cause and re-queue "
+                        f"manually rather than risk repeating the same failure "
+                        f"unattended.")
+                elif not self.is_running:
                     self.controller.master.after(0, lambda: self.start_general_scan(skip_validation=True))
                 else:
                     self.controller._log("[WARNING] Another scan is already running. Scheduled run skipped.")

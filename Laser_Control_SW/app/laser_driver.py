@@ -310,7 +310,14 @@ class TamadenshiLaser:
                 data = self.device.read(self.PACKET_LENGTH, 1000)
             return list(data) if data else None
         except Exception as e:
+            # Unlike this method, _read_command() calls _handle_disconnection()
+            # on failure, which marks the device disconnected so is_connected()
+            # short-circuits future polls. This one didn't, so a dropped device
+            # kept retrying and reprinting the same failure on every 0.5s status
+            # poll (RepeatingTimer in laser_gui.py) forever -- console spam with
+            # no way to stop short of restarting the GUI (2026-08-26).
             print(f"👻 Raw status read failed: {e}")
+            self._handle_disconnection()
             return None
 
     # ===================================================

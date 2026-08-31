@@ -399,22 +399,74 @@ class WaveformViewerPanel:
                 f = uproot.open(path)
                 tree = f["T"]
                 n = tree.num_entries
-                rec_len = int(tree["RecordLength"].array(
-                    entry_start=0, entry_stop=1, library="np")[0])
-                post_trigger = int(tree["PostTrigger"].array(
-                    entry_start=0, entry_stop=1, library="np")[0])
                 keys = [k.split(";")[0] for k in tree.keys()]
-                channels = [i for i in range(8) if f"OffsetValue{i}" in keys]
 
-                # Detect dark mode from InfoTree (same logic as prod_ntp_v7.C)
+                # RecordLength / PostTrigger / OffsetValue<N> are constant for a
+                # whole run, so from ADC_test8 (2026-08-08) they are written ONCE
+                # into the RunInfo tree instead of being repeated across all
+                # ~300k entries of "T". Files taken before that still carry them
+                # per-event on "T", so read from whichever tree actually has
+                # them -- both formats must stay readable. This mirrors
+                # prod_ntp_v7.C's `constsOnT` handling; the viewer was left on
+                # the old layout and so could not open any file recorded after
+                # the change (2026-08-26).
+                info = None
+                for info_name in ("RunInfo", "InfoTree"):
+                    try:
+                        info = f[info_name]
+                        break
+                    except Exception:
+                        continue
+
+                def _const(name, default):
+                    """One per-run constant, from T if present, else RunInfo."""
+                    if name in keys:
+                        return int(tree[name].array(
+                            entry_start=0, entry_stop=1, library="np")[0])
+                    if info is not None:
+                        try:
+                            return int(info[name].array(library="np")[0])
+                        except Exception:
+                            pass
+                    return default
+
+                rec_len = _const("RecordLength", 1024)
+                post_trigger = _const("PostTrigger", 60)
+
+                # Which channels were enabled. Old files: one OffsetValue<N>
+                # branch per active channel on "T". New files: those branches
+                # moved to RunInfo, which also stores the digitizer channel mask
+                # ("00001111", written MSB-first so the leftmost char is ch7) --
+                # preferred, since it states what was enabled outright instead
+                # of inferring it from which branches happen to exist.
+                channels = [i for i in range(8) if f"OffsetValue{i}" in keys]
+                if not channels and info is not None:
+                    info_keys = [k.split(";")[0] for k in info.keys()]
+                    if "ChannelMask" in info_keys:
+                        try:
+                            raw_mask = info["ChannelMask"].array(library="np")[0]
+                            if isinstance(raw_mask, bytes):
+                                raw_mask = raw_mask.decode("ascii", "ignore")
+                            mask = str(raw_mask).strip()
+                            channels = [i for i in range(min(len(mask), 8))
+                                        if mask[len(mask) - 1 - i] == "1"]
+                        except Exception:
+                            channels = []
+                    if not channels:          # fall back to the moved branches
+                        channels = [i for i in range(8)
+                                    if f"OffsetValue{i}" in info_keys]
+
+                # Detect dark mode (same logic as prod_ntp_v7.C)
                 dark_mode = False
-                try:
-                    info = f["InfoTree"]
-                    run_mode = str(info["RunMode"].array(library="np")[0])
-                    if run_mode.strip().lower() in ("dark",):
-                        dark_mode = True
-                except Exception:
-                    pass
+                if info is not None:
+                    try:
+                        run_mode = info["RunMode"].array(library="np")[0]
+                        if isinstance(run_mode, bytes):
+                            run_mode = run_mode.decode("ascii", "ignore")
+                        if "dark" in str(run_mode).strip().lower():
+                            dark_mode = True
+                    except Exception:
+                        pass
 
                 trg_point = int(rec_len * (1.0 - post_trigger / 100.0))
                 sig_s = trg_point if dark_mode else SIG_START

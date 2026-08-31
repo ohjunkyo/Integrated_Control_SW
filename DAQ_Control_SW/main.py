@@ -71,7 +71,8 @@ from managers.ups_manager import UPSManager
 from managers.laser_manager import LaserManager
 from managers.control_access import ControlAccessManager
 from managers.rotation_manager import AutomationManager 
-from managers.rotation_control import RotationManager 
+from managers.rotation_control import RotationManager
+from managers.notifier import Notifier
 from managers.ui_automation import AutomationUI
 
 APP_CONFIG_FILE = os.path.join(os.path.expanduser("~"), ".daq_control_config.json")
@@ -135,6 +136,11 @@ class App:
 
         # 2. 로직 매니저 생성
         self.access_mgr = ControlAccessManager(self, password="root")
+        # Remote alerting (Slack). Complements the Patlite lamp, which is an
+        # on-site indicator and so reaches nobody during unattended overnight /
+        # weekend runs. Safe to construct with no webhook configured -- it
+        # simply reports enabled=False and every send() is a no-op.
+        self.notifier = Notifier(log_fn=self._log)
         self.rot_mgr = RotationManager(self)
         self.auto_mgr = AutomationManager(self)
 
@@ -147,6 +153,23 @@ class App:
         self._setup_theme()
         self.ui = UIManager(master, self)
         self.auto_ui = self.ui.auto_ui
+
+        # Build General Scan's Live Console pane immediately instead of
+        # lazily on first scan launch: until a scan had run at least once
+        # THIS session, the Live Scan tab showed nothing but a plain gray
+        # "General Scan output will appear here..." label where the styled
+        # console (status bar / progress card / raw-output toggle) is
+        # supposed to be -- so every fresh app start looked broken/unfinished
+        # rather than idle (2026-08-29, user: "지금은 비어있는 화면이 뜨잖아").
+        # The pane is a normal idle console either way (point_var defaults to
+        # "No scan running"); this only changes WHEN it gets built.
+        try:
+            self.ui.ensure_console_pane("general_scan", parent=self.auto_ui._matrix_console_frame)
+            placeholder = getattr(self.auto_ui, '_matrix_console_placeholder', None)
+            if placeholder is not None and placeholder.winfo_exists():
+                placeholder.destroy()
+        except Exception as e:
+            self._log(f"[WARNING] Could not pre-build the Live Console pane: {e}")
 
         # 4. 하드웨어 매니저 생성 (중복 제거 완료)
         self.laser_mgr = LaserManager(self)
@@ -890,14 +913,39 @@ class App:
         if not self.config_manager: return
 
         paths_to_check = ['BasePath', 'RawDataPath', 'ProcessedDataPath', 'ImagePath']
-        missing_paths = []
 
-        for path_key in paths_to_check:
-            path_val = self.config_manager.get_config_value(path_key)
-            if not path_val or not os.path.isdir(path_val):
-                missing_paths.append(path_key)
+        def _missing_now():
+            missing = []
+            for path_key in paths_to_check:
+                path_val = self.config_manager.get_config_value(path_key)
+                if not path_val or not os.path.isdir(path_val):
+                    missing.append(path_key)
+            return missing
+
+        # Retry before believing a "missing" result: this runs once at app
+        # startup, and RawDataPath resolves through a symlink onto the
+        # external HDD -- if the app launches in the brief window before that
+        # mount/symlink has settled, os.path.isdir() legitimately returns
+        # False for a path that's actually fine a bit later. A USB HDD can
+        # take well over 10s to spin up and finish mounting after boot/login,
+        # not just a couple seconds, so retry for up to ~20s (6 tries, 3-4s
+        # apart is gentler than hammering isdir() every second) before
+        # believing it's a real problem worth interrupting the operator for.
+        # Also log it now (previously only ever shown as a bare popup, so if
+        # nobody screenshotted it in time there was no way to look back and
+        # see what had actually failed) (2026-08-28).
+        missing_paths = _missing_now()
+        if missing_paths:
+            import time as _time
+            for _ in range(6):
+                _time.sleep(3.5)
+                missing_paths = _missing_now()
+                if not missing_paths:
+                    break
 
         if missing_paths:
+            self._log(f"[WARNING] Configuration Warning: paths missing or invalid after retry: "
+                      f"{', '.join(missing_paths)}")
             messagebox.showwarning("Configuration Warning",
                                    f"The following paths defined in your config file are missing or invalid:\n\n"
                                    f"{', '.join(missing_paths)}\n\n"
@@ -1106,9 +1154,21 @@ class App:
         existing = self._console_procs.get(slot)
         if existing is not None and existing.poll() is None:
             busy_name = "DAQ stream" if slot == "daq" else "An analysis job"
-            messagebox.showwarning("Console Busy",
-                                   f"{busy_name} is already running in this slot.\n"
-                                   "Please wait for it to finish or press Stop.")
+            if slot == "general_scan":
+                # A modal here blocks the WHOLE app -- including the scan's own
+                # background thread, which is what actually needs to see this
+                # refusal and move on. No human may be at the machine during an
+                # unattended/overnight scan, so the popup can (and did, on
+                # 2026-08-28) sit unanswered for hours while the scan just sat
+                # frozen behind it. Log only; the caller already treats a
+                # refused launch as "point failed" via the startup-wait check.
+                self._log(f"[WARNING] Console Busy: {busy_name} is already running "
+                          "in this slot; launch refused (logged only, no popup, "
+                          "during an unattended General Scan).")
+            else:
+                messagebox.showwarning("Console Busy",
+                                       f"{busy_name} is already running in this slot.\n"
+                                       "Please wait for it to finish or press Stop.")
             return
 
         # 명령을 bash -c 로 감싼다(파이프/&& 등 셸 문법 허용 + 기존 동작과 호환).
@@ -1420,11 +1480,11 @@ class App:
                 continue
         
         if not executed:
-            self._log("ERROR: Cisco vpnui 실행 파일을 찾을 수 없습니다.")
-            messagebox.showerror("Execution Error", 
-                                 f"Cisco vpnui를 찾을 수 없습니다.\n\n"
-                                 f"확인된 경로: /opt/cisco/secureclient/bin/vpnui\n"
-                                 f"파일 권한(chmod +x)을 확인해 보세요.")
+            self._log("ERROR: Could not find the Cisco vpnui executable.")
+            messagebox.showerror("Execution Error",
+                                 f"Could not find Cisco vpnui.\n\n"
+                                 f"Checked path: /opt/cisco/secureclient/bin/vpnui\n"
+                                 f"Check the file's permissions (chmod +x).")
 
     def _sync_config_from_active_laser(self):
         """Write the currently-active laser's wavelength + pulse/bias into config3.h
@@ -2226,24 +2286,107 @@ class App:
             persisted_labels.setdefault(tg, lbl)
         persisted_labels_loaded = set(persisted_labels.keys())
 
+        # Filter box: with 100+ datasets on disk, building a widget row for
+        # every single one made this dialog visibly slow to open (2026-08-28)
+        # -- narrowing to a substring match (usually a date) is normally all
+        # that's needed, so most sessions never have to render more than a
+        # handful of rows at once.
+        filter_var = tk.StringVar()
+        filter_row = ctk.CTkFrame(dlg, fg_color="transparent")
+        filter_row.pack(fill=tk.X, padx=20, pady=(0, 6))
+        ctk.CTkLabel(filter_row, text="Filter:").pack(side=tk.LEFT, padx=(0, 6))
+        ctk.CTkEntry(filter_row, textvariable=filter_var,
+                     placeholder_text="e.g. 20260815").pack(side=tk.LEFT, fill=tk.X, expand=True)
+        # Manual sort order -- an HV-scan campaign is naturally compared by
+        # voltage step, not by which day it happened to run on, but that
+        # order isn't reliably in the data either (parsing it out of the
+        # free-text legend label was tried and rejected: 2026-08-30, user:
+        # "그렇게하지말고" -- a typo'd or blank label would silently misorder
+        # or drop a row). A plain per-row order number the operator types
+        # themselves is unambiguous; blank stays in original (date) order
+        # and sorts after every numbered row.
+        order_path = os.path.join(uni_dir, 'overlay_order.json')
+        persisted_order = {}
+        if os.path.exists(order_path):
+            try:
+                with open(order_path) as f:
+                    persisted_order = json.load(f)
+            except Exception:
+                pass
+        sort_by_order = tk.BooleanVar(value=False)
+        def _toggle_sort():
+            _apply_filter()
+        ctk.CTkCheckBox(filter_row, text="Sort by order #", variable=sort_by_order,
+                        command=_toggle_sort, width=130).pack(side=tk.LEFT, padx=(10, 0))
+
         # One row per dataset: checkbox to select + entry to set its legend
         # label. CTkScrollableFrame replaces the old Canvas+Scrollbar+inner
         # boilerplate -- it scrolls natively when the list is long.
+        #
+        # Rows use plain tkinter widgets (Checkbutton/Label/Entry), not their
+        # ctk.CTk* equivalents: each CTk widget draws itself onto its own
+        # canvas, which is the actual cost that made 100+ datasets x 3
+        # widgets/row slow to construct. Plain tk widgets look close enough
+        # inside the ctk container and are far cheaper to create; the
+        # dialog's own frame/label/entry chrome elsewhere stays ctk.
         scroll = ctk.CTkScrollableFrame(dlg, label_text="Datasets",
-                                        height=min(360, max(120, 34 * len(tags))))
+                                        height=min(360, max(120, 34 * min(len(tags), 12))))
         scroll.pack(fill=tk.BOTH, expand=True, padx=20, pady=(0, 8))
 
-        row_vars = {}   # tag -> (BooleanVar selected, StringVar label)
+        row_vars = {}    # tag -> (BooleanVar selected, StringVar label, StringVar order)
+        row_widgets = {} # tag -> outer row Frame, so filtering can show/hide it
+
         for tg in tags:
-            row = ctk.CTkFrame(scroll, fg_color="transparent")
-            row.pack(fill=tk.X, pady=2)
+            row = tk.Frame(scroll)
             sel_var = tk.BooleanVar(value=(tg in preset_selected))
             lbl_var = tk.StringVar(value=persisted_labels.get(tg, ""))
-            ctk.CTkCheckBox(row, text="", width=24, variable=sel_var).pack(side=tk.LEFT, padx=(0, 4))
-            ctk.CTkLabel(row, text=tg, width=180, anchor="w").pack(side=tk.LEFT)
-            ctk.CTkEntry(row, textvariable=lbl_var, width=160,
-                         placeholder_text="legend label").pack(side=tk.LEFT, padx=(4, 0))
-            row_vars[tg] = (sel_var, lbl_var)
+            ord_var = tk.StringVar(value=persisted_order.get(tg, ""))
+            tk.Checkbutton(row, variable=sel_var).pack(side=tk.LEFT, padx=(0, 4))
+            tk.Entry(row, textvariable=ord_var, width=3).pack(side=tk.LEFT, padx=(0, 4))
+            tk.Label(row, text=tg, width=26, anchor="w").pack(side=tk.LEFT)
+            tk.Entry(row, textvariable=lbl_var, width=22).pack(side=tk.LEFT, padx=(4, 0))
+            row_vars[tg] = (sel_var, lbl_var, ord_var)
+            row_widgets[tg] = row
+        ctk.CTkLabel(dlg, text="'#' column: optional order number -- check "
+                              "\"Sort by order #\" to arrange the list by it.",
+                     text_color="#6c757d", font=ctk.CTkFont(size=11)).pack(
+            anchor="w", padx=22, pady=(0, 2))
+
+        def _order():
+            if not sort_by_order.get():
+                return tags
+            def key(tg):
+                raw = row_vars[tg][2].get().strip()
+                try:
+                    return (0, float(raw))
+                except ValueError:
+                    # Blank or non-numeric -- keep after every numbered row,
+                    # in original (date) order among themselves.
+                    return (1, tags.index(tg))
+            return sorted(tags, key=key)
+
+        def _apply_filter(*_):
+            needle = filter_var.get().strip().lower()
+            order = _order()
+            # Re-pack every visible row in the target order -- pack() on a
+            # widget already packed just moves it to the end of its
+            # manager's list, so walking `order` in sequence reproduces
+            # exactly that order top to bottom regardless of what was
+            # showing before.
+            for tg in order:
+                row = row_widgets[tg]
+                match = (not needle) or (needle in tg.lower())
+                # Always show a tag that's already selected/preset, even if it
+                # doesn't match the current filter text, so typing a filter
+                # can never silently drop an existing selection.
+                if match or tg in preset_selected:
+                    row.pack(fill=tk.X, pady=2)
+                else:
+                    if row.winfo_ismapped():
+                        row.pack_forget()
+
+        filter_var.trace_add("write", _apply_filter)
+        _apply_filter()
 
         # Channel selection (which PMTs to overlay)
         ch_vars = {0: tk.BooleanVar(value=True),
@@ -2258,7 +2401,11 @@ class App:
         chan_cfg_path = os.path.join(uni_dir, 'overlay_channels.txt')
 
         def _go():
-            sel = [tg for tg in tags if row_vars[tg][0].get()]
+            # Written (and overlaid) in the operator's chosen order when
+            # "Sort by order #" is on, not just tags' date order -- the
+            # whole point of numbering rows was to control the order they
+            # get drawn/legended in, not only which ones filter shows first.
+            sel = [tg for tg in _order() if row_vars[tg][0].get()]
             if not sel:
                 messagebox.showwarning("No selection", "Select at least one dataset.", parent=dlg)
                 return
@@ -2290,6 +2437,16 @@ class App:
                         persisted_labels.pop(tg, None)
                 with open(labels_path, 'w') as f:
                     json.dump(persisted_labels, f, indent=2)
+                # Same persist-regardless-of-checkbox treatment as labels.
+                for tg in tags:
+                    order = row_vars[tg][2].get().strip()
+                    had_before = tg in persisted_order
+                    if order:
+                        persisted_order[tg] = order
+                    elif had_before:
+                        persisted_order.pop(tg, None)
+                with open(order_path, 'w') as f:
+                    json.dump(persisted_order, f, indent=2)
             except Exception as e:
                 messagebox.showerror("Error", f"Could not write overlay config:\n{e}", parent=dlg)
                 return

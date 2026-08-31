@@ -2300,6 +2300,12 @@ class UIManager:
                 text="No representative values yet — run  ./analyze.sh pmtrep",
                 foreground="#8a8a8a")
         else:
+            # X and Y are always wanted separately, so the merged "pooled" row
+            # is filtered out here as well as no longer being written by
+            # Draw_HamamatsuStyle_Uniformity.C -- rows written before that
+            # change are still in the CSVs, and without this filter they would
+            # keep showing a third row per PMT (2026-08-26).
+            rep = [r for r in rep if r.get("axis", "") != "pooled"]
             serials = {r.get("serial", "") for r in rep}
             self._pmt_summary_lbl.config(
                 text=f"{len(serials)} PMT(s), {len(rep)} rows", foreground="#1a7f37")
@@ -2313,6 +2319,8 @@ class UIManager:
                     r.get("sigma1000_reproducibility", "—")))
 
         for r in self._read_csv_rows(self.PMT_SUMMARY_CSV):
+            if r.get("axis", "") == "pooled":
+                continue
             self._pmt_det.insert("", tk.END, values=(
                 r.get("timestamp", ""), r.get("serial", ""), r.get("tag", ""),
                 r.get("axis", ""), r.get("n_points", ""),
@@ -2708,12 +2716,65 @@ class UIManager:
         progress_fill = tk.Frame(progress_track, bg=accent)
         progress_fill.place(relx=0, rely=0, relwidth=0.0, relheight=1.0)
 
+        # General Scan's progress state used to live in a separate Frame
+        # (card) stacked above the console text -- three rounds of visual bugs
+        # (light/dark seam, an empty stretched box, a stray focus-ring line at
+        # every Frame boundary) later, the user's own read was right: "아예
+        # 합치는건 안되는거야?" (2026-08-29). It's now a single pinned block
+        # of TEXT at the top of the one Text widget every other slot already
+        # uses -- no extra Frame, no boundary to mismatch, no leftover space
+        # to fill or fail to fill. console_set_scan_progress() below rewrites
+        # just that block in place; the raw script output scrolls beneath it,
+        # always visible (no collapse toggle to get wrong either).
         text = scrolledtext.ScrolledText(
             parent, wrap=tk.NONE, state="disabled",
             bg=body_bg, fg="#c7cedb", insertbackground="#c7cedb",
             padx=10, pady=8, relief="flat", borderwidth=0,
             font=(mono, 11))
         text.pack(fill=tk.BOTH, expand=True)
+        # ScrolledText only ever gives a vertical bar -- wrap=NONE means a
+        # long line (e.g. a Ped diagnostic with 4+ pipe-separated channels)
+        # just runs off the right edge with no way back, which reads as the
+        # console silently truncating output (2026-08-29, user: "여전히
+        # 잘리는거같아" on a line ending "Ch3:151..."). Nothing was lost --
+        # add the horizontal bar that was always missing. text.frame is the
+        # Frame ScrolledText installs itself into (see tkinter.scrolledtext
+        # source); the vbar it already packs is side=RIGHT, so a hbar packed
+        # side=BOTTOM here shares that same frame correctly.
+        hbar = tk.Scrollbar(text.frame, orient=tk.HORIZONTAL, command=text.xview)
+        hbar.pack(side=tk.BOTTOM, fill=tk.X)
+        text.config(xscrollcommand=hbar.set)
+        if slot == "general_scan":
+            text.tag_config("scan_point",  foreground="#e8ecf4", font=(mono, 14, "bold"))
+            text.tag_config("scan_detail", foreground="#9aa4b8", font=(mono, 11))
+            text.tag_config("scan_sep",    foreground="#2a2f3d", font=(mono, 4))
+            # The raw script output (Ped/Evt telemetry etc.) is hidden by
+            # default now instead of always scrolling under the progress
+            # block -- matches the approved mockup's "Show raw output" link
+            # (2026-08-29, user-provided mockup screenshot). "raw_all" is
+            # stacked onto every console_write() insert for this slot in
+            # addition to that line's own color tag; elide just needs the
+            # tag present anywhere on a range, so toggling this one tag's
+            # elide flag hides/reveals the entire scrolling log at once.
+            text.tag_config("raw_all", elide=True)
+            text.tag_config("raw_toggle", foreground="#5b8cff", font=(mono, 10, "underline"))
+            text.tag_bind("raw_toggle", "<Enter>", lambda e, w=text: w.config(cursor="hand2"))
+            text.tag_bind("raw_toggle", "<Leave>", lambda e, w=text: w.config(cursor=""))
+            text.tag_bind("raw_toggle", "<Button-1>",
+                          lambda e, s=slot: self._toggle_console_raw(s))
+            text.config(state="normal")
+            # Always exactly 4 lines (point / detail / raw-toggle link /
+            # separator) -- lines 1-2 are kept in sync with
+            # console_set_scan_progress()'s delete("1.0","3.0")+reinsert;
+            # line 3 (the toggle link) is static after this initial build
+            # and only its label text is rewritten in place, by
+            # _toggle_console_raw(). Everything from line 5 on is the
+            # scrolling raw log.
+            text.insert("1.0", "No scan running\n", "scan_point")
+            text.insert(tk.END, "\n", "scan_detail")
+            text.insert(tk.END, "▶ Show raw output\n", "raw_toggle")
+            text.insert(tk.END, "─" * 40 + "\n", "scan_sep")
+            text.config(state="disabled")
         text.tag_config("info",     foreground="#5b8cff")
         text.tag_config("ok",       foreground=accent)
         text.tag_config("err",      foreground="#f48771")
@@ -2777,7 +2838,8 @@ class UIManager:
             "input_var": input_var, "input_entry": input_entry,
             "progress_fill": progress_fill,
             "cur_body_tag": None, "pt_counter": 0,
-            "ansi_tag": None, "ansi_bold": False, "ansi_fg": None}
+            "ansi_tag": None, "ansi_bold": False, "ansi_fg": None,
+            "is_scan_slot": slot == "general_scan"}
 
     def _pick_mono_font(self):
         """현재 시스템에 실제로 설치된 모노스페이스 폰트를 골라 반환한다."""
@@ -2848,7 +2910,12 @@ class UIManager:
         if not pane:
             return
         pane["text"].config(state="normal")
-        pane["text"].delete('1.0', tk.END)
+        # Clear the scrolling log only -- general_scan's pinned Point/Detail/
+        # raw-toggle/separator block (lines 1-4) is status, not log output,
+        # and Clear emptying it too would leave the console with no "No scan
+        # running"/current-point line at all until the next progress update.
+        start = "5.0" if pane.get("is_scan_slot") else "1.0"
+        pane["text"].delete(start, tk.END)
         pane["text"].config(state="disabled")
         pane["ansi_tag"] = None
         pane["ansi_bold"] = False
@@ -2944,6 +3011,66 @@ class UIManager:
         except tk.TclError:
             pass
 
+    def _toggle_console_raw(self, slot):
+        """Flip the "raw_all" tag's elide flag -- hides/reveals the entire
+        scrolling raw-output log beneath the pinned progress block in one
+        click, and rewrites the link line itself (▶ Show / ▼ Hide) to match
+        (2026-08-29, mockup: default-collapsed raw output with a toggle link,
+        matching what the per-point ▸ headers already do individually but as
+        one single switch for the whole log)."""
+        pane = self.console_panes.get(slot)
+        if not pane or not pane.get("is_scan_slot"):
+            return
+        w = pane["text"]
+        try:
+            elided = w.tag_cget("raw_all", "elide")
+        except tk.TclError:
+            return
+        now_hidden = not (elided in ("1", 1, True))
+        w.tag_config("raw_all", elide=now_hidden)
+        label = "▶ Show raw output\n" if now_hidden else "▼ Hide raw output\n"
+        try:
+            w.config(state="normal")
+            w.delete("3.0", "3.end")
+            w.insert("3.0", label.rstrip("\n"), "raw_toggle")
+            w.config(state="disabled")
+        except tk.TclError:
+            pass
+        if not now_hidden and pane["autoscroll"].get():
+            w.yview_moveto(1)
+
+    def console_set_scan_progress(self, current, total, axis, tilt, eta_seconds=None, slot="general_scan"):
+        """Update General Scan's progress card (point count, current
+        axis/tilt, ETA) -- the primary view of that console pane now, per
+        2026-08-29's "Console을 한 줄씩 나타내는게 아니라 진행도를 표시하는
+        것으로" decision that had never actually been wired up. Also drives
+        the same thin progress bar console_set_progress() does, so callers
+        only need this one call instead of both."""
+        pane = self.console_panes.get(slot)
+        if not pane or not pane.get("is_scan_slot"):
+            return
+        point_txt = f"Point {current}/{total}" if total else f"Point {current}"
+        detail_txt = f"{axis}-Axis  ·  Tilt {tilt}°" if axis is not None else ""
+        if eta_seconds is not None and eta_seconds >= 0:
+            m, s = divmod(int(eta_seconds), 60)
+            h, m = divmod(m, 60)
+            eta_txt = f"{h}h {m:02d}m" if h else f"{m}m {s:02d}s"
+            detail_txt = f"{detail_txt}   ·   ETA {eta_txt}" if detail_txt else f"ETA {eta_txt}"
+        try:
+            w = pane["text"]
+            w.config(state="normal")
+            # The pinned block is always exactly 3 lines (point / detail /
+            # separator) at the very top -- delete and reinsert rather than
+            # tracking marks, since the block's own content never changes
+            # length in a way that matters here.
+            w.delete("1.0", "3.0")
+            w.insert("1.0", point_txt + "\n", "scan_point")
+            w.insert("2.0", detail_txt + "\n", "scan_detail")
+            w.config(state="disabled")
+        except tk.TclError:
+            pass
+        self.console_set_progress(current, total, slot=slot)
+
     def console_begin_point(self, slot, label):
         """Start a new collapsible section: folds the previous point's body
         (only the current point stays expanded, matching the approved
@@ -2973,7 +3100,13 @@ class UIManager:
             w.tag_config(t, elide=not (elided in ("1", 1, True)))
         widget.tag_bind(header_tag, "<Button-1>", _toggle)
 
-        widget.insert(tk.END, f"▸ {label}\n", ("pt_header", header_tag))
+        # This inserts directly rather than through console_write(), so it
+        # needs its own "raw_all" tag too -- otherwise a per-point "▸ label"
+        # header would keep showing even with the whole raw log collapsed
+        # (2026-08-29, part of the same raw-output-toggle change).
+        tags = ("pt_header", header_tag, "raw_all") if pane.get("is_scan_slot") \
+               else ("pt_header", header_tag)
+        widget.insert(tk.END, f"▸ {label}\n", tags)
         pane["cur_body_tag"] = body_tag
         widget.config(state="disabled")
         if pane["autoscroll"].get():
@@ -2986,6 +3119,12 @@ class UIManager:
             return
         widget = pane["text"]
         widget.config(state="normal")
+        # Everything this call writes gets stacked with "raw_all" too (on top
+        # of whichever color tag _write_segment already applies) so the
+        # "Show raw output" toggle can hide/reveal it as one block -- capture
+        # the start mark now, tag the whole newly-written range once at the
+        # end, regardless of which branch below actually does the writing.
+        raw_start = widget.index(tk.END) if pane.get("is_scan_slot") else None
 
         if '\r' in text:
             # \r = carriage return (C++ progress: "Processing... 73%\r" + flush).
@@ -3041,11 +3180,20 @@ class UIManager:
         else:
             self._write_segment(widget, text, tag, pane)
 
-        # Trim oldest lines to keep widget fast
+        if raw_start is not None:
+            widget.tag_add("raw_all", raw_start, tk.END)
+
+        # Trim oldest lines to keep widget fast -- general_scan's first 4
+        # lines are the pinned Point/Detail/raw-toggle/separator block (see
+        # console_set_scan_progress), never the scrolling log, so trimming
+        # must never eat into them the way a plain "from line 1" trim would
+        # on a long scan (thousands of Ped lines easily exceed
+        # _CONSOLE_MAX_LINES within one run).
+        floor = 5 if pane.get("is_scan_slot") else 1
         line_count = int(widget.index(tk.END).split('.')[0]) - 1
-        if line_count > self._CONSOLE_MAX_LINES:
-            trim = line_count - self._CONSOLE_MAX_LINES
-            widget.delete("1.0", f"{trim + 1}.0")
+        if line_count - (floor - 1) > self._CONSOLE_MAX_LINES:
+            trim = line_count - (floor - 1) - self._CONSOLE_MAX_LINES
+            widget.delete(f"{floor}.0", f"{floor + trim}.0")
         widget.config(state="disabled")
         if pane["autoscroll"].get():
             widget.yview_moveto(1)

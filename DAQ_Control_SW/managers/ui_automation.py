@@ -3,6 +3,7 @@ import os
 import re
 import json
 import glob
+import time
 import subprocess
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
@@ -629,7 +630,26 @@ class AutomationUI:
         # collection for Analysis/Produce/etc) -- "Live Console" makes clear
         # this is General Scan's own, separately-placed console (2026-08-15,
         # user: "Output이 두 개잖아").
-        console_col = ttk.LabelFrame(matrix_outer, text=" Live Console ", padding=4)
+        # Styled dark to match the console it holds -- the frame stretches to
+        # match the Live Scan plot's height (row weight=1 below), but the
+        # console content inside is only as tall as it needs to be (idle: bar
+        # + card + collapsed toggle). Forcing a filler to expand and claim
+        # that leftover height made it look like an empty terminal window;
+        # styling the FRAME itself dark instead means the leftover space
+        # reads as this panel's own quiet background, not a stray light-gray
+        # gap or a pointless black void (2026-08-29, two rounds: user first
+        # flagged the light/dark mismatch, then the same-colored but now
+        # oversized empty box that the first fix produced).
+        try:
+            style = ttk.Style()
+            style.configure("Console.TLabelframe", background="#151821",
+                            bordercolor="#2a2f3d", relief="solid", borderwidth=1)
+            style.configure("Console.TLabelframe.Label", background="#151821",
+                            foreground="#7fd2ff", font=("Helvetica", 10, "bold"))
+        except tk.TclError:
+            pass
+        console_col = ttk.LabelFrame(matrix_outer, text=" Live Console ", padding=4,
+                                     style="Console.TLabelframe")
         console_col.grid(row=1, column=0, sticky="nsew", padx=(0, 10))
         # Built lazily via ensure_console_pane the first time a scan actually
         # runs (matches every other console slot); a placeholder keeps the
@@ -2214,9 +2234,34 @@ class AutomationUI:
                 var.set(val)
                 changed.append(f"{key}: {current or '(blank)'} -> {val}")
             if changed:
-                self.controller._log("[INFO] Quick Setup synced from hardware: "
-                                     + ", ".join(changed)
-                                     + "   (press 'Save Settings' to write config3.h)")
+                rot_mgr = getattr(self.controller, 'rot_mgr', None)
+                scan_running = bool(rot_mgr and getattr(rot_mgr, 'is_running', False))
+                hv_changed = any(c.startswith("HV") for c in changed)
+                if scan_running and hv_changed:
+                    # A live HV change mid-scan is silently invisible in the
+                    # recorded data: config3.h isn't rewritten until someone
+                    # clicks Save Settings, so every point acquired between
+                    # now and that click still gets RunInfo stamped with the
+                    # OLD HV -- the file looks consistent but is wrong. Caught
+                    # 2026-08-28: HV2/HV3 were raised mid-scan, the operator
+                    # never saved, and the scan's last two points recorded
+                    # 1779/1850V while physically running at 1829/1900V. Flag
+                    # this loudly (not just the routine sync INFO line above)
+                    # and fold it into the scan's own error tally so it shows
+                    # up in the completion summary, not just the log.
+                    msg = ("HV changed DURING an active scan (" + ", ".join(changed) +
+                          ") but config3.h was NOT updated -- points recorded from now "
+                          "on will have the WRONG HV in their metadata unless you click "
+                          "'Save Settings' immediately.")
+                    self.controller._log(f"[CRITICAL] {msg}")
+                    if rot_mgr is not None:
+                        if not hasattr(rot_mgr, '_scan_errors'):
+                            rot_mgr._scan_errors = []
+                        rot_mgr._scan_errors.append(f"HV changed mid-scan: {', '.join(changed)}")
+                else:
+                    self.controller._log("[INFO] Quick Setup synced from hardware: "
+                                         + ", ".join(changed)
+                                         + "   (press 'Save Settings' to write config3.h)")
         except Exception:
             pass   # a monitoring convenience must never break the UI loop
         finally:
@@ -2527,6 +2572,72 @@ class AutomationUI:
                     except tk.TclError:
                         pass
 
+        # Mirroring `src` above only helps if some earlier widget for this key
+        # already exists. The FIRST popup opened all session has no such
+        # widget -- self.cells was empty before this loop ran -- so every
+        # cell starts blank "-" no matter how far the scan has already
+        # progressed. Every point since scan start is only ever recorded
+        # live via update_cell(); with no widget to receive it, that
+        # in-flight call was simply lost. Backfilling from scanmap_<date>.json
+        # (the same durable per-point record _verify_scan_files() reads)
+        # fixes it independently of when the popup happens to be opened
+        # (2026-08-29, user: "Full Grid에 안나타나더라구").
+        self._backfill_matrix_from_scanmap()
+
+    def _backfill_matrix_from_scanmap(self):
+        """Color every matrix cell (main dashboard + any open popup) to match
+        today's scanmap_<date>.json, for points that finished before the
+        widget receiving that update existed. Safe to call any time; a point
+        with no matching cell (different tilt grid, etc.) is silently
+        skipped, same as a live update_cell() call would be."""
+        try:
+            date_tag = os.environ.get("SCAN_START_DATE") or datetime.now().strftime("%Y%m%d")
+            map_path = os.path.join(self.controller.base_dir, "LOG", "ScanHistory", f"scanmap_{date_tag}.json")
+            if not os.path.exists(map_path):
+                return
+            with open(map_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            return
+
+        # Only entries THIS scan produced -- filtered by wall-clock TIME
+        # (SCAN_START_EPOCH), not run number. A run-number floor broke as
+        # soon as _assign_run_block reused a block an earlier scan today had
+        # already used (its local RAW reclaimed by the daily backup, so the
+        # block looked unused again) -- every point of the new scan then had
+        # a run number <= the old floor and never backfilled at all, on the
+        # SAME Full Grid popup that was open live during that scan
+        # (2026-08-29: "저렇게 뜨네" -- all "-" despite the scan running).
+        # Wall-clock time has no such collision: a scan's own entries are
+        # simply the ones written after it started, full stop -- and this
+        # works uniformly for OK entries (which have a file) and file-less
+        # ERROR entries (which used to need a separate carve-out here)
+        # alike, since every entry carries its own "time" regardless.
+        start_epoch = None
+        try:
+            start_epoch = float(os.environ.get("SCAN_START_EPOCH", ""))
+        except (TypeError, ValueError):
+            pass
+
+        for entry in data.values():
+            if entry.get("kind", "scan") != "scan":
+                continue
+            axis, tilt, status = entry.get("axis"), entry.get("tilt"), entry.get("status")
+            if axis is None or tilt is None:
+                continue
+            if start_epoch is not None:
+                try:
+                    entry_epoch = time.mktime(time.strptime(entry.get("time", ""), "%Y-%m-%d %H:%M:%S"))
+                    if entry_epoch < start_epoch:
+                        continue
+                except ValueError:
+                    pass  # no parseable timestamp -- fail open, same as before
+            ui_status = "done" if status == "OK" else "error" if status == "ERROR" else None
+            if ui_status is None:
+                continue
+            for sn in (self.sn2_val, self.sn3_val):
+                self.update_cell(sn, tilt, axis, ui_status)
+
     def set_matrix_wavelength(self, text):
         """Show the active wavelength block in the Scan Progress Matrix titles,
         e.g. 'EM5370 Scan Progress Matrix — 405nm (1/3)'."""
@@ -2626,13 +2737,21 @@ class AutomationUI:
     def lock_manual_panel(self, is_locked):
         """Secures the manual panel configuration items preventing runtime collision interferences."""
         state = tk.DISABLED if is_locked else tk.NORMAL
-        
+
         if hasattr(self, 'manual_control_buttons'):
             for btn in self.manual_control_buttons:
                 if btn.winfo_exists():
                     self.notebook.after(0, lambda b=btn: b.config(state=state))
-        
-        self.add_auto_log(f"Manual Override Panel structure state set to: {state.upper()}")
+
+        # Log only on an actual transition. update_start_button() calls this on
+        # every scan point (twice per point), so logging unconditionally
+        # reprinted the same "set to: DISABLED" line for the whole scan -- pages
+        # of it, burying the messages that matter (2026-08-28). The widget
+        # config above still runs every time, so a button that was re-created
+        # or missed an earlier pass is still brought back into the right state.
+        if getattr(self, '_manual_panel_locked', None) != is_locked:
+            self._manual_panel_locked = is_locked
+            self.add_auto_log(f"Manual Override Panel structure state set to: {state.upper()}")
 
 
     def update_start_button(self, is_running, status_text=None):
