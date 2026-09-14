@@ -29,17 +29,17 @@ const int NumSequences = 1;
 const int IntervalTime = 0;
 
 // -- Laser (Current, mA) --- //
-const std::string Laser = "165";
+const std::string Laser = "109";
 const std::string Wavelength = "405";
 
 // --- B-field (compensation coils): "ON" or "OFF", set manually in Quick Setup --- //
 const std::string BField = "ON";
 // Per-axis coil current (A), set manually in Quick Setup so it's recorded
 // alongside the run instead of only living in a separate B-field log CSV.
-const std::string BField_X = "3.12";
-const std::string BField_Y = "2.9";
-const std::string BField_ZTop = "3.76";
-const std::string BField_ZBottom = "3.76";
+const std::string BField_X = "2.36";
+const std::string BField_Y = "2.80";
+const std::string BField_ZTop = "3.65";
+const std::string BField_ZBottom = "3.65";
 
 // --- PMT configuration --- //
 // Ch0 - monitor, Ch1 - PMT 1, Ch2 - PMT 2 same as High voltage setting
@@ -47,32 +47,32 @@ const std::string SN1 = "EM2740";
 const std::string direction1 = "A";
 const std::string SN2 = "EM6400";
 const std::string direction2 = "H";
-const std::string SN3 = "EL5150";
-const std::string direction3 = "B";
+const std::string SN3 = "EM5730";
+const std::string direction3 = "A";
 
 // -- Angle Configuration --- //
 const std::string RotateAngle1 = "0";
 const std::string TiltAngle1 = "0";
 
 const std::string RotateAngle2 = "45";
-const std::string TiltAngle2 = "25";
+const std::string TiltAngle2 = "55";
 
-const std::string RotateAngle3 = "135";
-const std::string TiltAngle3 = "25";
+const std::string RotateAngle3 = "90";
+const std::string TiltAngle3 = "55";
 
 // --- High Voltage --- //
 const std::string HV1 = "1669";
 const std::string HV2 = "1679";
-const std::string HV3 = "1749";
+const std::string HV3 = "1730";
 
 // --- NOTE ---
-const std::string NOTE = "B-field scan: general measurement nominal";
+const std::string NOTE = "";
 
 // --- Trigger Channel ---
 const int TriggerCh = 3;
 
 // --- Shift Information ---
-const std::string Shift_worker = "Unik";
+const std::string Shift_worker = "WHO?";
 const std::string Expert = "Junkyo";
 
 

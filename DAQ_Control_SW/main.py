@@ -2253,20 +2253,27 @@ class App:
                               "(blank = dataset name).",
                      text_color="#6c757d", font=ctk.CTkFont(size=12)).pack(anchor="w", padx=22, pady=(2, 10))
 
-        # Pre-fill selection from overlay_tags.txt ("tag" or "tag,Label").
+        # Pre-fill selection from overlay_tags.txt ("tag", "tag,Label" or
+        # "tag,Label,ref"). The optional 3rd field marks the Dev[%] reference
+        # dataset; Draw_Overlay_Uniformity_v7.C used to hardwire that to the
+        # first line, which meant the legend order and the reference could not
+        # be chosen independently (2026-09-02).
         cfg_path = os.path.join(uni_dir, 'overlay_tags.txt')
         preset_selected, preset_label = set(), {}
+        preset_ref = ""
         if os.path.exists(cfg_path):
             try:
                 with open(cfg_path) as f:
                     for ln in f:
                         ln = ln.strip()
                         if ln and not ln.startswith('#'):
-                            parts = ln.split(',', 1)
+                            parts = ln.split(',')
                             tg = parts[0].strip()
                             preset_selected.add(tg)
                             if len(parts) > 1 and parts[1].strip():
                                 preset_label[tg] = parts[1].strip()
+                            if len(parts) > 2 and parts[2].strip().lower() == 'ref':
+                                preset_ref = tg
             except Exception:
                 pass
 
@@ -2336,6 +2343,11 @@ class App:
         row_vars = {}    # tag -> (BooleanVar selected, StringVar label, StringVar order)
         row_widgets = {} # tag -> outer row Frame, so filtering can show/hide it
 
+        # Which dataset the Dev[%] / ratio pages are measured against. Kept
+        # separate from list order so the legend can be sorted by HV while the
+        # reference stays on the nominal (Recom.) point.
+        ref_var = tk.StringVar(value=preset_ref)
+
         for tg in tags:
             row = tk.Frame(scroll)
             sel_var = tk.BooleanVar(value=(tg in preset_selected))
@@ -2343,12 +2355,14 @@ class App:
             ord_var = tk.StringVar(value=persisted_order.get(tg, ""))
             tk.Checkbutton(row, variable=sel_var).pack(side=tk.LEFT, padx=(0, 4))
             tk.Entry(row, textvariable=ord_var, width=3).pack(side=tk.LEFT, padx=(0, 4))
+            tk.Radiobutton(row, variable=ref_var, value=tg).pack(side=tk.LEFT, padx=(0, 4))
             tk.Label(row, text=tg, width=26, anchor="w").pack(side=tk.LEFT)
             tk.Entry(row, textvariable=lbl_var, width=22).pack(side=tk.LEFT, padx=(4, 0))
             row_vars[tg] = (sel_var, lbl_var, ord_var)
             row_widgets[tg] = row
         ctk.CTkLabel(dlg, text="'#' column: optional order number -- check "
-                              "\"Sort by order #\" to arrange the list by it.",
+                              "\"Sort by order #\" to arrange the list by it.    "
+                              "Radio column: Dev[%] reference dataset.",
                      text_color="#6c757d", font=ctk.CTkFont(size=11)).pack(
             anchor="w", padx=22, pady=(0, 2))
 
@@ -2415,11 +2429,22 @@ class App:
                 return
             try:
                 os.makedirs(uni_dir, exist_ok=True)
+                # A trailing ",ref" marks the Dev[%] reference. Only written for
+                # a dataset that is actually selected -- the macro falls back to
+                # the first entry when no marker is present.
+                ref_tag = ref_var.get()
+                if ref_tag not in sel:
+                    ref_tag = ""
                 with open(cfg_path, 'w') as f:
-                    f.write("# Overlay tag list (edited from the GUI). One 'tag' or 'tag,Label' per line.\n")
+                    f.write("# Overlay tag list (edited from the GUI). One 'tag', 'tag,Label' "
+                            "or 'tag,Label,ref' per line.\n")
+                    f.write("# Line order = draw/legend order. ',ref' marks the Dev[%] reference.\n")
                     for tg in sel:
                         label = row_vars[tg][1].get().strip()
-                        f.write(f"{tg},{label}\n" if label else f"{tg}\n")
+                        if tg == ref_tag:
+                            f.write(f"{tg},{label},ref\n")
+                        else:
+                            f.write(f"{tg},{label}\n" if label else f"{tg}\n")
                 with open(chan_cfg_path, 'w') as f:
                     f.write(",".join(str(c) for c in chsel) + "\n")
                 # Persist every row's label (checked or not) so an unchecked

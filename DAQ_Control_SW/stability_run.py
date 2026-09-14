@@ -379,12 +379,26 @@ class StabilityRunUI:
             return
 
         self._running = True
+        self._run_started_at = datetime.now()
         self.btn_start.config(state=tk.DISABLED)
         self.btn_stop.config(state=tk.NORMAL)
         self.l_status.config(text=f"Running — {cnt} acquisitions, est. finish {end}",
                              foreground="#1a7f37")
         self.controller._log(f"[INFO] Stability Run started: NumSequences={cnt}, "
                              f"IntervalTime={iv:.0f}s, est. finish {end}")
+
+        # Slack start/finish/error, matching General Scan's own notifications
+        # -- 2026-09-05, user: "Stabiltiy Run도 오류가 발생하면 Slack으로
+        # 메세지 보내줘 / 시작과 끝도".
+        notifier = getattr(self.controller, "notifier", None)
+        if notifier and notifier.enabled:
+            try:
+                notifier.send("Stability Run started",
+                              f"{cnt} acquisitions of {int(ev):,} events, {int(iv)} s apart.\n"
+                              f"Est. finish: {end}",
+                              level="info", dedupe_key=None, blocking=False)
+            except Exception as e:
+                self.controller._log(f"[WARNING] Stability Run start-notification failed: {type(e).__name__}.")
 
         # script_v7.sh does the repeating internally, so this is ONE launch --
         # the Python side must not also loop, or the two would fight over the
@@ -393,13 +407,32 @@ class StabilityRunUI:
         self._watch_for_finish()
 
     def _watch_for_finish(self):
-        """Poll the console slot; restore config once the launcher exits."""
+        """Poll the console slot; restore config once the launcher exits.
+
+        BUG (found 2026-09-05, user: "Stability Run이... 끝나면 IntervalTime,
+        Num sequence가 안바껴"): main.py's own reader thread clears
+        _console_procs["daq"] to None as soon as it detects the process
+        exited (see run_console_job's reader()/done()). If THIS poll (every
+        5s) happens to land after that clear but we only ever treated
+        "proc is not None and proc.poll() is not None" as finished, a proc
+        that's already been nulled never satisfies that check -- it just
+        reschedules forever and _restore_repeat_config() never runs. Since
+        start_run() calls run_daq() (which sets the slot synchronously)
+        BEFORE the first _watch_for_finish(), any None seen here can only
+        mean "already finished and cleared", never "not started yet".
+        """
         if not self._running:
             return
         procs = getattr(self.controller, "_console_procs", {})
         proc = procs.get("daq")
-        if proc is not None and proc.poll() is not None:
-            self._finish("Finished.")
+        if proc is None:
+            # Slot already cleared by main.py -- finished, but the exit code
+            # is gone with it, so we can't tell success from failure here.
+            self._finish("Finished.", exit_code=None)
+            return
+        code = proc.poll()
+        if code is not None:
+            self._finish("Finished.", exit_code=code)
             return
         self.parent.after(5000, self._watch_for_finish)
 
@@ -415,12 +448,41 @@ class StabilityRunUI:
             self.controller.stop_console_job("daq")
         except Exception as e:
             self.controller._log(f"[WARNING] Stability Run stop: {e}")
-        self._finish("Stopped by operator.")
+        self._finish("Stopped by operator.", exit_code=None, stopped_by_operator=True)
 
-    def _finish(self, msg):
+    def _finish(self, msg, exit_code=None, stopped_by_operator=False):
         self._running = False
         self._restore_repeat_config()
         self.btn_start.config(state=tk.NORMAL)
         self.btn_stop.config(state=tk.DISABLED)
         self.l_status.config(text=msg, foreground="#666")
         self.controller._log(f"[INFO] Stability Run: {msg}")
+
+        notifier = getattr(self.controller, "notifier", None)
+        if notifier and notifier.enabled:
+            try:
+                start = getattr(self, "_run_started_at", None)
+                dur_line = ""
+                if start is not None:
+                    dur_min = (datetime.now() - start).total_seconds() / 60.0
+                    dur_line = f"Duration: {dur_min:.0f} min\n"
+                if stopped_by_operator:
+                    notifier.send("Stability Run stopped", f"{dur_line}Stopped by operator.",
+                                  level="info", dedupe_key=None, blocking=False)
+                elif exit_code is not None and exit_code != 0:
+                    # A real failed launcher exit -- worth a warning-level ping,
+                    # same severity General Scan uses for a BAD RUN.
+                    notifier.send("Stability Run finished: FAILED",
+                                  f"{dur_line}Exit code: {exit_code}\n"
+                                  "Check the Console tab / TakingLog for details.",
+                                  level="warning", dedupe_key=None, blocking=False)
+                else:
+                    # exit_code is None here in the (rare) race where main.py
+                    # already cleared the slot before we could read it -- that
+                    # just means we can't confirm success/failure, not that it
+                    # failed, so this stays an info-level "done" ping rather
+                    # than a warning.
+                    notifier.send("Stability Run finished", f"{dur_line}".strip() or "Done.",
+                                  level="info", dedupe_key=None, blocking=False)
+            except Exception as e:
+                self.controller._log(f"[WARNING] Stability Run finish-notification failed: {type(e).__name__}.")

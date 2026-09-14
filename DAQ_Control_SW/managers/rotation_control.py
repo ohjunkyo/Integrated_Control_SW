@@ -74,6 +74,11 @@ class RotationManager:
             2: {"tilt": None, "rot": None},
             3: {"tilt": None, "rot": None}
         }
+        # Last angle COMMANDED per axis, kept after arrival (target_angles above
+        # is the in-flight target and is cleared when the move ends). The GUI
+        # status label colours against this, so it reflects real moves rather
+        # than whatever is currently typed into the Tilt/Rot entry boxes.
+        self.commanded_angles = {2: {}, 3: {}}
 
         # Serializes a whole command SEQUENCE (stop pulse -> write target ->
         # move pulse) against the monitor thread's polling on the same socket.
@@ -425,6 +430,15 @@ class RotationManager:
             return False
         if not self._acquire_motion(dev_num, axis, value):
             return False
+
+        # Remember the angle actually commanded, for both the manual panel and
+        # scan steps (this is the one path every move goes through). The GUI's
+        # status label colours itself against this rather than against whatever
+        # is typed in the Tilt/Rot entry boxes, where typing is not a move.
+        try:
+            self.commanded_angles.setdefault(dev_num, {})[axis] = float(value)
+        except (ValueError, TypeError):
+            pass
 
         dispatched = False
         try:

@@ -44,6 +44,59 @@ class AutomationManager:
                 return hint
         return "See the log for detail."
 
+    # Cache so a busy Slack/dialog moment doesn't re-glob+re-parse every
+    # scanmap file on every call within the same process lifetime.
+    _NOMINAL_PER_PT_CACHE = None
+
+    def _estimate_nominal_per_point_seconds(self, fallback=220.0):
+        """Real measured seconds/point from recent completed scans, replacing
+        the old flat 220s guess that was shown at scan START (before
+        get_eta_seconds() has any real data of its own to average) -- 2026-09-05,
+        user: "ETA 계산을 처음부터 제대로 해야할 것 같아... 168분이라는데 실제로는
+        254분... 사람들은 그것만 보기 때문에" (the FIRST number people see, in
+        the Slack message and the start dialog, was the stale flat constant --
+        get_eta_seconds' own live-averaging mid-scan was already fine).
+
+        Uses LOG/ScanHistory/scanmap_*.json, which stamps every point with its
+        own completion time (see kind='scan' entries) -- consecutive timestamp
+        gaps ARE the real per-point cost, wavelength-switch overhead and all,
+        which a flat per-axis constant could never capture. Median of gaps
+        across the most recent few scanmap files, trimmed to drop paused/
+        interrupted-scan gaps (a stopped-then-resumed scan can leave a
+        multi-hour gap between two consecutive points).
+        """
+        if self._NOMINAL_PER_PT_CACHE is not None:
+            return self._NOMINAL_PER_PT_CACHE
+        try:
+            base = os.path.join(self.controller.base_dir, "LOG", "ScanHistory")
+            files = sorted(glob.glob(os.path.join(base, "scanmap_*.json")),
+                          key=os.path.getmtime, reverse=True)[:5]
+            gaps = []
+            for fp in files:
+                try:
+                    with open(fp, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                except Exception:
+                    continue
+                entries = [e for e in data.values() if e.get("kind") == "scan" and e.get("time")]
+                times = sorted(
+                    datetime.strptime(e["time"], "%Y-%m-%d %H:%M:%S") for e in entries)
+                for a, b in zip(times, times[1:]):
+                    gap = (b - a).total_seconds()
+                    # Drop <=0 (clock/ordering oddity) and anything over 20 minutes
+                    # (a Stop/resume or an overnight pause between points, not a
+                    # real single-point cost).
+                    if 0 < gap <= 1200:
+                        gaps.append(gap)
+            if len(gaps) < 5:
+                return fallback   # not enough real data yet -- keep the old guess
+            gaps.sort()
+            nominal = gaps[len(gaps) // 2]   # median -- robust to the occasional slow point
+            self._NOMINAL_PER_PT_CACHE = nominal
+            return nominal
+        except Exception:
+            return fallback
+
     def _operator_line(self, shifter=None, expert=None):
         if not self.NOTIFY_INCLUDE_OPERATOR:
             return ""
@@ -60,7 +113,8 @@ class AutomationManager:
             n_wl = max(1, len(self.laser_sequence)) if getattr(self, 'laser_sequence', None) else 1
             total_steps = points_per_axis * 2 * n_wl
             is_dummy = self.controller.auto_ui.dummy_var.get()
-            nominal_per_pt = 1 if is_dummy else (220 if self.daq_backend != "hk" else 60)
+            nominal_per_pt = 1 if is_dummy else (
+                self._estimate_nominal_per_point_seconds() if self.daq_backend != "hk" else 60)
             eta_min = total_steps * nominal_per_pt / 60.0
 
             wl_list = ", ".join(w for w, _b, _p in self.laser_sequence) if getattr(self, 'laser_sequence', None) else "-"
@@ -807,7 +861,7 @@ class AutomationManager:
                     return
             total_seconds = hk_total
         else:
-            total_seconds = total_steps * (220 if not is_dummy else 1)
+            total_seconds = total_steps * (self._estimate_nominal_per_point_seconds() if not is_dummy else 1)
 
         if backend == "caen" and not is_dummy and not skip_validation:
             raw_path = cfg.get("RawDataPath", "")
@@ -2309,7 +2363,7 @@ class AutomationManager:
                            + float(hk.get("move_delay", 20.0))
                            + self.daq_settle_time)
             else:
-                nominal = 220
+                nominal = self._estimate_nominal_per_point_seconds()
             return (remaining * nominal, current, total)
         avg = (self.scan_last_done_t - t0) / done          # 세션 실측 평균/스텝
         into_current = time.time() - self.scan_last_done_t  # 현재 스텝 경과분 차감

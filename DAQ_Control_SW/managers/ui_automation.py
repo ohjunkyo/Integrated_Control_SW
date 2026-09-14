@@ -177,7 +177,7 @@ class AutomationUI:
             ctk.CTkButton(btn_frame, text="⚙️ Open Global Config (Paths)", height=40,
                           fg_color="#6c757d", hover_color="#5a6268",
                           command=self.controller.open_config).grid(row=0, column=0, sticky="ew", padx=5)
-            ctk.CTkButton(btn_frame, text="💾 Save Settings", height=40,
+            ctk.CTkButton(btn_frame, text="💾 Save Settings & Compile", height=40,
                           fg_color="#2e9e4f", hover_color="#268043",
                           command=self.save_quick_setup).grid(row=0, column=1, sticky="ew", padx=5)
         else:
@@ -213,8 +213,29 @@ class AutomationUI:
             btn_frame.columnconfigure(1, weight=1)
             tk.Button(btn_frame, text="⚙️ Open Global Config (Paths)", bg="#6c757d", fg="white", font=("Helvetica", 12, "bold"),
                       height=2, command=self.controller.open_config).grid(row=0, column=0, sticky="ew", padx=5)
-            tk.Button(btn_frame, text="💾 Save Settings", bg="#28a745", fg="white", font=("Helvetica", 12, "bold"),
+            tk.Button(btn_frame, text="💾 Save Settings & Compile", bg="#28a745", fg="white", font=("Helvetica", 12, "bold"),
                       height=2, command=self.save_quick_setup).grid(row=0, column=1, sticky="ew", padx=5)
+
+        # Shown whenever a hardware value (HV/Laser/Wavelength) has drifted
+        # from what's actually compiled into the DAQ binary, hidden again the
+        # moment Save Settings & Compile runs. A quiet log line was not
+        # enough: 2026-09-03, HV was raised twice via Manual Control between
+        # two acquisitions with NO scan running, so the mid-scan-only
+        # CRITICAL log never fired -- RunInfo silently kept recording the OLD
+        # HV for both runs (had to be patched after the fact from the HV
+        # monitoring log). This banner fires on every unsaved drift, not
+        # just mid-scan.
+        self.qs_unsaved_banner = tk.Label(
+            info_tab, text="\u26a0 HV/Laser/Wavelength changed on hardware but NOT saved -- "
+                            "click 'Save Settings & Compile' or the run will be mislabeled.",
+            bg="#c0392b", fg="white", font=("Helvetica", 11, "bold"), pady=6)
+        # Packed and immediately withdrawn (not just left unpacked) so its
+        # slot in the pack order is reserved right here, between the buttons
+        # and the handover notes -- toggling it purely via pack()/
+        # pack_forget() later then keeps it in this same spot instead of
+        # jumping to the bottom of info_tab.
+        self.qs_unsaved_banner.pack(fill=tk.X, pady=(0, 8))
+        self.qs_unsaved_banner.pack_forget()
 
         self._create_handover_notes(info_tab)
 
@@ -1841,8 +1862,15 @@ class AutomationUI:
                                                 font=ctk.CTkFont(size=12, weight="bold"),
                                                 text_color="#007ACC")
         self.handover_status_lbl.pack(side=tk.LEFT, padx=(0, 14))
-        ctk.CTkButton(top, text="💾 Save Note", width=120,
-                      command=self.save_handover_note).pack(side=tk.RIGHT)
+        self.handover_save_btn = ctk.CTkButton(top, text="💾 Save Note", width=120,
+                                               command=self.save_handover_note)
+        self.handover_save_btn.pack(side=tk.RIGHT)
+        # Shown only while editing an existing entry (see _handover_edit_current) --
+        # 2026-09-05, user: "Hand Over Note도 삭제, 수정이 가능하도록 해줘".
+        self.handover_cancel_edit_btn = ctk.CTkButton(top, text="✕ Cancel edit", width=110,
+                                                      fg_color="#6c757d", hover_color="#5a6268",
+                                                      command=self._handover_cancel_edit)
+        self._handover_editing_chrono_idx = None   # None = new note; else overwriting this entry
 
         self.handover_text = ctk.CTkTextbox(left, font=ctk.CTkFont(size=13), wrap="word")
         self.handover_text.grid(row=1, column=0, sticky="nsew", pady=(8, 0))
@@ -1900,6 +1928,10 @@ class AutomationUI:
                       command=lambda: self._handover_detail_nav(+1)).pack(side=tk.LEFT, padx=(6, 0))
         ctk.CTkButton(nav, text="☰ List", width=70, fg_color="#6c757d", hover_color="#5a6268",
                       command=self._handover_show_list).pack(side=tk.LEFT, padx=(6, 0))
+        ctk.CTkButton(nav, text="✏️ Edit", width=70, fg_color="#0d6efd", hover_color="#0b5ed7",
+                      command=self._handover_edit_current).pack(side=tk.LEFT, padx=(14, 0))
+        ctk.CTkButton(nav, text="🗑 Delete", width=80, fg_color="#dc3545", hover_color="#bb2d3b",
+                      command=self._handover_delete_current).pack(side=tk.LEFT, padx=(6, 0))
         self.handover_pos_lbl = ctk.CTkLabel(nav, text="", font=ctk.CTkFont(size=12, weight="bold"),
                                              text_color="#888")
         self.handover_pos_lbl.pack(side=tk.RIGHT)
@@ -1939,9 +1971,14 @@ class AutomationUI:
         self.handover_status_lbl = tk.Label(top, text="No notes yet", font=("Helvetica", 10, "bold"),
                                             fg="#007ACC")
         self.handover_status_lbl.pack(side=tk.LEFT, padx=(0, 15))
-        tk.Button(top, text="\U0001F4BE Save Note", bg="#17a2b8", fg="white",
-                  font=("Helvetica", 11, "bold"),
-                  command=self.save_handover_note).pack(side=tk.RIGHT)
+        self.handover_save_btn = tk.Button(top, text="\U0001F4BE Save Note", bg="#17a2b8", fg="white",
+                                           font=("Helvetica", 11, "bold"),
+                                           command=self.save_handover_note)
+        self.handover_save_btn.pack(side=tk.RIGHT)
+        self.handover_cancel_edit_btn = tk.Button(top, text="✕ Cancel edit", bg="#6c757d", fg="white",
+                                                  font=("Helvetica", 11, "bold"),
+                                                  command=self._handover_cancel_edit)
+        self._handover_editing_chrono_idx = None
         self.handover_text = tk.Text(left, height=12, font=("Helvetica", 11), wrap=tk.WORD)
         self.handover_text.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
 
@@ -1984,6 +2021,10 @@ class AutomationUI:
                   command=lambda: self._handover_detail_nav(+1)).pack(side=tk.LEFT, padx=(6, 0))
         tk.Button(nav, text="☰ List", font=("Helvetica", 10),
                   command=self._handover_show_list).pack(side=tk.LEFT, padx=(6, 0))
+        tk.Button(nav, text="✏️ Edit", font=("Helvetica", 10), fg="white", bg="#0d6efd",
+                  command=self._handover_edit_current).pack(side=tk.LEFT, padx=(14, 0))
+        tk.Button(nav, text="🗑 Delete", font=("Helvetica", 10), fg="white", bg="#dc3545",
+                  command=self._handover_delete_current).pack(side=tk.LEFT, padx=(6, 0))
         self.handover_pos_lbl = tk.Label(nav, text="", font=("Helvetica", 10, "bold"), fg="#888")
         self.handover_pos_lbl.pack(side=tk.RIGHT)
         self.handover_detail_header = tk.Label(self.handover_detail_frame, text="",
@@ -2082,23 +2123,99 @@ class AutomationUI:
             self.handover_status_lbl.configure(
                 text=f"Last updated: {last.get('time','')} by {last.get('author','')}")
 
-    def save_handover_note(self):
+    def _write_handover_entries(self, entries):
+        """Rewrite the whole JSONL file from `entries` (chronological order).
+        Used by edit/delete, which can't just append -- atomic tmp+rename,
+        same pattern as config3.h writes elsewhere, so a crash mid-write
+        can't corrupt history into a half-written line."""
         path = self._handover_notes_path()
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            for e in entries:
+                f.write(json.dumps(e) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+
+    def save_handover_note(self):
         author = self.handover_author_var.get().strip() or "unknown"
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         body = self.handover_text.get("1.0", tk.END).strip()
         if not body:
             messagebox.showwarning("Empty Note", "Write a note before saving.")
             return
+        editing = self._handover_editing_chrono_idx
         try:
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(json.dumps({"time": ts, "author": author, "note": body}) + "\n")
+            if editing is not None:
+                # Overwrite the entry being edited in place (position in history
+                # stays where it was -- only its content/author/time change);
+                # rewriting the whole file since JSONL has no in-place update.
+                entries = list(self._handover_entries)
+                if not (0 <= editing < len(entries)):
+                    messagebox.showerror("Error", "That note no longer exists (list changed underneath it).")
+                    self._handover_cancel_edit()
+                    return
+                entries[editing] = {"time": ts, "author": author, "note": body}
+                self._write_handover_entries(entries)
+                self.controller._log(f"[INFO] Handover note edited by {author}.")
+                self._handover_cancel_edit()   # clears editing state + restores button
+            else:
+                path = self._handover_notes_path()
+                with open(path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"time": ts, "author": author, "note": body}) + "\n")
+                self.controller._log(f"[INFO] Handover note saved by {author}.")
             self.handover_status_lbl.configure(text=f"Last updated: {ts} by {author}")
             self.handover_text.delete("1.0", tk.END)
             self.load_handover_note()
-            self.controller._log(f"[INFO] Handover note saved by {author}.")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save handover note: {e}")
+
+    def _handover_edit_current(self):
+        """Load the currently-open detail note into the editor for editing.
+        Save Note then overwrites this entry instead of appending a new one."""
+        idx = self._handover_detail_idx
+        n = len(self._handover_entries)
+        if idx is None or n == 0:
+            messagebox.showinfo("Edit Note", "Open a note from the list first (double-click a row).")
+            return
+        chrono_idx = n - 1 - idx
+        entry = self._handover_entries[chrono_idx]
+        self._handover_editing_chrono_idx = chrono_idx
+        self.handover_author_var.set(entry.get("author", ""))
+        self.handover_text.delete("1.0", tk.END)
+        self.handover_text.insert(tk.END, entry.get("note", ""))
+        self.handover_save_btn.configure(text="💾 Save Edit")
+        self.handover_cancel_edit_btn.pack(side=tk.RIGHT, padx=(0, 8))
+        self._handover_show_list()   # editor is on the left and always visible; just drop back to the list
+
+    def _handover_cancel_edit(self):
+        self._handover_editing_chrono_idx = None
+        self.handover_text.delete("1.0", tk.END)
+        self.handover_save_btn.configure(text="💾 Save Note")
+        self.handover_cancel_edit_btn.pack_forget()
+
+    def _handover_delete_current(self):
+        idx = self._handover_detail_idx
+        n = len(self._handover_entries)
+        if idx is None or n == 0:
+            return
+        chrono_idx = n - 1 - idx
+        entry = self._handover_entries[chrono_idx]
+        if not messagebox.askyesno(
+                "Delete Note",
+                f"Delete this note?\n\n{entry.get('time','')} · {entry.get('author','')}\n\n"
+                f"{entry.get('note','')[:200]}"):
+            return
+        try:
+            entries = list(self._handover_entries)
+            del entries[chrono_idx]
+            self._write_handover_entries(entries)
+            self.controller._log(f"[INFO] Handover note deleted (was by {entry.get('author','')}).")
+            if self._handover_editing_chrono_idx == chrono_idx:
+                self._handover_cancel_edit()
+            self.load_handover_note()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to delete handover note: {e}")
 
     def update_quick_setup_live(self, dev_num, tilt, rot):
         """Keep Quick Setup's Rot/Tilt fields showing the live hardware angle for
@@ -2237,31 +2354,38 @@ class AutomationUI:
                 rot_mgr = getattr(self.controller, 'rot_mgr', None)
                 scan_running = bool(rot_mgr and getattr(rot_mgr, 'is_running', False))
                 hv_changed = any(c.startswith("HV") for c in changed)
-                if scan_running and hv_changed:
-                    # A live HV change mid-scan is silently invisible in the
-                    # recorded data: config3.h isn't rewritten until someone
-                    # clicks Save Settings, so every point acquired between
-                    # now and that click still gets RunInfo stamped with the
-                    # OLD HV -- the file looks consistent but is wrong. Caught
-                    # 2026-08-28: HV2/HV3 were raised mid-scan, the operator
-                    # never saved, and the scan's last two points recorded
-                    # 1779/1850V while physically running at 1829/1900V. Flag
-                    # this loudly (not just the routine sync INFO line above)
-                    # and fold it into the scan's own error tally so it shows
-                    # up in the completion summary, not just the log.
-                    msg = ("HV changed DURING an active scan (" + ", ".join(changed) +
-                          ") but config3.h was NOT updated -- points recorded from now "
+                if hv_changed:
+                    # A live HV change is silently invisible in the recorded
+                    # data: config3.h isn't rewritten until someone clicks
+                    # Save Settings & Compile, so every point acquired from
+                    # now on still gets RunInfo stamped with the OLD HV -- the
+                    # file looks consistent but is wrong. Originally only
+                    # fired mid-scan (caught 2026-08-28: HV2/HV3 raised
+                    # mid-scan, operator never saved, last two points recorded
+                    # 1779/1850V while physically running at 1829/1900V) --
+                    # widened 2026-09-03 after the SAME thing happened with NO
+                    # scan running (two manual single acquisitions in a row
+                    # via Manual Control both silently kept the stale HV;
+                    # RunInfo had to be patched after the fact from the HV
+                    # monitoring log, since this branch never fired to warn
+                    # about it at the time).
+                    msg = ("HV changed on hardware (" + ", ".join(changed) +
+                          ") but config3.h was NOT updated -- runs taken from now "
                           "on will have the WRONG HV in their metadata unless you click "
-                          "'Save Settings' immediately.")
+                          "'Save Settings & Compile' immediately.")
                     self.controller._log(f"[CRITICAL] {msg}")
-                    if rot_mgr is not None:
+                    if scan_running and rot_mgr is not None:
                         if not hasattr(rot_mgr, '_scan_errors'):
                             rot_mgr._scan_errors = []
                         rot_mgr._scan_errors.append(f"HV changed mid-scan: {', '.join(changed)}")
+                    try:
+                        self.qs_unsaved_banner.pack(fill=tk.X, pady=(0, 8))
+                    except (tk.TclError, AttributeError):
+                        pass
                 else:
                     self.controller._log("[INFO] Quick Setup synced from hardware: "
                                          + ", ".join(changed)
-                                         + "   (press 'Save Settings' to write config3.h)")
+                                         + "   (press 'Save Settings & Compile' to write config3.h)")
         except Exception:
             pass   # a monitoring convenience must never break the UI loop
         finally:
@@ -2286,6 +2410,10 @@ class AutomationUI:
             self.controller.config_manager.save_from_ui(entries_dict)
             self.controller._log("✅ Quick Setup settings saved to config file.")
             self.controller.refresh_all_data()
+            try:
+                self.qs_unsaved_banner.pack_forget()
+            except tk.TclError:
+                pass
         except Exception as e:
             messagebox.showerror("Error", f"Save failed: {e}")
 
@@ -2802,12 +2930,52 @@ class AutomationUI:
             # fires (e.g. during app shutdown) → avoids TclError "invalid command name".
             tilt_locked = (tilt is not None and abs(tilt) > 0.5)
 
-            def _apply_sn(sn=sn, t_str=t_str, r_str=r_str, side_str=side_str, dev=dev_num, locked=tilt_locked):
+            # Colour the status label from the live motor angles against the
+            # angles that were actually COMMANDED (Move pressed, or a scan step),
+            # never against the Tilt/Rot entry boxes: typing a number is not a
+            # move, and colouring on it turned the label red the moment an
+            # operator started editing a field. Same 0.5 deg tolerance as the
+            # tilt-lock check above -- the readback jitter this GUI already
+            # treats as "the same angle" elsewhere.
+            TOL = 0.5
+            is_moving = bool(getattr(self.controller.rot_mgr, 'is_moving', {}).get(dev_num, False))
+
+            cmd = getattr(self.controller.rot_mgr, 'commanded_angles', {}).get(dev_num) or {}
+            cmd_tilt = cmd.get("tilt")
+            cmd_rot = cmd.get("rot")
+
+            # Only the axes actually commanded are checked. An axis never moved
+            # this session has no target to miss, so it cannot make the label red.
+            at_target = (tilt is not None and rot is not None
+                and (cmd_tilt is None or abs(tilt - cmd_tilt) < TOL)
+                and (cmd_rot is None or abs(rot - cmd_rot) < TOL))
+            is_center = (not is_moving and at_target
+                and tilt is not None and rot is not None and abs(tilt) < TOL)
+
+            if is_moving:
+                label_color = "#d62728"        # red -- motors are running right now
+                prefix = ""
+            elif is_center:
+                label_color = "#2e9e4f"        # green -- parked at the centre
+                prefix = "⬤ CENTER   "
+            elif at_target:
+                label_color = "#1a5fb4"        # blue -- parked at a non-zero angle
+                prefix = ""
+            elif tilt is not None and rot is not None:
+                label_color = "#d62728"        # red -- commanded move not reached
+                prefix = ""
+            else:
+                label_color = "#007ACC"        # default (readback failed)
+                prefix = ""
+
+            def _apply_sn(sn=sn, t_str=t_str, r_str=r_str, side_str=side_str, dev=dev_num, locked=tilt_locked,
+                          color=label_color, prefix=prefix):
                 if getattr(self.controller, '_shutting_down', False):
                     return
                 try:
                     self.sn_labels[sn].config(
-                        text=f"{sn} | Status -> Tilt: {t_str}°, Rot: {r_str}°{side_str}")
+                        text=f"{prefix}{sn} | Status -> Tilt: {t_str}°, Rot: {r_str}°{side_str}",
+                        foreground=color)
                     # Enforce rotation interlock: disable Move Rot when tilt != 0
                     if dev in getattr(self, 'manual_rot_buttons', {}):
                         btn_rot, lock_lbl = self.manual_rot_buttons[dev]
