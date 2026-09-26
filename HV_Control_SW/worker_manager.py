@@ -2,6 +2,7 @@ from PyQt5.QtCore import QObject, pyqtSignal, QThread, QTimer, pyqtSlot # [수�
 from workers.arduino import ArduinoWorker
 from workers.caen_process import caen_worker_process
 from multiprocessing import Process, Queue
+import time
 
 class CaenProcessBridge(QObject):
     """Reads data from the process queue and emits Qt signals."""
@@ -62,13 +63,26 @@ class WorkerManager(QObject):
             self._arduino_thread.quit() # 'finished' 신호가 stop_polling을 호출할 것임
         if self.caen_process.is_alive():
             self.caen_cmd_q.put({'type': 'stop'})
-        
-        # Start checking if everything has shut down
+
+        self._shutdown_started = time.time()
         self.shutdown_timer.start(100)
             
+    # A CAEN call can hang for a network timeout when the crate is unreachable;
+    # past this the worker is killed. HV itself is unaffected -- the crate keeps
+    # its setpoints; only monitoring stops.
+    SHUTDOWN_LIMIT_S = 5.0
+
     def _check_shutdown_status(self):
         arduino_done = self._arduino_thread.isFinished()
         caen_done = not self.caen_process.is_alive()
+
+        if not (arduino_done and caen_done) and time.time() - self._shutdown_started > self.SHUTDOWN_LIMIT_S:
+            if not caen_done:
+                print("CAEN worker did not stop in time -- terminating it.")
+                self.caen_process.terminate(); self.caen_process.join(1)
+            if not arduino_done:
+                print("Arduino thread did not stop in time -- continuing without it.")
+            arduino_done = caen_done = True
 
         if arduino_done and caen_done:
             self.shutdown_timer.stop()
@@ -78,8 +92,8 @@ class WorkerManager(QObject):
             # [수정됨] 타이머를 직접 멈추는 대신 스레드에 종료 신호를 보냄
             # self.caen_bridge.stop() # <- 이 줄 삭제
             self.caen_bridge_thread.quit() # 'finished' 신호가 stop을 호출할 것임
-            self.caen_bridge_thread.wait()
-            print("Bridge thread stopped.")
+            self.caen_bridge_thread.wait(2000)
+            print(f"Bridge thread stopped. Shutdown took {time.time() - self._shutdown_started:.1f} s.")
             
             self.shutdown_complete.emit()
 

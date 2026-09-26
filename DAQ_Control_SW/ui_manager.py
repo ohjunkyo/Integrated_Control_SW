@@ -2716,6 +2716,26 @@ class UIManager:
         progress_fill = tk.Frame(progress_track, bg=accent)
         progress_fill.place(relx=0, rely=0, relwidth=0.0, relheight=1.0)
 
+        # General Scan only: a status card (point, ETA, HV, laser, last values,
+        # shifter, recent runs) above the log, same colors as the log so it
+        # reads as one panel. Filled by render_scan_card() from live_status.py.
+        card = None
+        if slot == "general_scan":
+            card = tk.Text(parent, height=12, wrap=tk.NONE, state="disabled",
+                           bg=body_bg, fg="#c7cedb", padx=12, pady=8, relief="flat",
+                           borderwidth=0, highlightthickness=0, cursor="arrow",
+                           font=(mono, 11))
+            card.pack(fill=tk.X)
+            card.tag_config("card_big", foreground="#e8ecf4", font=(mono, 16, "bold"))
+            card.tag_config("card_sub", foreground="#9aa4b8", font=(mono, 11))
+            card.tag_config("card_key", foreground="#9aa4b8")
+            card.tag_config("card_val", foreground="#c7cedb")
+            card.tag_config("card_ok", foreground=accent)
+            card.tag_config("card_warn", foreground="#e8b13d")
+            card.tag_config("card_bad", foreground="#f48771", font=(mono, 11, "bold"))
+            card.tag_config("card_dim", foreground="#6b7488", font=(mono, 10))
+            card.tag_config("card_sep", foreground="#2a2f3d", font=(mono, 5))
+
         # General Scan's progress state used to live in a separate Frame
         # (card) stacked above the console text -- three rounds of visual bugs
         # (light/dark seam, an empty stretched box, a stray focus-ring line at
@@ -2745,17 +2765,18 @@ class UIManager:
         hbar.pack(side=tk.BOTTOM, fill=tk.X)
         text.config(xscrollcommand=hbar.set)
         if slot == "general_scan":
-            text.tag_config("scan_point",  foreground="#e8ecf4", font=(mono, 14, "bold"))
-            text.tag_config("scan_detail", foreground="#9aa4b8", font=(mono, 11))
+            text.tag_config("scan_point",  foreground="#e8ecf4", font=(mono, 1))
+            text.tag_config("scan_detail", foreground="#9aa4b8", font=(mono, 1))
             text.tag_config("scan_sep",    foreground="#2a2f3d", font=(mono, 4))
             # The raw script output (Ped/Evt telemetry etc.) is hidden by
             # default now instead of always scrolling under the progress
             # block -- matches the approved mockup's "Show raw output" link
             # (2026-08-29, user-provided mockup screenshot). "raw_all" is
             # stacked onto every console_write() insert for this slot in
-            # addition to that line's own color tag; elide just needs the
-            # tag present anywhere on a range, so toggling this one tag's
-            # elide flag hides/reveals the entire scrolling log at once.
+            # addition to that line's own color tag. Tk resolves -elide by
+            # tag PRIORITY (creation order), and the per-point pthdrN/ptbodyN
+            # tags are created later, so raw_all only wins while it is kept
+            # raised above them -- see _toggle_console_raw / console_begin_point.
             text.tag_config("raw_all", elide=True)
             text.tag_config("raw_toggle", foreground="#5b8cff", font=(mono, 10, "underline"))
             text.tag_bind("raw_toggle", "<Enter>", lambda e, w=text: w.config(cursor="hand2"))
@@ -2770,7 +2791,7 @@ class UIManager:
             # and only its label text is rewritten in place, by
             # _toggle_console_raw(). Everything from line 5 on is the
             # scrolling raw log.
-            text.insert("1.0", "No scan running\n", "scan_point")
+            text.insert("1.0", "\n", "scan_point")
             text.insert(tk.END, "\n", "scan_detail")
             text.insert(tk.END, "▶ Show raw output\n", "raw_toggle")
             text.insert(tk.END, "─" * 40 + "\n", "scan_sep")
@@ -2800,7 +2821,8 @@ class UIManager:
         # 응답할 방법이 없던 문제를 해결. 기본은 비밀번호 마스킹(show="*"),
         # 체크박스로 평문 표시 전환 가능 (일반 확인 프롬프트 y/n 등에 유용).
         input_bar = tk.Frame(parent, bg=bar_bg)
-        input_bar.pack(fill=tk.X)
+        if slot != "general_scan":
+            input_bar.pack(fill=tk.X)
         tk.Label(input_bar, text="⌨ Input:", font=(mono, 10), bg=bar_bg, fg="#8b95a8",
                  padx=10).pack(side=tk.LEFT)
         input_var = tk.StringVar()
@@ -2839,7 +2861,40 @@ class UIManager:
             "progress_fill": progress_fill,
             "cur_body_tag": None, "pt_counter": 0,
             "ansi_tag": None, "ansi_bold": False, "ansi_fg": None,
-            "is_scan_slot": slot == "general_scan"}
+            "is_scan_slot": slot == "general_scan", "card": card, "prog": None}
+        if card is not None:
+            self._refresh_scan_card(slot)
+
+    CARD_REFRESH_MS = 5000
+
+    def _refresh_scan_card(self, slot):
+        self.render_scan_card(slot)
+        try:
+            self.master.after(self.CARD_REFRESH_MS, lambda: self._refresh_scan_card(slot))
+        except tk.TclError:
+            pass
+
+    def render_scan_card(self, slot="general_scan"):
+        pane = self.console_panes.get(slot)
+        card = pane.get("card") if pane else None
+        if card is None:
+            return
+        try:
+            import live_status
+            lines = live_status.build(self.controller, pane.get("prog"))
+        except Exception as e:
+            lines = [[(f"status unavailable: {e}", "card_bad")]]
+        try:
+            card.config(state="normal")
+            card.delete("1.0", tk.END)
+            for k, segs in enumerate(lines):
+                for txt, tag in segs:
+                    card.insert(tk.END, txt, tag)
+                if k < len(lines) - 1:
+                    card.insert(tk.END, "\n")
+            card.config(state="disabled", height=len(lines) + 2)
+        except tk.TclError:
+            pass
 
     def _pick_mono_font(self):
         """현재 시스템에 실제로 설치된 모노스페이스 폰트를 골라 반환한다."""
@@ -3022,12 +3077,19 @@ class UIManager:
         if not pane or not pane.get("is_scan_slot"):
             return
         w = pane["text"]
+        now_hidden = not pane.get("raw_hidden", True)
+        pane["raw_hidden"] = now_hidden
         try:
-            elided = w.tag_cget("raw_all", "elide")
+            w.tag_config("raw_all", elide=now_hidden)
+            # Hidden: raw_all must outrank the per-point fold tags so it hides
+            # headers and folded bodies too. Shown: drop it underneath them so
+            # each point's own ▸ fold state governs again.
+            if now_hidden:
+                w.tag_raise("raw_all")
+            else:
+                w.tag_lower("raw_all")
         except tk.TclError:
             return
-        now_hidden = not (elided in ("1", 1, True))
-        w.tag_config("raw_all", elide=now_hidden)
         label = "▶ Show raw output\n" if now_hidden else "▼ Hide raw output\n"
         try:
             w.config(state="normal")
@@ -3049,26 +3111,13 @@ class UIManager:
         pane = self.console_panes.get(slot)
         if not pane or not pane.get("is_scan_slot"):
             return
-        point_txt = f"Point {current}/{total}" if total else f"Point {current}"
-        detail_txt = f"{axis}-Axis  ·  Tilt {tilt}°" if axis is not None else ""
-        if eta_seconds is not None and eta_seconds >= 0:
-            m, s = divmod(int(eta_seconds), 60)
-            h, m = divmod(m, 60)
-            eta_txt = f"{h}h {m:02d}m" if h else f"{m}m {s:02d}s"
-            detail_txt = f"{detail_txt}   ·   ETA {eta_txt}" if detail_txt else f"ETA {eta_txt}"
         try:
-            w = pane["text"]
-            w.config(state="normal")
-            # The pinned block is always exactly 3 lines (point / detail /
-            # separator) at the very top -- delete and reinsert rather than
-            # tracking marks, since the block's own content never changes
-            # length in a way that matters here.
-            w.delete("1.0", "3.0")
-            w.insert("1.0", point_txt + "\n", "scan_point")
-            w.insert("2.0", detail_txt + "\n", "scan_detail")
-            w.config(state="disabled")
-        except tk.TclError:
-            pass
+            tilt_v = float(tilt) if tilt is not None else None
+        except (TypeError, ValueError):
+            tilt_v = None
+        pane["prog"] = {"cur": current, "tot": total, "axis": axis, "tilt": tilt_v,
+                        "eta": eta_seconds, "at": time.time()}
+        self.render_scan_card(slot)
         self.console_set_progress(current, total, slot=slot)
 
     def console_begin_point(self, slot, label):
@@ -3090,7 +3139,6 @@ class UIManager:
         pane["pt_counter"] += 1
         body_tag = f"ptbody{pane['pt_counter']}"
         header_tag = f"pthdr{pane['pt_counter']}"
-        widget.tag_config(header_tag, elide=False)
 
         def _toggle(event=None, w=widget, t=body_tag):
             try:
@@ -3107,6 +3155,8 @@ class UIManager:
         tags = ("pt_header", header_tag, "raw_all") if pane.get("is_scan_slot") \
                else ("pt_header", header_tag)
         widget.insert(tk.END, f"▸ {label}\n", tags)
+        if pane.get("is_scan_slot") and pane.get("raw_hidden", True):
+            widget.tag_raise("raw_all")
         pane["cur_body_tag"] = body_tag
         widget.config(state="disabled")
         if pane["autoscroll"].get():
@@ -3124,7 +3174,7 @@ class UIManager:
         # "Show raw output" toggle can hide/reveal it as one block -- capture
         # the start mark now, tag the whole newly-written range once at the
         # end, regardless of which branch below actually does the writing.
-        raw_start = widget.index(tk.END) if pane.get("is_scan_slot") else None
+        raw_start = widget.index("end-1c linestart") if pane.get("is_scan_slot") else None
 
         if '\r' in text:
             # \r = carriage return (C++ progress: "Processing... 73%\r" + flush).
@@ -3647,7 +3697,9 @@ class UIManager:
             tab_frame = ttk.Frame(self.laser_sub_notebook)
             self.laser_sub_notebook.add(tab_frame, text=f" {wl} ")
             
-            default_pulse = 133 if wl == "405nm" else 0.0
+            # Blank until the hardware poll fills it in; a per-wavelength default
+            # here only ever masked the real setting.
+            default_pulse = 0.0
             
             vars_dict = {
                 # [NEW] 개별 연결 상태 표시용 문자열 변수

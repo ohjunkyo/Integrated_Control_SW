@@ -591,9 +591,21 @@ class AutomationUI:
         rep_lbl.grid(row=rep_row, column=1, columnspan=3, sticky="w", padx=(0, 8), pady=3)
         self.current_params_labels["repeat_angles"] = rep_lbl
 
+        # Rotate Devices status: own row, own live indicator so "is PMT1/PMT2
+        # actually rotating right now" is visible at a glance instead of
+        # needing to reopen the admin Params dialog to check (2026-09-16).
+        rotate_row = rep_row + 1
+        ttk.Label(params_panel, text="Rotate:", font=("Helvetica", 10)).grid(
+            row=rotate_row, column=0, sticky="w", pady=3, padx=(0, 4))
+        rotate_lbl = ttk.Label(params_panel, text=self._format_rotate_devices(am),
+                               font=("Helvetica", 11, "bold"),
+                               foreground="#007ACC" if (am.rotate_dev2 and am.rotate_dev3) else "#d9822b")
+        rotate_lbl.grid(row=rotate_row, column=1, columnspan=3, sticky="w", padx=(0, 8), pady=3)
+        self.current_params_labels["rotate_devices"] = rotate_lbl
+
         ttk.Label(params_panel, text="🔒 Edit via Danger Zone → Params (admin)",
                   font=("Helvetica", 8), foreground="#6c757d").grid(
-            row=rep_row + 1, column=0, columnspan=4, sticky="w", pady=(8, 0))
+            row=rotate_row + 1, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
         # Restore the panel from its own last-used file (checkboxes + currents),
         # surviving restarts. If no saved file exists, fall back to seeding the
@@ -638,14 +650,14 @@ class AutomationUI:
         # not just in a separate tab.
         matrix_outer = ttk.Frame(self.matrix_tab)
         matrix_outer.pack(fill=tk.BOTH, expand=True)
-        matrix_outer.columnconfigure(0, weight=4)
-        matrix_outer.columnconfigure(1, weight=6)
+        # uniform= keeps the 4:6 split fixed; without it each column's base
+        # width follows its content and the plot shrank as labels changed.
+        matrix_outer.columnconfigure(0, weight=4, uniform="livescan")
+        matrix_outer.columnconfigure(1, weight=6, uniform="livescan")
         matrix_outer.rowconfigure(1, weight=1)
 
         toolbar_row = ttk.Frame(matrix_outer)
         toolbar_row.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 3))
-        ttk.Button(toolbar_row, text="🔍 Full Grid", command=self._open_matrix_popup).pack(
-            side=tk.RIGHT)
 
         # "Output" clashes with the top-level Output tab (a different console
         # collection for Analysis/Produce/etc) -- "Live Console" makes clear
@@ -684,7 +696,8 @@ class AutomationUI:
         plot_col = ttk.Frame(matrix_outer)
         plot_col.grid(row=1, column=1, sticky="nsew")
         from live_scan_view import LiveScanView
-        self.live_scan_view = LiveScanView(toolbar_row, plot_col, self.controller)
+        self.live_scan_view = LiveScanView(toolbar_row, plot_col, self.controller,
+                                           extra_buttons=[("Full Grid", self._open_matrix_popup)])
 
         # Popup-only matrix bookkeeping. self.matrix_frames/self.cells are
         # populated lazily the first time _open_matrix_popup() runs; until
@@ -1148,6 +1161,17 @@ class AutomationUI:
             parts.append(f"R{r:g}° → T[{tilts}]")
         return "    ".join(parts)
 
+    def _format_rotate_devices(self, auto_mgr):
+        d2 = getattr(auto_mgr, "rotate_dev2", True)
+        d3 = getattr(auto_mgr, "rotate_dev3", True)
+        if d2 and d3:
+            return "PMT1 + PMT2 (both)"
+        if d2:
+            return "PMT1 only (PMT2 fixed)"
+        if d3:
+            return "PMT2 only (PMT1 fixed)"
+        return "NEITHER (invalid)"
+
     def _select_daq_backend(self, backend):
         """Set the DAQ backend and repaint the segmented toggle: the active
         side gets a solid color fill + colored focus ring, the inactive side
@@ -1222,17 +1246,34 @@ class AutomationUI:
         each point is sent instead."""
         auto_mgr = self.controller.auto_mgr
         hk = auto_mgr.hk_config
+
+        # One dialog only: every click used to build ANOTHER Toplevel on top of
+        # the last, each with its own 1-second refresh loop still running, so
+        # edits in one window were silently overwritten by a stale sibling.
+        existing = getattr(self, "_hk_cfg_win", None)
+        if existing is not None:
+            try:
+                if existing.winfo_exists():
+                    existing.deiconify()
+                    existing.lift()
+                    existing.focus_force()
+                    return
+            except tk.TclError:
+                pass
+
         win = tk.Toplevel(self.notebook)
+        self._hk_cfg_win = win
         win.title("HK Digitizer Configuration")
-        # transient() needs an actual TOPLEVEL window, not a plain widget --
-        # passing self.notebook (a Notebook widget, not a window) set a bogus
-        # WM_TRANSIENT_FOR hint that made the window manager treat this as a
-        # fixed-size dialog, silently disabling Maximize/Minimize.
-        win.transient(self.notebook.winfo_toplevel())
+        # Neither transient() nor "-topmost": WM_TRANSIENT_FOR makes the window
+        # manager classify this as a dialog and strip Maximize, and an
+        # always-on-top window gets Minimize stripped for the same reason (a
+        # minimised always-on-top window is a contradiction) -- together they
+        # were the reported "resize works but Minimize/Maximize do nothing".
+        # Keeping it reachable is the singleton guard's job instead: clicking
+        # HK Config again raises this window rather than stacking a new one.
         win.resizable(True, True)
         win.geometry("820x760")
         win.minsize(600, 460)
-        win.attributes("-topmost", True)
 
         ttk.Label(win, text="🖧 HK Digitizer Configuration",
                   font=("Helvetica", 14, "bold")).pack(anchor="w", padx=18, pady=(16, 0))
@@ -1279,6 +1320,24 @@ class AutomationUI:
                                font=("Helvetica", 8), foreground="#8a9099")
         infra_note.pack(side=tk.LEFT)
 
+        # These two labels are the widest fixed-width widgets in the dialog, and
+        # the angle one is rewritten every second by _refresh_angle_live -- so
+        # without a wraplength they keep re-asserting an ~800px minimum width and
+        # the window springs back to it whenever the operator drags it narrower.
+        # Tracking the live width lets them reflow instead of pinning the window.
+        _wrap_w = [0]
+        def _rewrap(e=None):
+            if e is not None and e.widget is not win:
+                return
+            w = win.winfo_width()
+            if w <= 1 or w == _wrap_w[0]:
+                return
+            _wrap_w[0] = w
+            angle_live_lbl.configure(wraplength=max(360, w - 48))
+            infra_note.configure(wraplength=max(240, w - 330))
+        win.bind("<Configure>", _rewrap)
+        win.after(60, _rewrap)
+
         # Bottom-up build order so the stack reads (top→bottom): scrollable
         # fields, live command preview, pipeline stage buttons, Save/Cancel.
         btns = ttk.Frame(win)
@@ -1289,9 +1348,15 @@ class AutomationUI:
         # ── Live "Final Command" preview: what will actually be sent, always
         # in sync with the fields above (rebuilt on every keystroke) so a long
         # command never has to be pieced together by eye. ────────────────────
-        preview_frame = ttk.LabelFrame(win, text=" Final Command (auto-generated) ", padding=4)
-        preview_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=12, pady=(0, 4))
-        preview = tk.Text(preview_frame, height=7, wrap="none", font=("Consolas", 9),
+        # Fields vs. command preview share the leftover height through a
+        # draggable sash: the preview used to hold a fixed 7 lines, which on a
+        # short window squeezed the parameter list down to a few visible rows
+        # with no way to trade the space back.
+        vsplit = ttk.PanedWindow(win, orient=tk.VERTICAL)
+        vsplit.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 4))
+
+        preview_frame = ttk.LabelFrame(vsplit, text=" Final Command (auto-generated) ", padding=4)
+        preview = tk.Text(preview_frame, height=5, width=40, wrap="none", font=("Consolas", 9),
                           bg="#1e1e1e", fg="#d4d4d4", state="disabled")
         prev_vsb = ttk.Scrollbar(preview_frame, orient="vertical", command=preview.yview)
         prev_hsb = ttk.Scrollbar(preview_frame, orient="horizontal", command=preview.xview)
@@ -1305,8 +1370,7 @@ class AutomationUI:
         # Scrollable body (vertical AND horizontal): long commands + many
         # fields no longer get clipped -- the card is allowed to grow wider
         # than the canvas, and a horizontal scrollbar reaches the rest.
-        body = ttk.Frame(win)
-        body.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 4))
+        body = ttk.Frame(vsplit)
         canvas = tk.Canvas(body, highlightthickness=0)
         vsb = ttk.Scrollbar(body, orient="vertical", command=canvas.yview)
         hsb = ttk.Scrollbar(body, orient="horizontal", command=canvas.xview)
@@ -1333,12 +1397,38 @@ class AutomationUI:
         canvas.bind("<Leave>", lambda e: (
             canvas.unbind_all("<Button-4>"), canvas.unbind_all("<Button-5>")))
 
+        vsplit.add(body, weight=4)              # parameters take most of the growth
+        vsplit.add(preview_frame, weight=1)
+
         # Fields below this point control WHERE/HOW commands run on the HK PC
         # (as opposed to per-run acquisition parameters above) -- locked by
         # default, unlocked via the Admin button above.
-        protected_keys = {"ssh_target", "setup_cmd", "scan_manager",
-                          "dpb_setup_cmd", "vmodem_device", "vmodem_keys"}
+        protected_keys = {"ssh_user", "ssh_host", "setup_cmd", "scan_manager",
+                          "dpb_host", "dpb_setup_cmd", "vmodem_device", "vmodem_keys"}
 
+        # ssh_target is stored as one "user@host" string (every caller in
+        # rotation_manager reads it that way), but the HK Digitizer PC gets
+        # swapped for a different machine/account periodically -- so it is shown
+        # here as two separate boxes and recombined on save.
+        _tgt = str(hk.get("ssh_target", "") or "")
+        _u, _, _h = _tgt.rpartition("@")
+        seed = {"ssh_user": _u, "ssh_host": _h}
+
+        def _ssh_target_from(d):
+            u = (d.get("ssh_user") or "").strip()
+            h = (d.get("ssh_host") or "").strip()
+            return f"{u}@{h}" if u else h
+
+        # ON/OFF wording for each "bool" field, keyed like the `fields` tuples
+        # below. Kept out of `fields` so that list stays a plain column spec.
+        # A single hardcoded "sends --pedestal" string was previously reused
+        # verbatim by every bool checkbox added after it -- Auto Hit-Tree
+        # rendered as "ON -- sends --pedestal" (confirmed 2026-09-15 from a
+        # screenshot). Each field now owns its own pair of strings.
+        _BOOL_LABELS = {
+            "pedestal_mode": ("ON — sends --pedestal", "OFF — normal acquisition"),
+            "auto_hittree":  ("ON — runs RunAnalysisChain.py after", "OFF — .bin only, no hit-tree"),
+        }
         # (key, label, kind, hint, width). kind: int/float/str/fixed
         fields = [
             ("run_id",        "Filename (-i)",         "str",   "typed here (static); use {run}/{tilt}/{rot2}(SN2)/{rot3}(SN3)/{trgch}/{trgvth} to auto-fill", 70),
@@ -1348,13 +1438,17 @@ class AutomationUI:
             ("threshold_preset", "Threshold preset", "str", "preset number: blank/1 → --threpreset, 2 → --threpreset2, 3 → --threpreset3", 20),
             ("trg_channel",   "Trigger ch --trgch",     "str",   "trigger channel; blank = flag omitted (default trigger)", 20),
             ("trg_vth",       "Trigger Vth --trgch-Vth", "str",  "trigger threshold voltage; blank = flag omitted", 20),
+            ("pedestal_mode", "Pedestal Run",           "bool",  "adds a bare --pedestal flag; off = normal acquisition", 0),
+            ("auto_hittree",  "Auto Hit-Tree",          "bool",  "chains RunAnalysisChain.py on the .bin this acquisition just wrote", 0),
             ("gatelist",      "Gate --gatelist",        "int",   "gate width sent as --gatelist", 14),
             ("chanlist",      "Chan --chanlist",        "str",   "channels 0–11 (0 = first input); e.g. 0 or 0,1,2; blank = flag omitted, ScanManager default", 20),
             ("work_dir",      "Work Dir (cd)",          "str",   "supports {date} → today (YYYYMMDD); blank = no cd", 60),
-            ("ssh_target",    "SSH Target 🔒",          "str",   "user@host, e.g. hkpd@hkdaq", 30),
+            ("ssh_user",      "HK PC User 🔒",          "str",   "login account on the HK Digitizer PC, e.g. hkpd", 24),
+            ("ssh_host",       "HK PC Host / IP 🔒",     "str",   "hostname or IP of the HK Digitizer PC, e.g. 192.168.0.229", 30),
             ("setup_cmd",     "Setup Cmd 🔒",           "str",   "sourced before ScanManager", 60),
             ("scan_manager",  "ScanManager 🔒",         "str",   None, 70),
-            ("dpb_setup_cmd", "DPB Setup (②) 🔒",       "str",   "runs on hkpd; nested ssh → root@dpb-local (socat + daq) — one-time", 70),
+            ("dpb_host",      "DPB Board Host / IP 🔒", "str",   "address of the DPB board itself, reached FROM the HK PC (used by ② and its alive-check)", 30),
+            ("dpb_setup_cmd", "DPB Setup (②) 🔒",       "str",   "runs on the HK PC; nested ssh → root@{dpb_host} (socat + timing) — one-time", 70),
             ("vmodem_device", "vmodem Device (③) 🔒",   "str",   None, 60),
             ("vmodem_keys",   "vmodem Keys (③) 🔒",     "str",   "comma-separated keys, auto-written into a runscript each run; default m,O", 24),
         ]
@@ -1365,14 +1459,35 @@ class AutomationUI:
         for r, (key, label, kind, hint, width) in enumerate(fields):
             ttk.Label(card, text=f"{label}:", font=("Helvetica", 10)).grid(
                 row=r * 2, column=0, sticky="w", padx=(2, 8), pady=(6, 0))
-            v = tk.StringVar(value=str(hk.get(key, "")))
-            ent = ttk.Entry(card, textvariable=v, width=width)
-            if kind == "fixed":
-                ent.configure(state="readonly")   # greyed, not editable
-            elif key in protected_keys:
+            if kind == "bool":
+                v = tk.BooleanVar(value=bool(hk.get(key, False)))
+                # NOT a ttk.Checkbutton: under the 'clam' theme ttk draws the
+                # SELECTED state as an "X", which every operator reads as "no"
+                # -- the exact opposite of what it means. A classic
+                # tk.Checkbutton draws a filled indicator instead, and the
+                # label is rewritten to spell the state out in words so the
+                # glyph never has to be interpreted at all.
+                ent = tk.Checkbutton(card, variable=v, anchor="w",
+                                     font=("Helvetica", 10, "bold"),
+                                     selectcolor="#ffffff", padx=6)
+
+                on_txt, off_txt = _BOOL_LABELS.get(key, ("ON", "OFF"))
+
+                def _paint_bool(*_a, _v=v, _w=ent, _on=on_txt, _off=off_txt):
+                    on = bool(_v.get())
+                    _w.configure(text=("  " + _on if on else "  " + _off),
+                                fg=(self.PALETTE["start"] if on else self.PALETTE["text_muted"]))
+                v.trace_add("write", _paint_bool)
+                _paint_bool()
+            else:
+                v = tk.StringVar(value=seed.get(key, str(hk.get(key, ""))))
+                ent = ttk.Entry(card, textvariable=v, width=width)
+                if kind == "fixed":
+                    ent.configure(state="readonly")   # greyed, not editable
+            if kind != "bool" and key in protected_keys:
                 ent.configure(state="disabled")   # greyed until Admin Unlock
                 protected_entries.append(ent)
-            ent.grid(row=r * 2, column=1, sticky="ew", pady=(6, 0))
+            ent.grid(row=r * 2, column=1, sticky="w" if kind == "bool" else "ew", pady=(6, 0))
             vars_[key] = (v, kind)
             if hint:
                 ttk.Label(card, text=hint, font=("Helvetica", 8),
@@ -1383,9 +1498,63 @@ class AutomationUI:
                 # keeps climbing during a scan even while this dialog stays
                 # open) -- answers "is it actually auto-incrementing?" at a
                 # glance instead of having to reopen the dialog to check.
-                run_number_live_lbl = ttk.Label(card, text="", font=("Helvetica", 10, "bold"),
+                side = ttk.Frame(card)
+                side.grid(row=r * 2, column=2, sticky="w", padx=(10, 0))
+                run_number_live_lbl = ttk.Label(side, text="", font=("Helvetica", 10, "bold"),
                                                 foreground=self.PALETTE["accent"])
-                run_number_live_lbl.grid(row=r * 2, column=2, sticky="w", padx=(10, 0))
+                run_number_live_lbl.pack(side=tk.LEFT)
+                # The counter is local-only: it doesn't follow the {date} folder
+                # rollover and never sees runs taken by hand on the HK PC, so it
+                # can sit on a number whose file already exists -- which the next
+                # acquisition would overwrite. This reads the real folder.
+                ttk.Button(side, text="🔄 Sync from HK PC", width=18,
+                           command=lambda: _sync_run_number()).pack(side=tk.LEFT, padx=(10, 0))
+
+        def _sync_run_number():
+            """Ask the HK PC what run numbers already exist in today's folder
+            and park the counter on the first free one."""
+            import threading
+            try:
+                collected = _collect()
+            except ValueError as e:
+                messagebox.showerror("Invalid HK Config", str(e))
+                return
+            collected.pop("run_number", None)
+            hk.update(collected)
+            auto_mgr.save_hk_config()
+            save_status_lbl.config(text="🔄 Reading HK data folder…")
+
+            def _done(res):
+                if not res.get("ok"):
+                    save_status_lbl.config(text="❌ Folder read failed")
+                    messagebox.showerror(
+                        "Sync Run Number",
+                        f"Could not list the HK data folder.\n\n"
+                        f"Folder: {res.get('dir','?')}\n\n{res.get('error','')}",
+                        parent=win)
+                    return
+                nxt, runs, d = res["next"], res["runs"], res["dir"]
+                found = (f"highest existing: Run{max(runs):03d}" if runs
+                         else "no Run-numbered files yet")
+                if not messagebox.askyesno(
+                        "Sync Run Number",
+                        f"Folder: {d}\n"
+                        f"{res['n_files']} file(s), {found}.\n\n"
+                        f"Set Run Number to {nxt}?  (current: {hk.get('run_number')})",
+                        parent=win):
+                    save_status_lbl.config(text="Sync cancelled")
+                    return
+                hk["run_number"] = nxt
+                auto_mgr.save_hk_config()
+                v, _k = vars_.get("run_number", (None, None))
+                if v is not None:
+                    v.set(str(nxt))
+                save_status_lbl.config(text=f"✅ Run Number → {nxt}")
+
+            def _work():
+                res = auto_mgr.hk_probe_remote_runs()
+                win.after(0, lambda: _done(res))
+            threading.Thread(target=_work, daemon=True).start()
 
         def _refresh_run_number_live():
             if not win.winfo_exists():
@@ -1402,14 +1571,30 @@ class AutomationUI:
             # old "3", so the NEXT acquisition overwrote the previous one's
             # file (confirmed 2026-07-26). Now the field can't go stale.
             v, _kind = vars_.get("run_number", (None, None))
-            if v is not None and win.focus_get() is not run_number_entry:
-                v.set(str(live_val))
+            if v is not None:
+                # focus_get() raises KeyError('__tk__messagebox') while a
+                # native tk messagebox (e.g. Test Connection's result popup)
+                # is open -- its dialog isn't a real widget in Python's tree,
+                # so nametowidget() can't resolve it. Harmless (mainloop just
+                # logs it and this tick's update is skipped), but it floods
+                # the console every second the popup stays up. Treat "can't
+                # tell" the same as "not the entry" -- worst case the field
+                # updates one tick late once the popup closes.
+                try:
+                    focused = win.focus_get()
+                except KeyError:
+                    focused = None
+                if focused is not run_number_entry:
+                    v.set(str(live_val))
             win.after(1000, _refresh_run_number_live)
         _refresh_run_number_live()
 
         def _unlock_infra():
-            if self.controller.access_mgr.verify_password_prompt(
-                    "Security", "Enter Master Password (HK Infrastructure Fields):"):
+            # Parent the prompt to THIS window so it can't render behind it.
+            ok = self.controller.access_mgr.verify_password_prompt(
+                "Security", "Enter Master Password (HK Infrastructure Fields):",
+                parent=win)
+            if ok:
                 for ent in protected_entries:
                     ent.configure(state="normal")
                 infra_lock_btn.configure(state="disabled", text="🔓 Unlocked")
@@ -1422,6 +1607,9 @@ class AutomationUI:
         def _collect():
             new = {}
             for key, (v, kind) in vars_.items():
+                if kind == "bool":
+                    new[key] = bool(v.get())
+                    continue
                 s = v.get().strip()
                 if kind == "int":
                     new[key] = int(float(s))
@@ -1431,12 +1619,18 @@ class AutomationUI:
                     continue                       # locked -- keep existing value
                 else:
                     new[key] = s
+            new["ssh_target"] = _ssh_target_from(new)
+            new.pop("ssh_user", None)
+            new.pop("ssh_host", None)
             return new
 
         def _live_dict():
             """Raw (uncommitted) snapshot of every field as typed right now --
             used only to render the preview, tolerant of half-finished input."""
-            return {key: v.get() for key, (v, kind) in vars_.items()}
+            d = {key: v.get() for key, (v, kind) in vars_.items()}
+            d["ssh_target"] = _ssh_target_from(d)
+            d["pedestal_mode"] = bool(d.get("pedestal_mode"))
+            return d
 
         def _refresh_preview(*_a):
             d = _live_dict()
@@ -1545,7 +1739,7 @@ class AutomationUI:
             # restart. Incident 2026-07-26: a routine restart of THIS app
             # reset the flag, so clicking ② again fired with no warning even
             # though the socat/daq daemons from before the restart were still
-            # alive on dpb-local -- a real duplicate socat process on port
+            # alive on the DPB board -- a real duplicate socat process on port
             # 9001 resulted. A local-only flag can't catch this since the
             # remote daemon's lifetime doesn't depend on the master GUI.
             #
@@ -1566,14 +1760,14 @@ class AutomationUI:
                 # Couldn't verify (SSH down/unreachable) -- fall back to the
                 # local session-only flag rather than blocking the operator.
                 _run_stage_once(
-                    lambda: hk.get("dpb_setup_cmd", ""), "DPB Setup", "hk_dpb_setup_done",
+                    auto_mgr.hk_build_dpb_setup, "DPB Setup", "hk_dpb_setup_done",
                     "Re-running can spawn a DUPLICATE socat/daq daemon if the first is still up.\n"
                     "(Could not verify live remote state just now -- SSH check failed.)")
                 return
             if count >= 2:
                 if not messagebox.askyesno(
                         "DPB already running remotely",
-                        f"Found {count} live 'socat' process(es) on dpb-local right now --\n"
+                        f"Found {count} live 'socat' process(es) on the DPB board right now --\n"
                         f"DPB Setup already appears to be up and running.\n\n"
                         f"Running it again WILL spawn duplicate socat/daq daemons on the "
                         f"SAME ports (this has happened before and caused a stuck duplicate "
@@ -1581,28 +1775,108 @@ class AutomationUI:
                     return
             # count == 0 or 1: nothing (or only a partial) daemon set is up,
             # safe to proceed without asking.
-            _run_pipeline_stage(lambda: hk.get("dpb_setup_cmd", ""), "DPB Setup")
+            _run_pipeline_stage(auto_mgr.hk_build_dpb_setup, "DPB Setup")
             auto_mgr.hk_dpb_setup_done = True
 
-        # Stage buttons (② DPB setup is a one-time step; ③ vmodem processing
-        # always writes a fresh runscript from vmodem_keys, so m/O are never
-        # missing; ④ ScanManager acquire == the same as the Test button below).
-        tk.Button(stages, text="② DPB Setup (once)",
-                  command=_run_dpb_setup,
+        # ── ②/③ are LOCKED on this setup ──────────────────────────────────
+        # The DPB bridge is brought up and owned by the HK-PC side, and it is
+        # already running (socat -> 192.168.0.163 ports 9001/9002, verified
+        # 2026-09-15) with a DIFFERENT port map than the command configured
+        # here (9001/9004, taken from that system's own login_to_dpb.sh). So
+        # firing ② would lay a second, mismatched bridge over a working one and
+        # break the readout path -- and the duplicate-guard can't save us,
+        # because the alive-check needs a password the batch SSH can't supply
+        # and so always returns "unknown". ③ has the same ownership problem.
+        # Not deleted (a future setup may need them): gated behind the same
+        # master password the infrastructure fields use, with the reason shown.
+        _LOCK_NOTE = (
+            "On THIS setup the DPB bridge is started and owned by the HK PC side, "
+            "and it is already running.\n\n"
+            "Running this stage can lay a second, differently-configured bridge over "
+            "the working one and break the readout path.\n\n"
+            "Only continue if the HK-PC side has told you the bridge is down.")
+
+        def _locked_stage(fn, label):
+            def _go():
+                if not messagebox.askyesno(f"{label} — normally not needed",
+                                           f"{_LOCK_NOTE}\n\nContinue to the password prompt?",
+                                           parent=win, icon="warning"):
+                    return
+                if not self.controller.access_mgr.verify_password_prompt(
+                        "Security", f"Enter Master Password ({label}):", parent=win):
+                    self.controller._log(f"[WARNING] {label} denied (admin unlock failed).")
+                    return
+                fn()
+            return _go
+
+        tk.Button(stages, text="🔒 ② DPB Setup (once)",
+                  command=_locked_stage(_run_dpb_setup, "DPB Setup"),
                   font=("Helvetica", 9, "bold")).pack(side=tk.LEFT, padx=(0, 6))
-        tk.Button(stages, text="③ vmodem Process",
-                  command=lambda: _run_stage_once(
+        tk.Button(stages, text="🔒 ③ vmodem Process",
+                  command=_locked_stage(lambda: _run_stage_once(
                       auto_mgr.hk_build_vmodem_remote, "vmodem Process", "hk_vmodem_done",
                       "Re-sending the m/O keys may just re-toggle the mode instead of setting it."),
+                      "vmodem Process"),
                   font=("Helvetica", 9, "bold")).pack(side=tk.LEFT, padx=(0, 6))
         tk.Button(stages, text="④ Acquire (ScanManager)",
                   command=lambda: _run_pipeline_stage(
-                      lambda: auto_mgr.hk_build_remote(hk["run_id"], hk["acq_time"]), "HK Acquire"),
+                      lambda: auto_mgr.hk_build_remote_current(), "HK Acquire"),
                   font=("Helvetica", 9, "bold")).pack(side=tk.LEFT)
+
+        def _test_connection():
+            """Reachability check for a swapped-out HK PC: confirms the SSH
+            login works AND that ScanManager actually exists at the configured
+            path (a new machine/account is the exact case where that path goes
+            stale, and otherwise it only surfaces as a failed acquisition)."""
+            import threading
+            try:
+                collected = _collect()
+            except ValueError as e:
+                messagebox.showerror("Invalid HK Config", str(e))
+                return
+            collected.pop("run_number", None)   # same stale-snapshot guard as the stage buttons
+            hk.update(collected)
+            auto_mgr.save_hk_config()
+            target = hk.get("ssh_target", "")
+            sm = hk.get("scan_manager", "")
+            save_status_lbl.config(text=f"🔌 Testing {target} …")
+            conn_btn.configure(state="disabled")
+
+            def _done(rc, out):
+                conn_btn.configure(state="normal")
+                if rc != 0:
+                    save_status_lbl.config(text="❌ SSH failed")
+                    messagebox.showerror(
+                        "HK Connection Failed",
+                        f"Target: {target}\n\nssh exit code {rc}\n\n{out.strip()[:800]}\n\n"
+                        "Check the Host/IP and User above, and that this PC's SSH key is "
+                        "installed on the HK PC (ssh-copy-id).")
+                    return
+                ok_sm = "SCANMGR=OK" in out
+                info = " ".join(l for l in out.splitlines() if l.startswith("HOST="))
+                save_status_lbl.config(
+                    text="✅ Connected" if ok_sm else "⚠ Connected — ScanManager missing")
+                messagebox.showinfo(
+                    "HK Connection",
+                    f"Target: {target}\n{info}\n\n"
+                    + ("ScanManager found:\n" if ok_sm else "⚠ ScanManager NOT found at:\n")
+                    + f"{sm}")
+
+            def _work():
+                remote = ('echo "HOST=$(hostname) USER=$(whoami)"; '
+                          f'if [ -f {sm} ]; then echo SCANMGR=OK; else echo SCANMGR=MISSING; fi')
+                rc, out = auto_mgr._hk_ssh(remote, wait=True, timeout=15)
+                win.after(0, lambda: _done(rc, out or ""))
+            threading.Thread(target=_work, daemon=True).start()
+
+        conn_btn = tk.Button(btns, text="🔌 Test Connection", command=_test_connection,
+                             font=("Helvetica", 10, "bold"))
+        self._style_button(conn_btn, "neutral")
+        conn_btn.pack(side=tk.LEFT, padx=(0, 8))
 
         test_btn = tk.Button(btns, text="🧪 Test Trigger (Dummy)",
                              command=lambda: _run_pipeline_stage(
-                                 lambda: auto_mgr.hk_build_remote(hk["run_id"], hk["acq_time"]), "HK Test"),
+                                 lambda: auto_mgr.hk_build_remote_current(prefix="TEST_"), "HK Test"),
                              font=("Helvetica", 10, "bold"))
         self._style_button(test_btn, "move")
         test_btn.pack(side=tk.LEFT)
@@ -1630,7 +1904,8 @@ class AutomationUI:
         for running scans.
         """
         if not self.controller.access_mgr.verify_password_prompt(
-                "Security", "Enter Master Password (Scan Parameters):"):
+                "Security", "Enter Master Password (Scan Parameters):",
+                parent=self.notebook.winfo_toplevel()):
             self.controller._log("[WARNING] Admin access denied for Scan Parameters.")
             return
 
@@ -1756,6 +2031,35 @@ class AutomationUI:
                       command=lambda: add_rep_row("", "")).grid(
             row=3, column=0, sticky="w", padx=16, pady=(6, 14))
 
+        # ── Rotate Devices: which of Rot1/Rot2 actually scan (2026-09-16).
+        #    Default both ON (existing behavior). Turning one off holds that
+        #    device fixed at its current angle for the whole General Scan --
+        #    see rotate_dev2/rotate_dev3 in rotation_manager.py __init__. ──
+        rotate_card = ctk.CTkFrame(scroll, corner_radius=14)
+        rotate_card.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 16))
+        rotate_card.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(rotate_card, text="Rotate Devices",
+                     font=ctk.CTkFont(size=13, weight="bold")).grid(
+            row=0, column=0, columnspan=2, sticky="w", padx=16, pady=(12, 0))
+        ctk.CTkLabel(rotate_card,
+                     text="Uncheck a device to hold it fixed at its current angle\n"
+                          "for the whole scan (e.g. PMT1-only data).",
+                     anchor="w", justify="left", text_color="#8a9099",
+                     font=ctk.CTkFont(size=11)).grid(
+            row=1, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 8))
+
+        rotate_dev2_var = tk.BooleanVar(value=getattr(auto_mgr, "rotate_dev2", True))
+        rotate_dev3_var = tk.BooleanVar(value=getattr(auto_mgr, "rotate_dev3", True))
+        ctk.CTkCheckBox(rotate_card, text="Rotate PMT1 (Rot1 / Device 2)",
+                         variable=rotate_dev2_var,
+                         font=ctk.CTkFont(size=13)).grid(
+            row=2, column=0, sticky="w", padx=16, pady=(0, 8))
+        ctk.CTkCheckBox(rotate_card, text="Rotate PMT2 (Rot2 / Device 3)",
+                         variable=rotate_dev3_var,
+                         font=ctk.CTkFont(size=13)).grid(
+            row=3, column=0, sticky="w", padx=16, pady=(0, 14))
+
         def save_params():
             try:
                 new_tilt_step = float(tilt_var.get())
@@ -1790,15 +2094,29 @@ class AutomationUI:
                 return
             auto_mgr.repeat_angles = new_angles
 
+            if not rotate_dev2_var.get() and not rotate_dev3_var.get():
+                messagebox.showerror(
+                    "Invalid Rotate Devices",
+                    "At least one of PMT1 (Rot1) / PMT2 (Rot2) must stay enabled --\n"
+                    "a scan with neither device rotating has nothing to move.\n\n"
+                    "Keeping the previous value.")
+                return
+            auto_mgr.rotate_dev2 = rotate_dev2_var.get()
+            auto_mgr.rotate_dev3 = rotate_dev3_var.get()
+
             self.current_params_labels["tilt_step"].config(text=f"{auto_mgr.tilt_step}°")
             self.current_params_labels["rot_step"].config(text=f"{auto_mgr.rot_step}°")
             self.current_params_labels["rest_time"].config(text=f"{auto_mgr.rest_time}s")
             self.current_params_labels["daq_settle_time"].config(text=f"{auto_mgr.daq_settle_time}s")
             self.current_params_labels["repeat_angles"].config(text=self._format_repeat_angles(auto_mgr.repeat_angles))
+            self.current_params_labels["rotate_devices"].config(
+                text=self._format_rotate_devices(auto_mgr),
+                foreground="#007ACC" if (auto_mgr.rotate_dev2 and auto_mgr.rotate_dev3) else "#d9822b")
             self.controller._log(
                 f"[INFO] Scan params updated: Tilt {auto_mgr.tilt_step}°, Rot {auto_mgr.rot_step}°, "
                 f"Rest {auto_mgr.rest_time}s, Settle {auto_mgr.daq_settle_time}s, "
-                f"Repeat Angles {auto_mgr.repeat_angles}")
+                f"Repeat Angles {auto_mgr.repeat_angles}, "
+                f"Rotate PMT1={auto_mgr.rotate_dev2} PMT2={auto_mgr.rotate_dev3}")
             win.destroy()
 
         btns = ctk.CTkFrame(win, fg_color="transparent")
@@ -2278,9 +2596,8 @@ class AutomationUI:
             total = float(st.get('pulse', 0) or 0) + float(st.get('bias', 0) or 0)
         except (TypeError, ValueError):
             return None, None
-        # Readback is fractional (164.98 for a 165 mA setting); 1 decimal keeps
-        # genuinely fractional settings while rendering the common case as "165".
-        return re.sub(r'\D', '', wl), f"{round(total, 1):g}"
+        # Readback is fractional (164.98 for a 165 mA setting); DAQ --laser is int.
+        return re.sub(r'\D', '', wl), f"{round(total)}"
 
     def _read_live_hv(self):
         """-> {'HV1':str,'HV2':str,'HV3':str} from HV_Control_SW's monitoring DB

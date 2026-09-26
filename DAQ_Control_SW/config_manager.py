@@ -58,6 +58,48 @@ class ConfigManager:
     def get_all_variables(self):
         return self.variables
 
+    def preflight_rows(self):
+        """(rows, warnings) describing what config3.h will stamp into RunInfo.
+
+        These values are compiled into every run and cannot be corrected
+        afterwards, so the pre-flight shows them before a General Scan or a
+        Stability Run starts. The warnings flag values that are almost
+        certainly a forgotten edit -- on 2026-09-22 a whole 375 nm stability
+        set was recorded with Laser = "0" because the field was never saved.
+        """
+        self.reload()
+        v = self.variables
+
+        def g(key, default="N/A"):
+            return str(v.get(key, default)).strip() or default
+
+        rows = [
+            ("PMT1 (ch0):", "%s   dir %s   HV %s V" % (g('SN1'), g('direction1'), g('HV1'))),
+            ("PMT2 (ch1):", "%s   dir %s   HV %s V" % (g('SN2'), g('direction2'), g('HV2'))),
+            ("PMT3 (ch2):", "%s   dir %s   HV %s V" % (g('SN3'), g('direction3'), g('HV3'))),
+            ("Laser:", "%s nm   %s mA" % (g('Wavelength'), g('Laser'))),
+            ("DAQ:", "%s events   window %s   post-trig %s   chmask %s   trig ch %s"
+                     % (g('Events'), g('TimeWindow'), g('PostTrigger'),
+                        g('ChannelMask'), g('TriggerCh'))),
+            ("Repeat:", "NumSequences %s   IntervalTime %s s"
+                        % (g('NumSequences'), g('IntervalTime'))),
+            ("People:", "shifter %s   /   expert %s" % (g('Shift_worker'), g('Expert'))),
+            ("NOTE:", g('NOTE', '(empty)')),
+        ]
+
+        warnings = []
+        laser = g('Laser', '')
+        if laser in ("", "0", "0.0", "N/A"):
+            warnings.append('Laser current is "%s" -- every run will record 0 mA.'
+                            % (laser or 'empty'))
+        for n in (1, 2, 3):
+            hv = g('HV%d' % n, '')
+            if hv in ("", "0", "N/A"):
+                warnings.append('HV%d is "%s".' % (n, hv or 'empty'))
+        if g('Wavelength', '') in ("", "0", "N/A"):
+            warnings.append('Wavelength is not set.')
+        return rows, warnings
+
     def get_all_configs_and_comments(self):
         """Parses the entire config file, preserving comments and structure."""
         configs = []

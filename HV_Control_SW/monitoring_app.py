@@ -1,12 +1,14 @@
 import sys, json, os, time, signal, sqlite3, csv
 from datetime import datetime, timedelta 
-from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton, QDialog, QComboBox, QDoubleSpinBox, QTabWidget, QDateTimeEdit, QFileDialog, QCheckBox, QFrame, QGroupBox, QScrollArea, QSizePolicy
+from PyQt5.QtWidgets import QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton, QDialog, QComboBox, QDoubleSpinBox, QTabWidget, QDateTimeEdit, QFileDialog, QCheckBox, QFrame, QGroupBox, QScrollArea, QSizePolicy, QMessageBox
 from PyQt5.QtCore import QTimer, Qt, pyqtSignal, QDateTime
 from PyQt5.QtGui import QFont, QIcon
 import pyqtgraph as pg
 import numpy as np
 from worker_manager import WorkerManager
 from database_manager import DatabaseManager
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from window_focus import focus_window, is_running, DAQ_TITLE, DAQ_PROC, HV_TITLE
 
 # Dark Box #1/#2 were swapped in config_precal.json's arduino_settings.sensors
 # on 2026-07-27 17:42 (pin 2 was mislabeled "Dark Box #1", pin 3 "Dark Box #2" --
@@ -86,6 +88,8 @@ class MonitoringApp(QMainWindow):
         pg.setConfigOption('background', self.styles['background_color']); pg.setConfigOption('foreground', self.styles['font_color_main'])
         self.plot_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
         self._is_closing = False
+        self._no_current_since = {}     # ch -> time the no-current condition started
+        self._no_current_alerted = set()  # channels already popped up for this occurrence
         self.temp_colors = ['#ff4c4c', '#ff8533', '#ffb366', '#ff66b2', '#ff3399']  # Warm shades
         self.humi_colors = ['#33ccff', '#33ffcc', '#3366ff', '#00ecc6', '#50fa7b']  # Cool shades
         
@@ -279,6 +283,12 @@ class MonitoringApp(QMainWindow):
             QPushButton:pressed { background-color: #6272a4; border: 2px inset #555555; }
         """)
         self.all_clear_alarm_btn.clicked.connect(self.all_clear_alarm)
+
+        self.goto_daq_btn = QPushButton("⇄ Go to DAQ Panel")
+        self.goto_daq_btn.setFont(font_large)
+        self.goto_daq_btn.setMinimumHeight(35)
+        self.goto_daq_btn.setStyleSheet("background-color: #007ACC; color: white; border-radius: 4px; font-weight: bold; padding: 5px;")
+        self.goto_daq_btn.clicked.connect(self.go_to_daq_panel)
         
         # 대시보드 내부 배치 (독립된 좌표계)
         dash_layout.addWidget(self.env_status_label, 0, 0, 2, 1)
@@ -286,7 +296,8 @@ class MonitoringApp(QMainWindow):
         dash_layout.addWidget(self.log_status_label, 1, 1, 1, 1)
         dash_layout.addWidget(self.interlock_indicator, 0, 2, 1, 1)
         dash_layout.addWidget(self.control_panel_btn, 0, 3, 1, 1)
-        dash_layout.addWidget(self.all_clear_alarm_btn, 1, 2, 1, 2)
+        dash_layout.addWidget(self.all_clear_alarm_btn, 1, 2, 1, 1)
+        dash_layout.addWidget(self.goto_daq_btn, 1, 3, 1, 1)
         
         # 각 영역의 비율 고정 (ENV 넓게, 중앙 적당히, 우측 버튼들 고정)
         dash_layout.setColumnStretch(0, 2)
@@ -690,10 +701,55 @@ class MonitoringApp(QMainWindow):
             return "RAMP DOWN", "#e6a817"
         return "ON", "#2ca02c"
 
+    # A connected PMT base draws ~260-330 uA at operating HV; ~0 means the HV
+    # never reaches the tube (loose SHV connector, wrong channel).
+    NO_CURRENT_MIN_V = 500.0
+    NO_CURRENT_MAX_I = 10.0
+    NO_CURRENT_HOLD_S = 10.0
+
+    def _no_current(self, ch, stat, v, i):
+        """True once a channel has been ON (not ramping) with no current for HOLD_S."""
+        try:
+            st, v, i = int(stat), float(v), float(i)
+            bad = (st & 1) and not (st & 0b110) and v >= self.NO_CURRENT_MIN_V and i < self.NO_CURRENT_MAX_I
+        except (TypeError, ValueError):
+            bad = False
+        if not bad:
+            self._no_current_since.pop(ch, None)
+            self._no_current_alerted.discard(ch)
+            return False
+        start = self._no_current_since.setdefault(ch, time.time())
+        return time.time() - start >= self.NO_CURRENT_HOLD_S
+
+    def _popup_no_current(self, chs):
+        names = ", ".join(f"Ch{c}" for c in chs)
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Critical)
+        box.setWindowTitle("HV: No Current")
+        box.setText(f"{names} is ON but draws no current.")
+        box.setInformativeText("HV is not reaching the PMT. Check the HV (SHV) cable at the PMT base "
+                               "and that it is on the right channel.\n\nThis message is shown once; "
+                               "the red status stays until current returns.")
+        box.setModal(False)
+        box.show()
+
+    def go_to_daq_panel(self):
+        result = focus_window(DAQ_TITLE)
+        if result == 'raised':
+            return
+        if result == 'no-window':
+            if is_running(DAQ_PROC):
+                QMessageBox.information(self, "DAQ Panel", "DAQ Control is running but its window is not ready yet.")
+            else:
+                QMessageBox.warning(self, "DAQ Panel", "DAQ Control is not running.\nStart it from the Launcher.")
+            return
+        QMessageBox.warning(self, "DAQ Panel", f"Could not switch to the DAQ panel.\n{result}")
+
     def update_indicators(self):
         is_interlocked = False
         warn_channels = []   # (ch, pct) approaching trip current, not tripped yet
         causes_by_channel = {}   # ch -> tuple(causes), grouped below into trip_causes
+        no_current_channels = []
         for i, data in self.latest_data['sensors'].items():
             if i not in self.sensor_labels: continue
             disp = self.sensor_labels[i]['display']
@@ -717,6 +773,13 @@ class MonitoringApp(QMainWindow):
             if causes:
                 is_interlocked = True
                 causes_by_channel[ch] = tuple(causes)
+
+            i_chk = data.get('ih') if self.is_dual_current else data.get('i')
+            if self._no_current(ch, stat, data.get('v'), i_chk):
+                no_current_channels.append(ch)
+                if 'stat' in self.hv_labels[ch]:
+                    self.hv_labels[ch]['stat'].setText("⚠ NO CURRENT")
+                    self.hv_labels[ch]['stat'].setStyleSheet("color: #d62728; font-weight: bold;")
 
             # Early warning: current trending toward the trip threshold (ISet)
             # even though nothing has tripped yet.
@@ -779,6 +842,16 @@ class MonitoringApp(QMainWindow):
                 trip_causes.append(f"{ch_label}: {', '.join(causes)}")
             self.interlock_indicator.setText("HV: " + " | ".join(trip_causes))
             self.interlock_indicator.setStyleSheet("background-color: #d62728; color: white; font-weight: bold; padding: 5px; border-radius: 4px;")
+        elif no_current_channels:
+            self.blink_timer.stop()
+            self.all_clear_alarm_btn.setStyleSheet("background-color: #44475a; color: white; border-radius: 4px; font-weight: bold; padding: 5px;")
+            names = ", ".join(f"Ch{c}" for c in no_current_channels)
+            self.interlock_indicator.setText(f"HV: ⚠ NO CURRENT ({names}) — check HV cable")
+            self.interlock_indicator.setStyleSheet("background-color: #d62728; color: white; font-weight: bold; padding: 5px; border-radius: 4px;")
+            new = [c for c in no_current_channels if c not in self._no_current_alerted]
+            if new:
+                self._no_current_alerted.update(new)
+                self._popup_no_current(new)
         elif warn_channels:
             self.blink_timer.stop()
             self.all_clear_alarm_btn.setStyleSheet("background-color: #44475a; color: white; border-radius: 4px; font-weight: bold; padding: 5px;")
@@ -1004,7 +1077,11 @@ def load_config(config_file):
 
 if __name__ == '__main__':
     signal.signal(signal.SIGINT, signal.SIG_DFL)
+    # An inherited SIGCHLD=SIG_IGN makes multiprocessing's is_alive() never turn False.
+    signal.signal(signal.SIGCHLD, signal.SIG_DFL)
     app = QApplication(sys.argv)
+    import instance_lock
+    instance_lock.ensure_single_qt("hv", HV_TITLE)
 
     icon_path = '/home/precalkor/Integrated_Control_SW/HV_Control_SW/icons/HVcontrol.ico'
     if os.path.exists(icon_path):

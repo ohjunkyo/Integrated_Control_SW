@@ -59,12 +59,23 @@ class ArduinoWorker(QObject):
             if not self.ser or not self.ser.is_open:
                 return
 
-            if self.ser.in_waiting > 0:
+            # Arduino pushes 3 sensors every 2s (~1.5 lines/sec) unconditionally,
+            # but this poll only fires once per second -- a single `if` + one
+            # readline() per tick reads slower than the Arduino writes, so the
+            # OS serial buffer backlog grows without bound the longer the app
+            # runs. Symptoms match exactly: displayed values drift further
+            # behind real time, and eventually a buffer-full mid-line split
+            # garbles a line's "SENSOR:i,..." format, which fails the parser
+            # silently -- if that keeps happening to the same index, that one
+            # channel looks "dead" while the others keep updating. Draining
+            # everything currently buffered on every tick (instead of one line)
+            # keeps consumption >= production, so no backlog can accumulate.
+            while self.ser.in_waiting > 0:
                 line = self.ser.readline().decode('utf-8', errors='ignore').strip()
-                
+
                 ## 1. 🚨 터미널 확인용: 아두이노가 실제로 뭐라고 보내는지 출력합니다.
-                #print(f"👉 [Arduino Data] {line}") 
-                
+                #print(f"👉 [Arduino Data] {line}")
+
                 # 2. 안전하게 쪼개기 (out of range 및 띄어쓰기 방어막)
                 parts = {}
                 for p in line.split(','):
@@ -72,16 +83,16 @@ class ArduinoWorker(QObject):
                     if len(key_val) == 2:
                         # [핵심] .strip()을 추가해서 " TEMP" 처럼 공백이 들어와도 "TEMP"로 완벽히 인식하게 만듭니다.
                         parts[key_val[0].strip()] = key_val[1].strip()
-                
+
                 # 3. 데이터 파싱
                 if "SENSOR" in parts:
                     idx = int(parts.get("SENSOR", -1))
                     if idx != -1:
-                        if "ERROR" in parts: 
+                        if "ERROR" in parts:
                             self.data_ready.emit(idx, np.nan, np.nan)
                         elif "TEMP" in parts and "HUMI" in parts:
                             self.data_ready.emit(idx, float(parts["TEMP"]), float(parts["HUMI"]))
-                            
+
         except (OSError, serial.SerialException) as e:
             print(f"⚠️ Serial communication lost: {e}")
             self.connection_status.emit("ENV Status: Serial Lost! Retrying...")
