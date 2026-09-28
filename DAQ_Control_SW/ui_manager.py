@@ -889,8 +889,19 @@ class UIManager:
     def update_ip_display(self, ip_info):
         pass
 
+    AUTO_DIAG_AFTER = 3          # consecutive failed 2 s probes before diagnosing
+
     def update_daq_connection_status(self, is_connected):
         self.daq_connected_flag = is_connected
+        if is_connected:
+            self._daq_fail_streak = 0
+            self._auto_diag_done = False
+            return
+        self._daq_fail_streak = getattr(self, "_daq_fail_streak", 0) + 1
+        if self._daq_fail_streak >= self.AUTO_DIAG_AFTER and not getattr(self, "_auto_diag_done", False) \
+                and hasattr(self, "_diag_out"):
+            self._auto_diag_done = True
+            self._run_daq_diagnostics(auto=True)
 
     def open_config_window(self):
         if self.controller.config_manager:
@@ -2340,137 +2351,88 @@ class UIManager:
     # DAQ Diagnostics tab
     # ------------------------------------------------------------------
     def _create_daq_diagnostics_tab(self, parent):
-        """DAQ connection diagnostics + one-click recovery panel."""
-        canvas = tk.Canvas(parent, highlightthickness=0)
-        vsb = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=vsb.set)
-        vsb.pack(side=tk.RIGHT, fill=tk.Y)
-        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        inner = ttk.Frame(canvas)
-        win_id = canvas.create_window((0, 0), window=inner, anchor="nw")
-        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>", lambda e: canvas.itemconfig(win_id, width=e.width))
+        """DAQ connection check: one button diagnoses, then offers the fix."""
+        outer = ttk.Frame(parent, padding=10)
+        outer.pack(fill=tk.BOTH, expand=True)
 
-        # ── Section 1: Live Status ─────────────────────────────────────
-        s1 = ttk.LabelFrame(inner, text="Live Status", padding=10)
+        s1 = ttk.LabelFrame(outer, text="DAQ connection", padding=12)
         s1.pack(fill=tk.X, pady=(0, 8))
-
-        self._diag_status_lbl = ttk.Label(s1, text="Not checked yet.", font=("Helvetica", 11, "bold"))
+        self._diag_status_lbl = ttk.Label(s1, text="Not checked yet.", font=("Helvetica", 13, "bold"))
         self._diag_status_lbl.pack(anchor="w")
+        self._diag_detail_lbl = ttk.Label(s1, text="Press Run Diagnostics Now to check the digitizer.",
+                                          font=("Helvetica", 10), foreground="#5f6672",
+                                          justify=tk.LEFT, wraplength=900)
+        self._diag_detail_lbl.pack(anchor="w", pady=(4, 0))
+        row = ttk.Frame(s1)
+        row.pack(anchor="w", pady=(10, 0))
+        self._diag_btn = ttk.Button(row, text="🔍 Run Diagnostics Now", command=self._run_daq_diagnostics)
+        self._diag_btn.pack(side=tk.LEFT)
+        ttk.Button(row, text="Known problems and manual tools…",
+                   command=self._open_daq_diag_details).pack(side=tk.LEFT, padx=(8, 0))
 
-        self._diag_detail_lbl = ttk.Label(s1, text="", font=("Helvetica", 9), foreground="#888",
-                                          justify=tk.LEFT, wraplength=600)
-        self._diag_detail_lbl.pack(anchor="w", pady=(2, 0))
-
-        ttk.Button(s1, text="🔍 Run Diagnostics Now", command=self._run_daq_diagnostics).pack(
-            anchor="w", pady=(8, 0))
-
-        # ── Section 2: Known Causes ────────────────────────────────────
-        s2 = ttk.LabelFrame(inner, text="Known Causes & Explanations", padding=10)
-        s2.pack(fill=tk.X, pady=(0, 8))
-
-        causes = [
-            ("🔌  USB Driver Not Loaded  (most common)",
-             "The CAENUSBdrvB kernel module must be loaded for the CAEN digitizer to be reachable.\n"
-             "If it is not registered in /etc/modules-load.d/, it will NOT auto-load after a reboot,\n"
-             "and execute_DAQ_v2 -j will return CommError (-1).\n"
-             "Fix: click 'Register Auto-Load on Boot' below — after that, reboots will load it automatically."),
-            ("⚡  USB Re-enumeration Delay After Power Cycle",
-             "When the CAEN digitizer is power-cycled, the OS needs 2–5 seconds to re-enumerate the USB device.\n"
-             "Attempting to connect before enumeration finishes will fail. Wait a few seconds, then retry."),
-            ("🔒  USB Device File Permission Issue",
-             "Access to /dev/bus/usb/... requires the current user to be in the 'dialout' or 'plugdev' group.\n"
-             "If neither group is present, the open call will fail with EACCES (Permission denied).\n"
-             "Fix: click 'Add USB Permission Groups' below, then log out and back in."),
-            ("📚  Shared Library Path Conflict",
-             "A stale 32-bit libCAENComm.so in /usr/lib may shadow the correct 64-bit version in\n"
-             "/home/precalkor/ADC/lib, causing 'wrong ELF class' at runtime.\n"
-             "This program already prepends the correct path via LD_LIBRARY_PATH.\n"
-             "If running execute_DAQ_v2 directly in a terminal, set LD_LIBRARY_PATH manually first."),
-        ]
-
-        for title, desc in causes:
-            f = ttk.Frame(s2)
-            f.pack(fill=tk.X, pady=(0, 8))
-            ttk.Label(f, text=title, font=("Helvetica", 10, "bold")).pack(anchor="w")
-            ttk.Label(f, text=desc, font=("Helvetica", 9), foreground="#666",
-                      justify=tk.LEFT, wraplength=600).pack(anchor="w", padx=(12, 0))
-
-        # ── Section 3: Recovery Actions ────────────────────────────────
-        s3 = ttk.LabelFrame(inner, text="Recovery Actions  (sudo required)", padding=10)
-        s3.pack(fill=tk.X, pady=(0, 8))
-
-        ttk.Label(s3,
-                  text="These buttons run sudo commands. A password prompt may appear in the output window below.",
-                  font=("Helvetica", 9), foreground="#888").pack(anchor="w", pady=(0, 8))
-
-        btn_frame = ttk.Frame(s3)
-        btn_frame.pack(fill=tk.X)
-
-        actions = [
-            ("▶  Load Driver Now\n(modprobe)",
-             "sudo modprobe CAENUSBdrvB",
-             "Loads the USB driver immediately without rebooting.\nTry connecting to the DAQ right after."),
-            ("🔁  Reinstall Drivers\n(auto_DAQ_setup.sh)",
-             "sudo bash /home/precalkor/ADC/auto_DAQ_setup.sh",
-             "Recompiles and reinstalls all CAEN drivers.\nUse this if the driver broke after a kernel update.\n(Takes a while.)"),
-            ("📌  Register Auto-Load\non Boot (caen.conf)",
-             "echo 'CAENUSBdrvB' | sudo tee /etc/modules-load.d/caen.conf",
-             "Registers the driver to load automatically at every boot.\nAfter this, running auto_DAQ_setup.sh on each reboot is no longer needed."),
-            ("🔒  Add USB Permission\nGroups (dialout)",
-             "sudo usermod -aG dialout $(whoami) && sudo usermod -aG plugdev $(whoami)",
-             "Adds the current user to dialout and plugdev groups.\nLog out and back in for the change to take effect."),
-        ]
-
-        for i, (label, cmd, tip) in enumerate(actions):
-            col = ttk.Frame(btn_frame)
-            col.grid(row=0, column=i, padx=(0, 8), sticky="n")
-            tk.Button(col, text=label, command=lambda c=cmd: self._diag_run_cmd(c),
-                      bg="#374151", fg="white", font=("Helvetica", 9),
-                      relief="flat", padx=8, pady=6, justify=tk.CENTER).pack(fill=tk.X)
-            ttk.Label(col, text=tip, font=("Helvetica", 8), foreground="#666",
-                      justify=tk.LEFT, wraplength=180).pack(anchor="w", pady=(4, 0))
-
-        # ── Section 4: Individual Checks ──────────────────────────────
-        s4 = ttk.LabelFrame(inner, text="Driver & Permission Checks", padding=10)
-        s4.pack(fill=tk.X, pady=(0, 8))
-
-        diag_btns = ttk.Frame(s4)
-        diag_btns.pack(anchor="w", pady=(0, 6))
-        ttk.Button(diag_btns, text="Kernel Module State",
-                   command=lambda: self._diag_run_cmd(
-                       "lsmod | grep -i caen || echo '[NOT LOADED] CAENUSBdrvB module is not loaded'")).pack(
-                       side=tk.LEFT, padx=(0, 6))
-        ttk.Button(diag_btns, text="USB Device List",
-                   command=lambda: self._diag_run_cmd(
-                       "lsusb | grep -i caen || echo '[NOT FOUND] No CAEN USB device detected'")).pack(
-                       side=tk.LEFT, padx=(0, 6))
-        ttk.Button(diag_btns, text="User Groups & Permissions",
-                   command=lambda: self._diag_run_cmd(
-                       "id && ls -la /dev/bus/usb/ 2>/dev/null | head -5")).pack(
-                       side=tk.LEFT, padx=(0, 6))
-        ttk.Button(diag_btns, text="Library Path Check",
-                   command=lambda: self._diag_run_cmd(
-                       "ldconfig -p | grep -i caen; echo '---'; ls /home/precalkor/ADC/lib/*.so* 2>/dev/null")).pack(
-                       side=tk.LEFT)
-
-        # ── Section 5: Output window ───────────────────────────────────
-        s5 = ttk.LabelFrame(inner, text="Command Output", padding=6)
-        s5.pack(fill=tk.BOTH, expand=True, pady=(0, 0))
-
-        out_bar = ttk.Frame(s5)
-        out_bar.pack(fill=tk.X)
-        ttk.Label(out_bar, text="Output:", font=("Helvetica", 9)).pack(side=tk.LEFT)
-        ttk.Button(out_bar, text="Clear", command=lambda: (
-            self._diag_out.config(state="normal"),
-            self._diag_out.delete("1.0", tk.END),
-            self._diag_out.config(state="disabled")
-        )).pack(side=tk.RIGHT)
-
+        s2 = ttk.LabelFrame(outer, text="Output", padding=6)
+        s2.pack(fill=tk.BOTH, expand=True)
+        bar = ttk.Frame(s2)
+        bar.pack(fill=tk.X)
+        ttk.Button(bar, text="Clear", command=lambda: (
+            self._diag_out.config(state="normal"), self._diag_out.delete("1.0", tk.END),
+            self._diag_out.config(state="disabled"))).pack(side=tk.RIGHT)
         self._diag_out = scrolledtext.ScrolledText(
-            s5, height=10, wrap=tk.WORD, state="disabled",
+            s2, height=12, wrap=tk.WORD, state="disabled",
             bg="#1e1e1e", fg="#d4d4d4", font=("Courier", 9))
         self._diag_out.pack(fill=tk.BOTH, expand=True, pady=(4, 0))
+
+    # (problem, fix) -- one line each; shown in the details window.
+    DAQ_DIAG_CAUSES = [
+        ("Digitizer not responding", "Kernel logs 'read: maxretry timeout': power-cycle the digitizer."),
+        ("Digitizer not on USB", "No CAEN device in lsusb: check its power switch and USB cable."),
+        ("Driver not loaded", "CAENUSBdrvB is not loaded: load it (sudo)."),
+        ("Driver not built", "No CAENUSBdrvB for this kernel (after an update): reinstall drivers (sudo, slow)."),
+        ("Permission denied", "User lacks dialout/plugdev: add the groups (sudo), then log in again."),
+        ("Just switched on", "USB needs 2-5 s to appear: wait, then run diagnostics again."),
+    ]
+
+    DAQ_DIAG_MANUAL = [
+        ("Load driver", "/usr/sbin/modprobe CAENUSBdrvB"),
+        ("Load driver at boot", "/usr/bin/bash -c \"echo CAENUSBdrvB > /etc/modules-load.d/caen.conf\""),
+        ("Reinstall drivers", "/usr/bin/bash /home/precalkor/ADC/auto_DAQ_setup.sh"),
+        ("Add USB groups", "/usr/bin/bash -c \"usermod -aG dialout,plugdev precalkor\""),
+    ]
+
+    def _open_daq_diag_details(self):
+        win = getattr(self, "_diag_details_win", None)
+        if win is not None and win.winfo_exists():
+            win.lift()
+            return
+        win = tk.Toplevel(self.master)
+        self._diag_details_win = win
+        win.title("DAQ connection -- known problems")
+        body = ttk.Frame(win, padding=12)
+        body.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(body, text="Known problems", font=("Helvetica", 11, "bold")).pack(anchor="w")
+        for title, line in self.DAQ_DIAG_CAUSES:
+            r = ttk.Frame(body)
+            r.pack(fill=tk.X, pady=1)
+            ttk.Label(r, text=title, width=26, font=("Helvetica", 10, "bold")).pack(side=tk.LEFT)
+            ttk.Label(r, text=line, font=("Helvetica", 10)).pack(side=tk.LEFT)
+        ttk.Label(body, text="Manual tools (ask for the password)", font=("Helvetica", 11, "bold")).pack(
+            anchor="w", pady=(12, 2))
+        r = ttk.Frame(body)
+        r.pack(anchor="w")
+        for label, cmd in self.DAQ_DIAG_MANUAL:
+            ttk.Button(r, text=label, command=lambda c=cmd: self._diag_run_cmd("pkexec " + c)).pack(
+                side=tk.LEFT, padx=(0, 6))
+        ttk.Label(body, text="Checks", font=("Helvetica", 11, "bold")).pack(anchor="w", pady=(12, 2))
+        r = ttk.Frame(body)
+        r.pack(anchor="w")
+        for label, cmd in (
+                ("Kernel module", "lsmod | grep -i caen || echo '[NOT LOADED] CAENUSBdrvB'"),
+                ("USB devices", "lsusb | grep -i caen || echo '[NOT FOUND] no CAEN USB device'"),
+                ("Read timeouts", "journalctl -k --since '-6h' --no-pager | grep 'maxretry timeout' | tail -5"),
+                ("Groups", "id")):
+            ttk.Button(r, text=label, command=lambda c=cmd: self._diag_run_cmd(c)).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Label(body, text="Output appears in the DAQ Diag tab.", foreground="#5f6672").pack(
+            anchor="w", pady=(10, 0))
 
     def _diag_append(self, text):
         """Thread-safe append to diagnostics output window."""
@@ -2481,86 +2443,125 @@ class UIManager:
             self._diag_out.config(state="disabled")
         self.master.after(0, _apply)
 
-    def _diag_run_cmd(self, cmd):
-        """Run a shell command and stream output to the diagnostics pane."""
+    def _diag_run_cmd(self, cmd, on_done=None):
+        """Run a shell command, stream output to the diagnostics pane."""
         self._diag_append(f"\n$ {cmd}\n")
 
         def _run():
+            rc = None
             try:
-                proc = subprocess.Popen(
-                    cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True)
+                proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT, text=True)
                 for line in proc.stdout:
                     self._diag_append(line)
-                proc.wait()
-                self._diag_append(f"[exit code: {proc.returncode}]\n")
+                rc = proc.wait()
+                self._diag_append(f"[exit code: {rc}]\n")
             except Exception as e:
                 self._diag_append(f"[ERROR] {e}\n")
+            if on_done:
+                self.master.after(0, lambda: on_done(rc))
 
         threading.Thread(target=_run, daemon=True).start()
 
-    def _run_daq_diagnostics(self):
-        """Run all diagnostic checks and update the Live Status section."""
-        self._diag_append("\n=== DAQ Connection Diagnostics ===\n")
+    def _diagnose_daq(self):
+        """Run the checks (worker thread). Returns (title, fix, action) where
+        action is None or (button_label, pkexec_command, recheck_after_s)."""
+        sh = lambda c: subprocess.run(c, shell=True, capture_output=True, text=True).stdout.strip()
+        loaded = bool(sh("lsmod | grep -i CAENUSBdrvB"))
+        built = bool(sh("modinfo -F filename CAENUSBdrvB 2>/dev/null"))
+        on_usb = bool(sh("lsusb | grep -i caen"))
+        hangs = sh("journalctl -k --since '-3h' --no-pager 2>/dev/null | grep -c 'maxretry timeout'") or "0"
+        self._diag_append(f"driver loaded: {loaded}   driver built: {built}   on USB: {on_usb}   "
+                          f"read timeouts (3 h): {hangs}\n")
+        probe_ok, probe_out = False, ""
+        try:
+            daq_path = self.controller.config_manager.get_config_value('BasePath')
+            exe = os.path.join(daq_path, 'execute_DAQ_v2')
+            r = subprocess.run([exe, '-j'], capture_output=True, text=True, timeout=8,
+                               env=self.controller._daq_check_env(daq_path))
+            probe_ok, probe_out = r.returncode == 0, (r.stdout + r.stderr).strip()
+        except Exception as e:
+            probe_out = str(e)
+        self._diag_append(f"execute_DAQ_v2 -j: {'OK' if probe_ok else 'FAILED'}  {probe_out[-200:]}\n")
+
+        if probe_ok:
+            return ("● DAQ connected", "The digitizer answers.", None)
+        if not built:
+            return ("✗ Driver not built for this kernel",
+                    "Reinstall the CAEN drivers (takes a few minutes).",
+                    ("Reinstall drivers", "/usr/bin/bash /home/precalkor/ADC/auto_DAQ_setup.sh", 2))
+        if not loaded:
+            return ("✗ Driver not loaded", "Load the CAENUSBdrvB driver.",
+                    ("Load driver", "/usr/sbin/modprobe CAENUSBdrvB", 2))
+        if not on_usb:
+            return ("✗ Digitizer not on USB",
+                    "Check the digitizer power switch and USB cable, then run diagnostics again.", None)
+        if "ermission" in probe_out:
+            return ("✗ Permission denied", "Add this user to dialout/plugdev, then log out and in.",
+                    ("Add groups", "/usr/bin/bash -c \"usermod -aG dialout,plugdev precalkor\"", 0))
+        if int(hangs) > 0:
+            return ("✗ Digitizer not responding",
+                    "Switch the digitizer off, wait 10 s, switch it on, then press OK to check again.", None)
+        return ("✗ DAQ not connected", "Unknown cause -- see Output and 'Known problems'.", None)
+
+    def _run_daq_diagnostics(self, auto=False):
+        """Diagnose; manual runs then show one dialog with the fix. auto=True
+        (link just dropped) only updates the status, the log and Slack."""
+        if getattr(self, "_diag_busy", False):
+            return
+        self._diag_busy = True
+        self._diag_append("\n=== DAQ diagnostics" + (" (automatic)" if auto else "") + " ===\n")
+        try:
+            self._diag_btn.config(state="disabled")
+        except Exception:
+            pass
 
         def _run():
-            # 1. Kernel module
-            r = subprocess.run("lsmod | grep -i caen", shell=True,
-                               capture_output=True, text=True)
-            if r.stdout.strip():
-                self._diag_append(f"[OK] CAENUSBdrvB module is loaded:\n{r.stdout}")
-            else:
-                self._diag_append("[FAIL] CAENUSBdrvB module is NOT loaded.\n"
-                                  "  → Click 'Load Driver Now' to load it without rebooting.\n"
-                                  "  → Click 'Register Auto-Load on Boot' to make it permanent.\n")
-
-            # 2. USB device presence
-            r2 = subprocess.run("lsusb | grep -i caen", shell=True,
-                                capture_output=True, text=True)
-            if r2.stdout.strip():
-                self._diag_append(f"[OK] CAEN USB device detected:\n{r2.stdout}")
-            else:
-                self._diag_append("[FAIL] No CAEN USB device found in lsusb.\n"
-                                  "  → Check DAQ power and USB cable.\n")
-
-            # 3. Boot auto-load registration
-            caen_conf = "/etc/modules-load.d/caen.conf"
-            if os.path.exists(caen_conf):
-                self._diag_append(f"[OK] Boot auto-load registered: {caen_conf}\n")
-            else:
-                self._diag_append("[WARN] /etc/modules-load.d/caen.conf not found.\n"
-                                  "  → Driver may not load automatically after reboot.\n"
-                                  "  → Click 'Register Auto-Load on Boot' to fix this.\n")
-
-            # 4. execute_DAQ_v2 -j connection test
             try:
-                daq_path = self.controller.config_manager.get_config_value('BasePath')
-                exe = os.path.join(daq_path, 'execute_DAQ_v2') if daq_path else None
-                if exe and os.path.exists(exe):
-                    env = self.controller._daq_check_env(daq_path)
-                    r3 = subprocess.run([exe, '-j'], capture_output=True, text=True,
-                                        timeout=6, env=env)
-                    if r3.returncode == 0:
-                        self._diag_append(f"[OK] execute_DAQ_v2 -j succeeded (digitizer reachable)\n{r3.stdout}")
-                        self.master.after(0, lambda: (
-                            self._diag_status_lbl.config(text="● DAQ Connected", foreground="#28a745"),
-                            self._diag_detail_lbl.config(text="All checks passed.")))
-                    else:
-                        self._diag_append(f"[FAIL] execute_DAQ_v2 -j failed (exit {r3.returncode})\n"
-                                          f"  stdout: {r3.stdout.strip()}\n"
-                                          f"  stderr: {r3.stderr.strip()}\n")
-                        self.master.after(0, lambda: (
-                            self._diag_status_lbl.config(text="✗ DAQ Not Connected", foreground="#dc3545"),
-                            self._diag_detail_lbl.config(
-                                text="See output above. Load the driver or check USB, then run diagnostics again.")))
-                else:
-                    self._diag_append("[WARN] execute_DAQ_v2 not found — check BasePath in config.\n")
+                verdict = self._diagnose_daq()
             except Exception as e:
-                self._diag_append(f"[ERROR] Could not run execute_DAQ_v2: {e}\n")
-
-            self._diag_append("=== Diagnostics complete ===\n")
+                verdict = ("✗ Diagnostics failed", str(e), None)
+            self.master.after(0, lambda: self._show_diag_verdict(verdict, auto))
 
         threading.Thread(target=_run, daemon=True).start()
+
+    def _show_diag_verdict(self, verdict, auto):
+        self._diag_busy = False
+        try:
+            self._diag_btn.config(state="normal")
+        except Exception:
+            pass
+        title, fix, action = verdict
+        ok = title.startswith("●")
+        self._diag_status_lbl.config(text=title, foreground="#28a745" if ok else "#dc3545")
+        self._diag_detail_lbl.config(text=fix)
+        self._diag_append(f"=> {title}: {fix}\n")
+        if auto:
+            if not ok:
+                msg = f"DAQ lost the digitizer: {title.lstrip('✗ ')}. {fix}"
+                self.controller._log(f"[WARNING] {msg}")
+                notifier = getattr(self.controller, "notifier", None)
+                if notifier and getattr(notifier, "enabled", False):
+                    try:
+                        notifier.send("DAQ not connected", msg, level="warning",
+                                      dedupe_key="daq_diag_" + title, blocking=False)
+                    except Exception:
+                        pass
+            return
+        if ok:
+            messagebox.showinfo("DAQ diagnostics", "DAQ connected.")
+            return
+        head = title.lstrip("✗ ")
+        if action is None:
+            if messagebox.askokcancel("DAQ diagnostics", f"{head}.\n\n{fix}\n\nOK: check again.",
+                                      icon="warning"):
+                self._run_daq_diagnostics()
+            return
+        label, cmd, wait_s = action
+        if messagebox.askyesno("DAQ diagnostics", f"{head}.\n\n{label} now? (asks for the password)",
+                               icon="warning"):
+            self._diag_run_cmd("pkexec " + cmd, on_done=lambda rc: self.master.after(
+                int(wait_s * 1000), self._run_daq_diagnostics))
 
     # ------------------------------------------------------------------
     # Waveform Inspection — embedded panel
@@ -2716,6 +2717,26 @@ class UIManager:
         progress_fill = tk.Frame(progress_track, bg=accent)
         progress_fill.place(relx=0, rely=0, relwidth=0.0, relheight=1.0)
 
+        # General Scan only: a status card (point, ETA, HV, laser, last values,
+        # shifter, recent runs) above the log, same colors as the log so it
+        # reads as one panel. Filled by render_scan_card() from live_status.py.
+        card = None
+        if slot == "general_scan":
+            card = tk.Text(parent, height=12, wrap=tk.NONE, state="disabled",
+                           bg=body_bg, fg="#c7cedb", padx=12, pady=8, relief="flat",
+                           borderwidth=0, highlightthickness=0, cursor="arrow",
+                           font=(mono, 11))
+            card.pack(fill=tk.X)
+            card.tag_config("card_big", foreground="#e8ecf4", font=(mono, 16, "bold"))
+            card.tag_config("card_sub", foreground="#9aa4b8", font=(mono, 11))
+            card.tag_config("card_key", foreground="#9aa4b8")
+            card.tag_config("card_val", foreground="#c7cedb")
+            card.tag_config("card_ok", foreground=accent)
+            card.tag_config("card_warn", foreground="#e8b13d")
+            card.tag_config("card_bad", foreground="#f48771", font=(mono, 11, "bold"))
+            card.tag_config("card_dim", foreground="#6b7488", font=(mono, 10))
+            card.tag_config("card_sep", foreground="#2a2f3d", font=(mono, 5))
+
         # General Scan's progress state used to live in a separate Frame
         # (card) stacked above the console text -- three rounds of visual bugs
         # (light/dark seam, an empty stretched box, a stray focus-ring line at
@@ -2745,17 +2766,18 @@ class UIManager:
         hbar.pack(side=tk.BOTTOM, fill=tk.X)
         text.config(xscrollcommand=hbar.set)
         if slot == "general_scan":
-            text.tag_config("scan_point",  foreground="#e8ecf4", font=(mono, 14, "bold"))
-            text.tag_config("scan_detail", foreground="#9aa4b8", font=(mono, 11))
+            text.tag_config("scan_point",  foreground="#e8ecf4", font=(mono, 1))
+            text.tag_config("scan_detail", foreground="#9aa4b8", font=(mono, 1))
             text.tag_config("scan_sep",    foreground="#2a2f3d", font=(mono, 4))
             # The raw script output (Ped/Evt telemetry etc.) is hidden by
             # default now instead of always scrolling under the progress
             # block -- matches the approved mockup's "Show raw output" link
             # (2026-08-29, user-provided mockup screenshot). "raw_all" is
             # stacked onto every console_write() insert for this slot in
-            # addition to that line's own color tag; elide just needs the
-            # tag present anywhere on a range, so toggling this one tag's
-            # elide flag hides/reveals the entire scrolling log at once.
+            # addition to that line's own color tag. Tk resolves -elide by
+            # tag PRIORITY (creation order), and the per-point pthdrN/ptbodyN
+            # tags are created later, so raw_all only wins while it is kept
+            # raised above them -- see _toggle_console_raw / console_begin_point.
             text.tag_config("raw_all", elide=True)
             text.tag_config("raw_toggle", foreground="#5b8cff", font=(mono, 10, "underline"))
             text.tag_bind("raw_toggle", "<Enter>", lambda e, w=text: w.config(cursor="hand2"))
@@ -2770,7 +2792,7 @@ class UIManager:
             # and only its label text is rewritten in place, by
             # _toggle_console_raw(). Everything from line 5 on is the
             # scrolling raw log.
-            text.insert("1.0", "No scan running\n", "scan_point")
+            text.insert("1.0", "\n", "scan_point")
             text.insert(tk.END, "\n", "scan_detail")
             text.insert(tk.END, "▶ Show raw output\n", "raw_toggle")
             text.insert(tk.END, "─" * 40 + "\n", "scan_sep")
@@ -2800,7 +2822,8 @@ class UIManager:
         # 응답할 방법이 없던 문제를 해결. 기본은 비밀번호 마스킹(show="*"),
         # 체크박스로 평문 표시 전환 가능 (일반 확인 프롬프트 y/n 등에 유용).
         input_bar = tk.Frame(parent, bg=bar_bg)
-        input_bar.pack(fill=tk.X)
+        if slot != "general_scan":
+            input_bar.pack(fill=tk.X)
         tk.Label(input_bar, text="⌨ Input:", font=(mono, 10), bg=bar_bg, fg="#8b95a8",
                  padx=10).pack(side=tk.LEFT)
         input_var = tk.StringVar()
@@ -2839,7 +2862,40 @@ class UIManager:
             "progress_fill": progress_fill,
             "cur_body_tag": None, "pt_counter": 0,
             "ansi_tag": None, "ansi_bold": False, "ansi_fg": None,
-            "is_scan_slot": slot == "general_scan"}
+            "is_scan_slot": slot == "general_scan", "card": card, "prog": None}
+        if card is not None:
+            self._refresh_scan_card(slot)
+
+    CARD_REFRESH_MS = 5000
+
+    def _refresh_scan_card(self, slot):
+        self.render_scan_card(slot)
+        try:
+            self.master.after(self.CARD_REFRESH_MS, lambda: self._refresh_scan_card(slot))
+        except tk.TclError:
+            pass
+
+    def render_scan_card(self, slot="general_scan"):
+        pane = self.console_panes.get(slot)
+        card = pane.get("card") if pane else None
+        if card is None:
+            return
+        try:
+            import live_status
+            lines = live_status.build(self.controller, pane.get("prog"))
+        except Exception as e:
+            lines = [[(f"status unavailable: {e}", "card_bad")]]
+        try:
+            card.config(state="normal")
+            card.delete("1.0", tk.END)
+            for k, segs in enumerate(lines):
+                for txt, tag in segs:
+                    card.insert(tk.END, txt, tag)
+                if k < len(lines) - 1:
+                    card.insert(tk.END, "\n")
+            card.config(state="disabled", height=len(lines) + 2)
+        except tk.TclError:
+            pass
 
     def _pick_mono_font(self):
         """현재 시스템에 실제로 설치된 모노스페이스 폰트를 골라 반환한다."""
@@ -3022,12 +3078,19 @@ class UIManager:
         if not pane or not pane.get("is_scan_slot"):
             return
         w = pane["text"]
+        now_hidden = not pane.get("raw_hidden", True)
+        pane["raw_hidden"] = now_hidden
         try:
-            elided = w.tag_cget("raw_all", "elide")
+            w.tag_config("raw_all", elide=now_hidden)
+            # Hidden: raw_all must outrank the per-point fold tags so it hides
+            # headers and folded bodies too. Shown: drop it underneath them so
+            # each point's own ▸ fold state governs again.
+            if now_hidden:
+                w.tag_raise("raw_all")
+            else:
+                w.tag_lower("raw_all")
         except tk.TclError:
             return
-        now_hidden = not (elided in ("1", 1, True))
-        w.tag_config("raw_all", elide=now_hidden)
         label = "▶ Show raw output\n" if now_hidden else "▼ Hide raw output\n"
         try:
             w.config(state="normal")
@@ -3049,26 +3112,13 @@ class UIManager:
         pane = self.console_panes.get(slot)
         if not pane or not pane.get("is_scan_slot"):
             return
-        point_txt = f"Point {current}/{total}" if total else f"Point {current}"
-        detail_txt = f"{axis}-Axis  ·  Tilt {tilt}°" if axis is not None else ""
-        if eta_seconds is not None and eta_seconds >= 0:
-            m, s = divmod(int(eta_seconds), 60)
-            h, m = divmod(m, 60)
-            eta_txt = f"{h}h {m:02d}m" if h else f"{m}m {s:02d}s"
-            detail_txt = f"{detail_txt}   ·   ETA {eta_txt}" if detail_txt else f"ETA {eta_txt}"
         try:
-            w = pane["text"]
-            w.config(state="normal")
-            # The pinned block is always exactly 3 lines (point / detail /
-            # separator) at the very top -- delete and reinsert rather than
-            # tracking marks, since the block's own content never changes
-            # length in a way that matters here.
-            w.delete("1.0", "3.0")
-            w.insert("1.0", point_txt + "\n", "scan_point")
-            w.insert("2.0", detail_txt + "\n", "scan_detail")
-            w.config(state="disabled")
-        except tk.TclError:
-            pass
+            tilt_v = float(tilt) if tilt is not None else None
+        except (TypeError, ValueError):
+            tilt_v = None
+        pane["prog"] = {"cur": current, "tot": total, "axis": axis, "tilt": tilt_v,
+                        "eta": eta_seconds, "at": time.time()}
+        self.render_scan_card(slot)
         self.console_set_progress(current, total, slot=slot)
 
     def console_begin_point(self, slot, label):
@@ -3090,7 +3140,6 @@ class UIManager:
         pane["pt_counter"] += 1
         body_tag = f"ptbody{pane['pt_counter']}"
         header_tag = f"pthdr{pane['pt_counter']}"
-        widget.tag_config(header_tag, elide=False)
 
         def _toggle(event=None, w=widget, t=body_tag):
             try:
@@ -3107,6 +3156,8 @@ class UIManager:
         tags = ("pt_header", header_tag, "raw_all") if pane.get("is_scan_slot") \
                else ("pt_header", header_tag)
         widget.insert(tk.END, f"▸ {label}\n", tags)
+        if pane.get("is_scan_slot") and pane.get("raw_hidden", True):
+            widget.tag_raise("raw_all")
         pane["cur_body_tag"] = body_tag
         widget.config(state="disabled")
         if pane["autoscroll"].get():
@@ -3124,7 +3175,7 @@ class UIManager:
         # "Show raw output" toggle can hide/reveal it as one block -- capture
         # the start mark now, tag the whole newly-written range once at the
         # end, regardless of which branch below actually does the writing.
-        raw_start = widget.index(tk.END) if pane.get("is_scan_slot") else None
+        raw_start = widget.index("end-1c linestart") if pane.get("is_scan_slot") else None
 
         if '\r' in text:
             # \r = carriage return (C++ progress: "Processing... 73%\r" + flush).
@@ -3647,7 +3698,9 @@ class UIManager:
             tab_frame = ttk.Frame(self.laser_sub_notebook)
             self.laser_sub_notebook.add(tab_frame, text=f" {wl} ")
             
-            default_pulse = 133 if wl == "405nm" else 0.0
+            # Blank until the hardware poll fills it in; a per-wavelength default
+            # here only ever masked the real setting.
+            default_pulse = 0.0
             
             vars_dict = {
                 # [NEW] 개별 연결 상태 표시용 문자열 변수

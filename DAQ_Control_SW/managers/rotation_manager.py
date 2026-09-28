@@ -6,6 +6,7 @@ import re
 import json
 import glob
 import subprocess
+import signal
 import shutil
 import tkinter as tk
 from tkinter import messagebox, ttk
@@ -199,13 +200,21 @@ class AutomationManager:
             "threshold_preset": "",  # --threpreset VALUE; blank = bare flag (no value)
             "trg_channel": "",     # --trgch VALUE; blank = flag omitted entirely
             "trg_vth": "",         # --trgch-Vth VALUE; blank = flag omitted entirely
+            "pedestal_mode": False, # --pedestal bare flag; per-mode toggle, not an infra field
+            "auto_hittree": False,  # run RunAnalysisChain.py on each .bin ScanManager just wrote
             "work_dir": "~/hkelec/DiscreteSoftware/data/{date}/",  # cd'd into before ScanManager; {date}=YYYYMMDD
             "ssh_target": "hkpd@hkdaq",              # user@host to run the HK DAQ on
             "setup_cmd": ". ~/setup_hkelec.sh",      # sourced before ScanManager
             # ── Multi-stage pipeline (each runs ON hkpd, streamed to HK console) ──
-            # Stage 2: bring up the DPB board (nested ssh hkpd -> root@dpb-local).
-            "dpb_setup_cmd": ("ssh root@dpb-local 'cd /run/media/mmcblk0p1/scripts && "
-                              "bash run-socat-all.sh; bash run-daq.sh &'"),
+            # Stage 2: bring up the DPB board (nested ssh: HK PC -> root@<dpb_host>).
+            # The DPB board's address lives in ONE place: every consumer
+            # (this command's {dpb_host} macro and hk_dpb_alive_count) reads
+            # it from here. It used to be the alias "dpb-local" hardcoded in
+            # both, which resolves on no machine we currently use.
+            "dpb_host": "192.168.0.163",
+            "dpb_setup_cmd": ("ssh -t root@{dpb_host} 'cd /run/media/*/script && "
+                              "bash run-socat.sh 1 9001 && bash run-socat.sh 4 9004 && "
+                              "bash run-timing.sh'"),
             # Stage 3: vmodem data-processing. minicom is interactive (m/RETURN/O
             # then Ctrl-A Z), so we drive it with an auto-generated minicom
             # runscript (-S) -- the keys below are written into ~/vmodem.runscript
@@ -246,6 +255,14 @@ class AutomationManager:
         self.rot_step = 45.0
         self.safe_move_step = 15.0  
         self.rest_time = 5.0
+
+        # Per-device scan participation (2026-09-16): a General Scan can hold
+        # Device 2 (PMT1/Rot1) and/or Device 3 (PMT2/Rot2) fixed instead of
+        # scanning both together, e.g. to take PMT1-only data while PMT2
+        # sits still. Both True = existing behavior, unchanged. Set from the
+        # Scan Parameters dialog (ui_automation.py open_scan_params).
+        self.rotate_dev2 = True
+        self.rotate_dev3 = True
 
         self.scan_range = {"start": -55, "end": 55}   # TILT mechanical limit
         self.rot_range  = {"start": 0, "end": 135}     # ROTATION mechanical limit
@@ -541,6 +558,15 @@ class AutomationManager:
 
         if c2 is None: c2 = target_2
         if c3 is None: c3 = target_3
+
+        # A device with scanning disabled never moves, regardless of what
+        # target the caller computed for it -- pin its target to its own
+        # current position so diff2/diff3 comes out ~0 below and it's simply
+        # skipped every step (see rotate_dev2/rotate_dev3 in __init__).
+        if not self.rotate_dev2:
+            target_2 = c2
+        if not self.rotate_dev3:
+            target_3 = c3
 
         while self.is_running or bypass_check:
             if self._reset_cancel:   # operator cancelled a Reset Angle mid-move
@@ -863,6 +889,27 @@ class AutomationManager:
         else:
             total_seconds = total_steps * (self._estimate_nominal_per_point_seconds() if not is_dummy else 1)
 
+        hv_rows, hv_warn = [], []
+        if backend == "caen" and not is_dummy:
+            from hv_preflight import check_hv
+            hv_rows, hv_block, hv_warn = check_hv(cfg)
+            if hv_block:
+                msg = "\n".join(hv_block)
+                self.controller._log(f"[CRITICAL] Scan not started -- {msg}")
+                self._clear_active_scan_marker()
+                if skip_validation:
+                    self._scan_errors = [f"HV pre-flight: {b}" for b in hv_block]
+                    self.controller.auto_ui.update_start_button(False)
+                    notifier = getattr(self.controller, 'notifier', None)
+                    if notifier and notifier.enabled:
+                        notifier.send("Scheduled scan NOT started: HV no current", msg,
+                                      level="critical", dedupe_key=None, blocking=False)
+                else:
+                    messagebox.showerror("HV: No Current", msg + "\n\nThe scan was not started.")
+                return
+            for w in hv_warn:
+                self.controller._log(f"[WARNING] HV pre-flight: {w}")
+
         if backend == "caen" and not is_dummy and not skip_validation:
             raw_path = cfg.get("RawDataPath", "")
             if not os.path.exists(raw_path):
@@ -900,14 +947,29 @@ class AutomationManager:
                 for wl, _b, _p in self.laser_sequence:
                     inst = lm.laser_instances.get(wl) if lm else None
                     ok = bool(inst and inst.is_connected())
-                    marks.append(f"{wl}{'🟢' if ok else '🔴(will skip)'}")
-                rows.append(("Laser plan:", f"{n_wl} block(s):  " + "  →  ".join(marks)))
+                    marks.append(f"{wl} ({'connected' if ok else 'DISCONNECTED -- will skip'})")
+                rows.append(("Wavelength(s):", ", ".join(marks)))
+            rows.append(("Rotate:", self.controller.auto_ui._format_rotate_devices(self)))
             rows += [
                 (None, "---"),
                 ("Target SN2:", f"{sn2}   (Cable Dir: {dir2})"),
                 ("Target SN3:", f"{sn3}   (Cable Dir: {dir3})"),
-                ("Points:", f"{total_steps}   ({steps_per_block} angles × {n_wl} wavelength block(s))"),
+                ("Points:", f"{total_steps}   ({steps_per_block} angles x {n_wl} wavelength block(s))"),
             ]
+
+            # config3.h is stamped into every RunInfo and cannot be fixed after
+            # the fact, so show it here -- a 375 nm set was once recorded with
+            # Laser = "0" simply because the field had never been saved.
+            cfg_rows, cfg_warn = self.controller.config_manager.preflight_rows()
+            rows.append((None, "---"))
+            rows.append(("Configuration:", "config3.h  (stamped into every run)"))
+            rows += cfg_rows
+            for w in cfg_warn:
+                rows.append(("CHECK:", w))
+            rows.append((None, "---"))
+            rows += hv_rows
+            for w in hv_warn:
+                rows.append(("CHECK:", w))
             if not self._wide_confirm(
                     "Pre-flight Checklist", "🚀 Korean DAQ (CAEN) Pre-flight",
                     rows, "Is the hardware setup correct? Start the scan?", accent="#0a84ff"):
@@ -993,14 +1055,31 @@ class AutomationManager:
         final_search = os.path.join(os.path.expanduser("~/ADC/ADC_test/Data/FinalResult"),
                                     f"precal_result_kor_run_{date_tag}_*.root")
 
+        ext_search = os.path.join("/home/precalkor/external_HDD_1_4T/Data_Backup/RAW", mode_dir,
+                                  f"*_{date_tag}_*.root")
+
         max_block = -100
-        for pattern in (search_path, final_search):
+        for pattern in (search_path, final_search, ext_search):
             for f in glob.glob(pattern):
                 match = re.search(r'_([0-9]{3})\.root', f)
                 if match:
                     num = int(match.group(1))
                     if num < 700:
                         max_block = max(max_block, (num // 100) * 100)
+
+        registry = os.path.expanduser("~/ADC/ADC_test/Data/run_registry.csv")
+        try:
+            with open(registry, encoding="utf-8") as f:
+                for line in f.readlines()[1:]:
+                    cols = line.split(",")
+                    if len(cols) > 2 and cols[1] == date_tag and cols[2].strip().isdigit():
+                        num = int(cols[2])
+                        if num < 700:
+                            max_block = max(max_block, (num // 100) * 100)
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            self.controller._log(f"[WARNING] Could not read run registry: {e}")
 
         self.current_scan_block = max_block + 100 if max_block >= 0 else 0
         self.controller._log(f"[INFO] New Scan Block Assigned: {self.current_scan_block:03d}")
@@ -1289,12 +1368,32 @@ class AutomationManager:
                         # Motor comm timeout while aligning this axis — no point in
                         # this axis is reachable, so mark all of them ERROR RUN and
                         # move on to the next axis instead of hanging the scan.
+                        # Notify ONCE for the whole axis (notify=False on each
+                        # per-point mark below) -- a scan with 40+ tilt angles
+                        # used to fire one Slack/log popup PER angle here, all
+                        # with the identical reason, spamming the channel
+                        # (2026-09-16).
+                        n_pts = len(self.build_tilt_angles())
+                        reason = "axis alignment failed (motor comm timeout)"
                         self.controller._log(
                             f"🚨 [ERROR RUN] {axis}-Axis alignment failed (motor comm timeout). "
-                            f"Skipping all {axis}-Axis points this block.")
+                            f"Skipping all {n_pts} {axis}-Axis points this block.")
                         for tilt in self.build_tilt_angles():
-                            self._mark_point_error(sn2_name, sn3_name, axis, tilt, "axis alignment failed (motor comm timeout)")
+                            self._mark_point_error(sn2_name, sn3_name, axis, tilt, reason, notify=False)
                             current_step += 1
+                        notifier = getattr(self.controller, 'notifier', None)
+                        if notifier and notifier.enabled:
+                            try:
+                                notifier.send(
+                                    f"General Scan: {axis}-Axis skipped ({n_pts} points)",
+                                    f"Reason: {reason}\n"
+                                    f"Log: [ERROR RUN] {axis}-Axis alignment failed (motor comm timeout). "
+                                    f"Skipping all {n_pts} {axis}-Axis points this block.",
+                                    level="warning",
+                                    dedupe_key=f"axis_align_failed_{axis}_{reason}",
+                                    blocking=False)
+                            except Exception as e:
+                                self.controller._log(f"[WARNING] Axis-error notification failed: {type(e).__name__}.")
                         self._update_progress_ui(current_step, total_steps)
                         continue
 
@@ -1540,15 +1639,35 @@ class AutomationManager:
         trg_vth = str(hk.get("trg_vth") or "").strip()
         chanlist = str(hk.get("chanlist") or "").strip()
         extra = ""
+        if hk.get("pedestal_mode"):
+            extra += " --pedestal"
         if trg_ch:
             extra += f" --trgch {trg_ch}"
         if trg_vth:
             extra += f" --trgch-Vth {trg_vth}"
         if chanlist:
             extra += f" --chanlist {chanlist}"
-        return (f"{hk['setup_cmd']} && {cd_part}{hk['scan_manager']} "
-                f"-i {run_id} --l {int(round(acq_time))} {thr_part} "
-                f"--gatelist {hk['gatelist']}{extra}")
+        scan_cmd = (f"{hk['scan_manager']} -i {run_id} --l {int(round(acq_time))} "
+                   f"{thr_part} --gatelist {hk['gatelist']}{extra}")
+
+        if not hk.get("auto_hittree"):
+            return f"{hk['setup_cmd']} && {cd_part}{scan_cmd}"
+
+        # ScanManager appends its own suffix to -i before writing the .bin
+        # (e.g. "<run_id>-001-1mV-Gate30.bin"), so the output filename can't be
+        # predicted from run_id alone -- confirmed 2026-09-15 against a real
+        # run. Glob for whatever run_id*.bin just appeared instead of guessing
+        # the suffix, and hit-tree only the ones this call actually produced
+        # (mtime -1min excludes older .bin files with the same run_id prefix
+        # sitting in the same dated folder from an earlier acquisition).
+        analysis_cmd = (
+            'for f in ' + run_id + '*.bin; do '
+            '[ -f "$f" ] || continue; '
+            '[ "$(find "$f" -mmin -1)" ] || continue; '
+            'RunAnalysisChain.py --inputBinFile "$f" -t "${f%.bin}_hittree.root"; '
+            'done'
+        )
+        return f"{hk['setup_cmd']} && {cd_part}{scan_cmd} && {analysis_cmd}"
 
     def hk_build_remote(self, run_id, acq_time):
         return self.hk_format_remote(self.hk_config, run_id, acq_time)
@@ -1573,7 +1692,7 @@ class AutomationManager:
 
     def hk_dpb_alive_count(self):
         """Read-only check: how many `socat` processes are currently alive on
-        dpb-local (nested SSH via hkpd, same path DPB Setup itself uses).
+        the DPB board (nested SSH via the HK PC, same path ② DPB Setup uses).
 
         This is the fix for a real incident (2026-07-26): the "already run
         this session" guard on the ② DPB Setup button was a SESSION-ONLY flag
@@ -1581,7 +1700,7 @@ class AutomationManager:
         a routine restart of the MASTER app, clicking ② again fired
         run-socat-all.sh/run-daq.sh a second time with no warning at all --
         even though the daemons from before the restart were still alive on
-        dpb-local -- and a genuine duplicate socat process on port 9001 was
+        the board -- and a genuine duplicate socat process on port 9001 was
         found running. A local-only flag can never protect against this,
         since the remote daemon's lifetime is independent of the master GUI's.
 
@@ -1595,8 +1714,11 @@ class AutomationManager:
         (SSH down/unreachable) -- callers should treat -1 as "unknown", not
         as "confirmed zero".
         """
+        dpb_host = (self.hk_config.get("dpb_host") or "").strip()
+        if not dpb_host:
+            return -1
         rc, out = self._hk_ssh(
-            "ssh -o BatchMode=yes -o ConnectTimeout=8 root@dpb-local "
+            f"ssh -o BatchMode=yes -o ConnectTimeout=8 root@{dpb_host} "
             "'pgrep -c -f socat' 2>/dev/null",
             wait=True, timeout=15)
         try:
@@ -1672,15 +1794,22 @@ class AutomationManager:
         (the Config dialog's Trigger ch/Vth fields) -- these are fixed setup
         values, not per-point live data like tilt/rot, so no argument is
         needed for them; blank in the config just becomes an empty string in
-        the filename rather than raising."""
+        the filename rather than raising.
+
+        {mode} follows the Pedestal Run checkbox -> "ped" / "normal", matching
+        the HK side's own convention. It is a macro rather than typed text
+        because the two have to agree: a literal "normal" in the template
+        stayed put when the checkbox was ticked, so a --pedestal run wrote a
+        file whose own name claimed it was a normal run."""
         base = self.hk_config.get("run_id", "Run%03d" % run_no)
         tmpl = base.replace("{run}", "{run:03d}")   # bare {run} → 001; {run:0Nd} untouched
         rot3_val = rot3 if rot3 is not None else rot
         trg_ch = self.hk_config.get("trg_channel", "") or ""
         trg_vth = self.hk_config.get("trg_vth", "") or ""
+        mode = "ped" if self.hk_config.get("pedestal_mode") else "normal"
         try:
             return tmpl.format(run=int(run_no), tilt=tilt, rot=rot, rot2=rot, rot3=rot3_val,
-                               trgch=trg_ch, trgvth=trg_vth)
+                               trgch=trg_ch, trgvth=trg_vth, mode=mode)
         except Exception:
             return base
 
@@ -1695,7 +1824,13 @@ class AutomationManager:
         t2, r2 = self.controller.rot_mgr.read_angles(2)
         tilt = t2 if t2 is not None else 0.0
         rot = r2 if r2 is not None else 0.0
-        run_id = self.hk_format_run_id(run_no, tilt, rot)
+        # "MAN_" marks a hand-triggered run so a directory listing separates
+        # the three sources at a glance: bare "Run..." = General Scan (the bulk
+        # of the data), "MAN_Run..." = manual single shot, "TEST_Run..." =
+        # throwaway link check. MAN_ runs are REAL data and do advance the
+        # counter, so hk_probe_remote_runs() must keep counting them (it does --
+        # its pattern allows the MAN_ prefix but not TEST_).
+        run_id = "MAN_" + self.hk_format_run_id(run_no, tilt, rot)
         self.controller._log(
             f"[INFO] HK MANUAL acquire run#{run_no} @ tilt {tilt}°, rot {rot}°, acq {acq}s.")
         self.hk_run_in_console(self.hk_build_remote(run_id, acq),
@@ -1703,12 +1838,90 @@ class AutomationManager:
         hk["run_number"] = run_no + 1
         self.save_hk_config()
 
+    def hk_resolved_work_dir(self):
+        """work_dir with {date} expanded -- the directory acquisitions land in
+        TODAY. Shared by the command formatter and the remote run-number probe
+        so they can never disagree about which folder is in play."""
+        wd = (self.hk_config.get("work_dir") or "").strip()
+        return wd.replace("{date}", datetime.now().strftime("%Y%m%d")) if "{date}" in wd else wd
+
+    def hk_probe_remote_runs(self):
+        """Read the HK PC's CURRENT data directory and report the highest run
+        number actually on disk there.
+
+        run_number is otherwise a purely local counter with no link to reality:
+        it does not follow the {date} folder rollover, and it knows nothing
+        about runs someone took by hand on the HK PC. Either way the counter
+        can point at a number that already exists, and the next acquisition
+        silently overwrites that file. This is the read-only reconciliation --
+        `ls` only, nothing is written or installed on the HK PC.
+
+        Returns a dict: {ok, dir, n_files, runs, next, error}. `next` is the
+        lowest free number (max found + 1), or 0 for an empty/new folder.
+        """
+        import re
+        wd = self.hk_resolved_work_dir()
+        if not wd:
+            return {"ok": False, "error": "work_dir is empty", "dir": "", "n_files": 0,
+                    "runs": [], "next": None}
+        rc, out = self._hk_ssh(f"ls -1 {wd} 2>/dev/null", wait=True, timeout=20)
+        if rc != 0:
+            return {"ok": False, "error": (out or "").strip()[:300] or f"ssh exit {rc}",
+                    "dir": wd, "n_files": 0, "runs": [], "next": None}
+        names = [ln.strip() for ln in (out or "").splitlines() if ln.strip()]
+        # Bare "Run<n>" (scan) and "MAN_Run<n>" (manual) are both real data and
+        # both occupy a run number; "TEST_Run<n>" is a throwaway and must never
+        # push the counter forward.
+        runs = sorted({int(m.group(1)) for ln in names
+                       for m in [re.match(r"^(?:MAN_)?Run0*(\d+)", ln)] if m})
+        return {"ok": True, "error": "", "dir": wd, "n_files": len(names),
+                "runs": runs, "next": (max(runs) + 1) if runs else 0}
+
+    def hk_build_dpb_setup(self):
+        """DPB bring-up command with {dpb_host} substituted. Kept as a macro so
+        the board's address is configured in exactly one field."""
+        hk = self.hk_config
+        cmd = hk.get("dpb_setup_cmd", "") or ""
+        try:
+            return cmd.format(dpb_host=(hk.get("dpb_host") or "").strip())
+        except (KeyError, IndexError):
+            return cmd   # unknown token -> send as typed rather than silently blanking it
+
+    def hk_build_remote_current(self, prefix="", suffix=""):
+        """ScanManager command for a ONE-OFF run (the Config dialog's stage
+        buttons), at the stage's current angle, with the run_id macros
+        substituted.
+
+        The dialog's buttons used to pass hk_config["run_id"] -- the RAW
+        template -- straight through, so ScanManager wrote files named
+        literally "Run{run}_..._T{tilt}_1R{rot2}_2R{rot3}" on the HK PC:
+        brace-laden junk that every later click overwrote and no downstream
+        tool could parse (confirmed 2026-09-15). The scan loop and Manual
+        Acquire always substituted correctly; only these buttons didn't.
+
+        The run counter is deliberately NOT advanced here -- these buttons are
+        pipeline/link checks, not the numbered acquisitions that
+        hk_manual_acquire and the scan loop own. `prefix` marks a throwaway
+        run: leading "TEST_" sorts every check run together and away from real
+        data, so they are obvious at a glance and safe to bulk-delete.
+        """
+        hk = self.hk_config
+        try:
+            t2, r2 = self.controller.rot_mgr.read_angles(2)
+        except Exception:
+            t2, r2 = None, None
+        run_id = prefix + self.hk_format_run_id(
+            hk.get("run_number", 0),
+            t2 if t2 is not None else 0.0,
+            r2 if r2 is not None else 0.0) + suffix
+        return self.hk_build_remote(run_id, float(hk.get("acq_time", 10.0)))
+
     def hk_test_trigger(self):
         """Run the current (field-built) command on the HK PC and return
         (rc, output). Used by the HK Config dialog's 'Test Trigger (Dummy)'
         button to sanity-check the SSH link + ScanManager before a real scan."""
         hk = self.hk_config
-        remote = self.hk_build_remote(hk.get("run_id", ""), hk.get("acq_time", 10.0))
+        remote = self.hk_build_remote_current(prefix="TEST_")
         self.controller._log(f"[INFO] HK TEST trigger → {hk['ssh_target']}: {remote}")
         rc, out = self._hk_ssh(remote, wait=True, timeout=120)
         self.controller._log(f"[INFO] HK TEST result rc={rc}: {out.strip()[:500]}")
@@ -1860,7 +2073,7 @@ class AutomationManager:
             self.controller._log(
                 f"[CRITICAL] execute_DAQ_v2 never started within {grace}s "
                 f"({axis}-Axis {tilt}°). Clearing any queued launch and skipping this point.")
-            subprocess.run(['pkill', '-f', 'script_v7.sh'], capture_output=True)
+            self._signal_own('script_v7.sh', signal.SIGTERM)
             self._graceful_kill_daq()
             self._mark_point_error(sn2_name, sn3_name, axis, tilt,
                                    "DAQ never started (launch timed out)")
@@ -2123,6 +2336,38 @@ class AutomationManager:
             return ""
         return "interlock" if lm._disc_reason.get(wl) == "INTERLOCK" else "usb"
 
+    def _own_pids(self, name):
+        """PIDs of `name` inside this app's own DAQ console jobs (each runs in
+        its own process group). Falls back to every matching process except
+        the 2 s `execute_DAQ_v2 -j` link probe when no job is tracked, so a
+        run started by hand elsewhere is only hit when nothing else is known."""
+        match = ["-f", name] if name.endswith(".sh") else ["-x", name]
+        pids = set()
+        for slot in ("general_scan", "daq"):
+            proc = getattr(self.controller, "_console_procs", {}).get(slot)
+            if proc is not None and proc.poll() is None:
+                r = subprocess.run(["pgrep", "-g", str(proc.pid)] + match, capture_output=True, text=True)
+                pids.update(int(x) for x in r.stdout.split())
+        if not pids:
+            r = subprocess.run(["pgrep"] + match, capture_output=True, text=True)
+            pids.update(int(x) for x in r.stdout.split())
+        own = []
+        for pid in pids:
+            try:
+                args = open(f"/proc/{pid}/cmdline", "rb").read().split(b"\0")
+            except OSError:
+                continue
+            if b"-j" not in args:
+                own.append(pid)
+        return own
+
+    def _signal_own(self, name, sig):
+        for pid in self._own_pids(name):
+            try:
+                os.kill(pid, sig)
+            except ProcessLookupError:
+                pass
+
     def _graceful_kill_daq(self):
         """Stop execute_DAQ_v2 as cleanly as possible so it can close its ROOT file.
         A hard `pkill -9` (SIGKILL) leaves the file truncated with no TTree keys
@@ -2131,18 +2376,24 @@ class AutomationManager:
         only escalate to SIGKILL if it ignores both. Safe fallback: behaves exactly
         like the old hard kill if the process doesn't handle the softer signals."""
         try:
-            for sig in ('-INT', '-TERM'):
-                subprocess.run(['pkill', sig, 'execute_DAQ_v2'], capture_output=True)
+            targets = self._own_pids('execute_DAQ_v2')
+            if not targets:
+                return
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                for pid in targets:
+                    try: os.kill(pid, sig)
+                    except ProcessLookupError: pass
                 for _ in range(8):   # up to ~8s for a clean shutdown per signal
                     time.sleep(1)
-                    still = subprocess.run('pgrep -x execute_DAQ_v2', shell=True, capture_output=True)
-                    if not still.stdout.strip():
+                    if not any(os.path.exists(f"/proc/{pid}") for pid in targets):
                         self.controller._log("[INFO] Watchdog: execute_DAQ_v2 stopped gracefully (file closed).")
                         return
-            subprocess.run(['pkill', '-9', 'execute_DAQ_v2'], capture_output=True)
+            for pid in targets:
+                try: os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError: pass
             self.controller._log("[WARNING] Watchdog: execute_DAQ_v2 ignored SIGINT/SIGTERM; forced SIGKILL (file may be truncated).")
         except Exception as e:
-            subprocess.run(['pkill', '-9', 'execute_DAQ_v2'], capture_output=True)
+            self._signal_own('execute_DAQ_v2', signal.SIGKILL)
             self.controller._log(f"[WARNING] Watchdog graceful-kill error ({e}); forced SIGKILL.")
 
     def _apply_laser_config(self, wl, pulse, bias=0.0):
@@ -2164,7 +2415,7 @@ class AutomationManager:
             content = re.sub(r'const std::string Wavelength\s*=\s*".*";',
                              f'const std::string Wavelength = "{nm}";', content)
             content = re.sub(r'const std::string Laser\s*=\s*".*";',
-                             f'const std::string Laser = "{total:g}";', content)
+                             f'const std::string Laser = "{round(total)}";', content)  # DAQ --laser is int
             # Atomic write (temp + os.replace) -- see config_manager.save_from_ui.
             # This fires per wavelength block mid-scan; a torn write would corrupt
             # config3.h for the shell DAQ launcher reading it on the next run.
@@ -2233,7 +2484,7 @@ class AutomationManager:
         except Exception as e:
             self.controller._log(f"[WARNING] Failed to record scan-point map: {e}")
 
-    def _mark_point_error(self, sn2_name, sn3_name, axis, tilt, reason):
+    def _mark_point_error(self, sn2_name, sn3_name, axis, tilt, reason, notify=True):
         """A scan point could not be completed (e.g. a motor Modbus comm
         timeout — see _wait_for_motors). Skip it rather than hanging the whole
         scan: mark the matrix cell ERR, record it in scanmap with
@@ -2257,7 +2508,7 @@ class AutomationManager:
         # opening the GUI (2026-08-31, user: "에러가 생기면 Slack에 알림...
         # 이유와 로그, 그리고 축에서 몇도인지").
         notifier = getattr(self.controller, 'notifier', None)
-        if notifier and notifier.enabled:
+        if notify and notifier and notifier.enabled:
             try:
                 notifier.send(
                     f"General Scan: point skipped ({axis}-Axis {tilt}°)",
@@ -2449,6 +2700,13 @@ class AutomationManager:
         running at a HV changed 50V higher mid-scan. Appends any mismatch
         found to self._scan_errors, same tally _show_scan_summary() reads.
         """
+        if getattr(self, "daq_backend", "caen") == "hk":
+            # HK Digitizer writes RAW files on the 2nd PC (hkpd@hkdaq), not
+            # under any of RAW_SEARCH_DIRS, so every point here would read as
+            # "missing on disk" -- a false BAD RUN on every HK scan. Skip
+            # until this check can look over SSH instead of locally.
+            self.controller._log("[INFO] Post-scan file verification skipped: HK Digitizer backend (RAW files live on hkpd, not checked locally).")
+            return
         try:
             import uproot
         except ImportError:
@@ -2660,7 +2918,7 @@ class AutomationManager:
 
         is_dummy = self.controller.auto_ui.dummy_var.get()
         if not is_dummy:
-            subprocess.run(['pkill', '-f', 'execute_DAQ_v2'])
+            self._signal_own('execute_DAQ_v2', signal.SIGTERM)
             # Also stop the General Scan console job directly (kills the whole
             # script_v7.sh process group via stop_console_job's os.killpg), so
             # the "general_scan" console slot is freed the instant Abort is
@@ -2681,6 +2939,16 @@ class AutomationManager:
 
     def _wait_for_physical_angle(self, dev_num, target_tilt=None, target_rot=None, bypass_check=False):
         """Polls the hardware until target angle is reached, with anti-jam stagnation monitoring."""
+        # A device with scan-rotation disabled (rotate_dev2/rotate_dev3) is
+        # intentionally held fixed and will never reach a scan-target rot
+        # angle -- waiting here would just count normal "not moving" as a
+        # stall and trip the anti-jam interlock. Skip the wait for it.
+        if dev_num == 2 and not self.rotate_dev2:
+            self.controller._log("[INFO] Device 2 rotation disabled for this scan -- skipping physical-angle wait.")
+            return
+        if dev_num == 3 and not self.rotate_dev3:
+            self.controller._log("[INFO] Device 3 rotation disabled for this scan -- skipping physical-angle wait.")
+            return
         self.controller._log(f"[INFO] Waiting for Device {dev_num} to physically reach target...")
         
         retry_count = 0
@@ -2910,7 +3178,7 @@ class AutomationManager:
 
         is_dummy = self.controller.auto_ui.dummy_var.get()
         if not is_dummy:
-            subprocess.run(['pkill', '-9', 'execute_DAQ_v2'], capture_output=True)
+            self._signal_own('execute_DAQ_v2', signal.SIGKILL)
 
         self.controller.auto_ui.update_start_button(False)
         

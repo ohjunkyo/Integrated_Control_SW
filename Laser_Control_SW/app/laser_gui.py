@@ -604,6 +604,16 @@ class LaserControlApp:
         self.master.destroy()
 
 if __name__ == "__main__":
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    import instance_lock
+    if instance_lock.is_running("daq"):
+        _r = tk.Tk(); _r.withdraw()
+        messagebox.showerror("Laser in use",
+                             "The DAQ Control Panel is running and controls the lasers.\n\n"
+                             "This tool turns every laser OFF when it connects. Close the DAQ panel first.", parent=_r)
+        _r.destroy()
+        sys.exit(0)
+    instance_lock.ensure_single_tk("laser_gui", "Laser Control")
     try:
         root = tk.Tk()
         default_font = font.nametofont("TkDefaultFont")
