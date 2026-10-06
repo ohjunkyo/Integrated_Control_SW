@@ -43,6 +43,8 @@ import math
 import sys
 import os
 import signal
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from window_focus import focus_window, is_running, HV_TITLE, HV_PROC, DAQ_TITLE
 import subprocess
 import webbrowser
 import threading
@@ -303,8 +305,23 @@ class App:
         self.update_badge_lbl.bind("<Button-1>", lambda e: self._on_update_badge_click())
 
         ttk.Label(self.status_bar, textvariable=self.elapsed_time_var).pack(side=tk.RIGHT, padx=10)
+        tk.Button(self.status_bar, text="⇄ Go to HV Monitor", font=("Helvetica", 9, "bold"),
+                  bg="#5CB85C", fg="white", activebackground="#4cae4c", relief="flat",
+                  padx=8, cursor="hand2", command=self._go_to_hv_monitor).pack(side=tk.RIGHT, padx=6)
 
         self._update_status_bar()
+
+    def _go_to_hv_monitor(self):
+        result = focus_window(HV_TITLE)
+        if result == 'raised':
+            return
+        if result == 'no-window':
+            if is_running(HV_PROC):
+                messagebox.showinfo("HV Monitor", "HV Monitor is running but its window is not ready yet.")
+            else:
+                messagebox.showwarning("HV Monitor", "HV Monitor is not running.\nStart it from the Launcher.")
+            return
+        messagebox.showwarning("HV Monitor", f"Could not switch to HV Monitor.\n{result}")
 
     def is_production_running(self):
         try:
@@ -1502,32 +1519,56 @@ class App:
             for wl, inst in self.laser_mgr.laser_instances.items():
                 try:
                     if inst and inst.is_connected() and inst.status.get('ld_on', False):
-                        on.append(wl)
+                        on.append((wl, inst))
                 except Exception:
                     pass
             if len(on) != 1:
                 if on:
                     self._log(f"[WARNING] Laser config not auto-synced: {len(on)} LDs ON "
-                              f"({', '.join(str(w) for w in on)}). Edit config3.h manually if needed.")
+                              f"({', '.join(str(w) for w, _ in on)}). Edit config3.h manually if needed.")
                 return
-            wl = on[0]
+            wl, inst = on[0]
             vd = self.ui.laser_tabs_data.get(wl)
-            if not vd:
-                return
-            pulse = float(vd["pulse_set"].get())
-            bias = float(vd["bias_set"].get())
+            # Record what the LD is actually emitting: the entry boxes hold whatever was
+            # last typed (or their startup default), not necessarily what was applied.
+            pulse = bias = None
+            try:
+                p, b = inst.status.get('pulse'), inst.status.get('bias')
+                if p is not None:
+                    pulse = float(p)
+                if b is not None:
+                    bias = float(b)
+            except (TypeError, ValueError):
+                pass
+            if pulse is None or bias is None:
+                if not vd:
+                    return
+                if pulse is None:
+                    pulse = float(vd["pulse_set"].get())
+                if bias is None:
+                    bias = float(vd["bias_set"].get())
+                self._log(f"[WARNING] {wl} live current unreadable; recording the "
+                          f"entry-box value ({pulse + bias:g} mA) instead.")
+            elif vd:
+                try:
+                    typed = float(vd["pulse_set"].get()) + float(vd["bias_set"].get())
+                    if abs(typed - (pulse + bias)) > 1.0:
+                        self._log(f"[INFO] {wl} current: recording {pulse + bias:g} mA from hardware "
+                                  f"(entry boxes show {typed:g} mA).")
+                except (TypeError, ValueError):
+                    pass
             self.auto_mgr._apply_laser_config(wl, pulse, bias)
         except Exception as e:
             self._log(f"[WARNING] Laser config auto-sync failed: {e}")
 
-    def run_daq(self, tilt=None, r2=None, r3=None):
+    def run_daq(self, tilt=None, r2=None, r3=None, category=None):
         if not getattr(getattr(self, 'access_mgr', None), 'unlocked', True):
             messagebox.showwarning(
                 "🔒 System Locked",
                 "Controls are locked.\n\nPlease click 'Unlock Controls' (top banner) before running DAQ.")
             return
 
-        category = self.ui.run_mode.get()
+        category = category or self.ui.run_mode.get()
         is_auto_running = hasattr(self, 'auto_mgr') and self.auto_mgr.is_running
         is_dummy = hasattr(self, 'auto_ui') and self.auto_ui.dummy_var.get()
 
@@ -1719,8 +1760,8 @@ class App:
                 slot="general_scan", on_complete=None)
             self._log(f"[INFO] Auto Mode - Fixed Date Injected: {fixed_date}")
         else:
-            if category == "manual":
-                current_env["SCAN_START_DATE"] = ""
+            # SCAN_START_DATE is left in os.environ by the last General Scan.
+            current_env["SCAN_START_DATE"] = ""
             # [DEVELOP] auto Rate Scan after dark DAQ — disabled pending field validation
             # auto_rate = (category == "manual" and mode == "dark")
             self._run_job_in_console(
@@ -2207,6 +2248,120 @@ class App:
                                 "PNGs appear in Data/image/Uniformity/ — open the Image Viewer\n"
                                 "(then Refresh) once the job shows ✓ Done.")
             self.ui.open_image_viewer()
+
+        btns = ctk.CTkFrame(dlg, fg_color="transparent")
+        btns.grid(row=3, column=0, sticky="e", padx=20, pady=(0, 20))
+        ctk.CTkButton(btns, text="Cancel", width=90, fg_color="transparent",
+                      border_width=1, text_color=("#1f2430", "#e5e5e5"),
+                      command=dlg.destroy).pack(side=tk.LEFT, padx=(0, 8))
+        ctk.CTkButton(btns, text="Run", width=130, command=_go).pack(side=tk.LEFT)
+
+    def run_stability(self):
+        """Draw_MonitorDrift_Diagnostic(tag, run_start, run_end): Monitor PMT QE vs
+        real clock time, cross-referenced against B-field/temperature over the
+        same window -- for spotting a drift that a Uniformity report's angle axis
+        can visually contradict (see project memory "monitor-pmt-axis-convention").
+        Deliberately NOT merged into Uniformity/Overlay: this is a time-axis-only
+        diagnostic, kept as its own separate report by design."""
+        daq_path = self._get_daq_path()
+        if not daq_path:
+            return
+        script = os.path.join(daq_path, 'Draw_MonitorDrift_Diagnostic.C')
+        if not os.path.exists(script):
+            messagebox.showerror("Error", f"Macro not found:\n{script}")
+            return
+
+        if not CTK_AVAILABLE:
+            messagebox.showerror("Missing dependency",
+                                 "customtkinter is not installed.\n\nRun:  pip install customtkinter")
+            return
+        ctk.set_appearance_mode("light")
+        ctk.set_default_color_theme("blue")
+
+        dlg = ctk.CTkToplevel(self.master)
+        dlg.title("Stability (Monitor Drift)")
+        dlg.transient(self.master)
+        dlg.grab_set()
+        dlg.resizable(True, True)
+        dlg.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(dlg, text="Stability — Monitor Drift",
+                     font=ctk.CTkFont(size=19, weight="bold")).grid(
+            row=0, column=0, sticky="w", padx=22, pady=(20, 0))
+        ctk.CTkLabel(dlg, justify="left", text_color="#6c757d",
+                     font=ctk.CTkFont(size=12),
+                     text=("Monitor PMT raw QE vs real clock time for runs [start, end] of\n"
+                           "<tag>, cross-referenced against B-field and Dark-Box temperature\n"
+                           "over the same window. Saves a PDF to Data/image/Diagnostic/.\n"
+                           "One wavelength block per run -- run again for a second wavelength.")
+                     ).grid(row=1, column=0, sticky="w", padx=22, pady=(2, 12))
+
+        today = datetime.now().strftime("%Y%m%d")
+        tag_var = tk.StringVar(value=today)
+        start_var = tk.StringVar(value="100")
+        end_var = tk.StringVar(value="145")
+
+        avail_tags = []
+        try:
+            rp = self.config_manager.get_config_value("FinalResultPath")
+            if rp and os.path.isdir(rp):
+                seen = set()
+                for fn in os.listdir(rp):
+                    m = re.search(r'_(\d{8})_', fn)
+                    if m:
+                        seen.add(m.group(1))
+                avail_tags = sorted(seen, reverse=True)
+        except Exception:
+            pass
+
+        card = ctk.CTkFrame(dlg, corner_radius=14)
+        card.grid(row=2, column=0, sticky="ew", padx=20, pady=(0, 14))
+        card.grid_columnconfigure(1, weight=1)
+
+        def _crow(r, label, widget):
+            ctk.CTkLabel(card, text=label, anchor="w",
+                         font=ctk.CTkFont(size=13)).grid(
+                row=r, column=0, sticky="w", padx=(16, 8), pady=10)
+            widget.grid(row=r, column=1, sticky="e", padx=(0, 16), pady=10)
+
+        _crow(0, f"Date tag  (e.g. {today})",
+              ctk.CTkComboBox(card, variable=tag_var, values=avail_tags, width=160))
+        _crow(1, "Run start  (e.g. 100)",
+              ctk.CTkEntry(card, textvariable=start_var, width=160, justify="center"))
+        _crow(2, "Run end  (e.g. 145)",
+              ctk.CTkEntry(card, textvariable=end_var, width=160, justify="center"))
+
+        def _go():
+            tag = tag_var.get().strip()
+            try:
+                rs, re_ = int(start_var.get()), int(end_var.get())
+            except ValueError:
+                messagebox.showerror("Invalid input", "Run start/end must be integers.", parent=dlg)
+                return
+            if not tag:
+                messagebox.showerror("Invalid input", "Date tag is required.", parent=dlg)
+                return
+            slot = self._acquire_uniformity_slot()
+            if slot is None:
+                messagebox.showinfo(
+                    "Stability Busy",
+                    "3 Uniformity/Stability jobs are already running concurrently "
+                    "(they share the same 3 console slots).\n\n"
+                    "Please wait for one to finish before starting another.",
+                    parent=dlg)
+                return
+            dlg.destroy()
+            helper = os.path.join(self.base_dir, 'run_cpp_script_v2.sh')
+            config_path = self.config_manager.filepath
+            tag_arg = f'\\\"{tag}\\\"'
+            cmd = " ".join([helper, script, config_path, tag_arg, str(rs), str(re_)])
+            self.ui.ensure_console_pane(slot)
+            self._run_job_in_console([cmd], job_name="Stability", slot=slot)
+            self._log(f"[INFO] Stability (Monitor drift) analysis: tag={tag}, runs {rs}-{re_}")
+            messagebox.showinfo("Stability (Monitor Drift)",
+                                f"Running for tag={tag}, runs {rs}-{re_}.\n\n"
+                                "Progress streams into the Output tab.\n"
+                                "PDF appears in Data/image/Diagnostic/ once the job shows ✓ Done.")
 
         btns = ctk.CTkFrame(dlg, fg_color="transparent")
         btns.grid(row=3, column=0, sticky="e", padx=20, pady=(0, 20))
@@ -2867,6 +3022,16 @@ class App:
                 time.sleep(2.0)
                 continue
 
+            # Between two scan points the board is briefly closed; a probe that
+            # opens it right then makes the next point's execute_DAQ_v2 fail
+            # with "already open". Hold off while any DAQ job or scan is live.
+            procs = getattr(self, '_console_procs', {})
+            busy = getattr(getattr(self, 'auto_mgr', None), 'is_running', False) or any(
+                p is not None and p.poll() is None for k, p in procs.items() if k in ("daq", "general_scan"))
+            if busy:
+                time.sleep(2.0)
+                continue
+
             is_connected = False
             try:
                 if self.config_manager:
@@ -3219,9 +3384,10 @@ def launch():
     실제 시뮬레이션 모드는 별도 파일이 아니라 in-app 'TEST RUN (Simulation Mode)'
     체크박스(auto_ui.dummy_var)로 동작하므로, 두 진입점은 동일한 App 을 실행한다.
     """
-    # Prevent zombie processes: tell the kernel to auto-reap children we don't
-    # explicitly wait() for (gnome-terminal launches, gedit, etc.).
-    signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+    # SIGCHLD must be default (not SIG_IGN, which may be inherited from an old
+    # launcher): with SIG_IGN every subprocess exit code reads as 0. Unreferenced
+    # fire-and-forget Popens are reaped by subprocess's own _cleanup().
+    signal.signal(signal.SIGCHLD, signal.SIG_DFL)
 
     base_directory = os.path.dirname(os.path.abspath(__file__))
 
@@ -3253,6 +3419,30 @@ def launch():
                 print("[INFO] No leftover runtime flags found. System pipeline is pristine.")
     except Exception as e:
         print(f"[ERROR] Safeguard initialization flag interlock error: {e}")
+
+    import instance_lock
+
+    def _scan_warning():
+        try:
+            tag, pid = open("/tmp/daq_flags/active_scan").read().split()[:2]
+            if os.path.exists(f"/proc/{pid}"):
+                return f"A General Scan ({tag}) is running in that copy. Replacing it ABORTS the scan."
+        except Exception:
+            pass
+        r = subprocess.run('pgrep -x execute_DAQ_v2 | xargs -r ps -o args= -p 2>/dev/null | grep -v -- "-j"',
+                           shell=True, capture_output=True, text=True)
+        if r.stdout.strip():
+            return "An acquisition is running. Replacing the panel may stop it."
+        return ""
+
+    instance_lock.ensure_single_tk("daq", DAQ_TITLE, warn_if=_scan_warning)
+    if instance_lock.is_running("laser_gui"):
+        _r = tk.Tk(); _r.withdraw()
+        messagebox.showwarning(
+            "Old Laser Control is open",
+            "The old Laser Control window is running. It turns every laser OFF when it connects "
+            "and fights this panel for the laser USB devices.\n\nClose it before taking data.", parent=_r)
+        _r.destroy()
 
     root = tk.Tk()
     app = App(root, base_directory)

@@ -362,12 +362,40 @@ class StabilityRunUI:
                     "Start anyway?", icon="warning"):
                 return
 
+        # config3.h is stamped into every RunInfo and cannot be fixed after the
+        # fact, so show it here -- a 375 nm set was once recorded with
+        # Laser = "0" simply because the field had never been saved.
+        try:
+            cfg_rows, cfg_warn = self.controller.config_manager.preflight_rows()
+            cfg_block = "\n".join("  %-13s %s" % (lbl, val) for lbl, val in cfg_rows)
+            cfg_text = "\nConfiguration (config3.h):\n" + cfg_block + "\n"
+            if cfg_warn:
+                cfg_text += "\n".join("  CHECK: " + w for w in cfg_warn) + "\n"
+        except Exception as e:
+            cfg_text = "\nConfiguration: could not be read (%s)\n" % e
+
+        from hv_preflight import check_hv
+        try:
+            hv_cfg = self.controller.config_manager.get_all_variables()
+        except Exception:
+            hv_cfg = {}
+        hv_rows, hv_block, hv_warn = check_hv(hv_cfg)
+        if hv_block:
+            msg = "\n".join(hv_block)
+            self.controller._log(f"[CRITICAL] Stability Run not started -- {msg}")
+            messagebox.showerror("HV: No Current", msg + "\n\nThe Stability Run was not started.")
+            return
+        cfg_text += "\nHV (from HV Monitor):\n" + "\n".join("  %-13s %s" % r for r in hv_rows) + "\n"
+        if hv_warn:
+            cfg_text += "\n".join("  CHECK: " + w for w in hv_warn) + "\n"
+
         if not messagebox.askyesno(
                 "Start Stability Run",
                 f"{cnt} acquisitions of {int(ev):,} events, {int(iv)} s apart.\n\n"
                 f"Estimated duration: {self._fmt(total)}\n"
                 f"Estimated finish:   {end}\n"
-                f"{disk_line}\n\n"
+                f"{disk_line}\n"
+                f"{cfg_text}\n"
                 "The stage will NOT move — make sure the PMTs are already at the "
                 "angle you want to measure.\n\nStart now?"):
             return
@@ -380,6 +408,8 @@ class StabilityRunUI:
 
         self._running = True
         self._run_started_at = datetime.now()
+        self._planned = cnt
+        self._est_finish = datetime.now() + timedelta(seconds=total)
         self.btn_start.config(state=tk.DISABLED)
         self.btn_stop.config(state=tk.NORMAL)
         self.l_status.config(text=f"Running — {cnt} acquisitions, est. finish {end}",
@@ -403,7 +433,7 @@ class StabilityRunUI:
         # script_v7.sh does the repeating internally, so this is ONE launch --
         # the Python side must not also loop, or the two would fight over the
         # single digitizer (that is exactly the 2026-08-15 failure mode).
-        self.controller.run_daq()
+        self.controller.run_daq(category="manual")
         self._watch_for_finish()
 
     def _watch_for_finish(self):

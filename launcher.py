@@ -9,11 +9,19 @@ import signal # [NEW]
 from datetime import datetime
 from tkinter import messagebox
 
+import instance_lock
+from window_focus import focus_window, HV_TITLE, DAQ_TITLE
+
+# Which instance lock each launcher button corresponds to.
+LOCK_OF = {"daq": "daq", "test": "daq", "hv": "hv", "laser": "laser_gui"}
+WINDOW_OF = {"daq": DAQ_TITLE, "test": DAQ_TITLE, "hv": HV_TITLE, "laser": "Laser Control"}
+
 class AppLauncher(tk.Tk):
     def __init__(self):
         super().__init__()
-        # Auto-reap children (no zombies, no false "already running" hits).
-        signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+        # SIGCHLD must stay default: SIG_IGN is inherited by the launched apps
+        # and makes every child exit code read as 0. Children are reaped by
+        # poll() in update_clock instead.
         # Ignore SIGHUP so closing the launch terminal doesn't kill the launcher.
         signal.signal(signal.SIGHUP, signal.SIG_IGN)
 
@@ -89,9 +97,20 @@ class AppLauncher(tk.Tk):
         self.update_file_status()
 
     def _is_alive(self, key):
-        """Return True if the tracked process for `key` is still running."""
+        """True if the app is running, whoever started it (lock-based), or if
+        this launcher's own child is still alive."""
         proc = self._procs.get(key)
-        return proc is not None and proc.poll() is None
+        if proc is not None and proc.poll() is None:
+            return True
+        return instance_lock.is_running(LOCK_OF[key])
+
+    def _already_running(self, key, label):
+        info = instance_lock.holder(LOCK_OF[key])
+        who = f" ({instance_lock.describe(info)})" if info else ""
+        if messagebox.askyesno("Already Running", f"{label} is already running{who}.\n\nBring it to the front?"):
+            if focus_window(WINDOW_OF[key]) != "raised":
+                messagebox.showwarning(label, f"The running {label} has no window; it may be hung. "
+                                              "Start it again and choose Replace.")
 
     def _launch_proc(self, key, command, cwd):
         """Spawn a process, store it under key, and add to self.processes."""
@@ -182,11 +201,18 @@ class AppLauncher(tk.Tk):
     def on_closing(self):
         """Called on window close or 'Exit' button press."""
         running_processes = [p for p in self.processes if p.poll() is None]
+        foreign = [n for n in ("daq", "hv", "laser_gui") if instance_lock.is_running(n)
+                   and not any(p.poll() is None and instance_lock.holder(n)
+                               and instance_lock.holder(n)["pid"] == p.pid for p in running_processes)]
 
-        if running_processes:
-            msg = f"Do you want to exit the launcher and terminate all {len(running_processes)} running application(s)?\n\n(DAQ, HV, Laser)"
+        if running_processes or foreign:
+            names = ", ".join(instance_lock.APP_LABELS[n] for n in ("daq", "hv", "laser_gui")
+                              if instance_lock.is_running(n)) or f"{len(running_processes)} app(s)"
+            msg = f"Exit the launcher and stop every running application?\n\n{names}"
             if messagebox.askyesno("Confirm Exit", msg):
                 self.terminate_all_processes()
+                for n in foreign:
+                    instance_lock.terminate(n)
                 self.destroy()
         else:
             if messagebox.askyesno("Confirm Exit", "Do you want to exit the launcher?"):
@@ -209,11 +235,8 @@ class AppLauncher(tk.Tk):
         return "python3"
 
     def launch_daq_control(self):
-        if self._is_alive("test"):
-            messagebox.showerror("Hardware Collision Alert", "⚠️ Test Mode is currently running!\n\nPlease close Test Mode before starting Production.")
-            return
         if self._is_alive("daq"):
-            messagebox.showwarning("Already Running", "DAQ Control Panel is already running.")
+            self._already_running("daq", "DAQ Control Panel (production or test mode)")
             return
 
         script_path = os.path.abspath(os.path.join("DAQ_Control_SW", "main.py"))
@@ -225,11 +248,8 @@ class AppLauncher(tk.Tk):
             messagebox.showerror("Error", f"Failed to launch DAQ Control:\n{e}")
 
     def launch_test_control(self):
-        if self._is_alive("daq"):
-            messagebox.showerror("Hardware Collision Alert", "⚠️ Production (main.py) is currently running!\n\nPlease close the real DAQ Control Panel before starting Test Mode.")
-            return
         if self._is_alive("test"):
-            messagebox.showwarning("Already Running", "Test Mode is already running.")
+            self._already_running("test", "DAQ Control Panel (production or test mode)")
             return
 
         test_script_path = os.path.abspath(os.path.join("DAQ_Control_SW", "main_test.py"))
@@ -247,7 +267,7 @@ class AppLauncher(tk.Tk):
 
     def launch_hv_monitor(self):
         if self._is_alive("hv"):
-            messagebox.showwarning("Already Running", "HV Monitor is already running.")
+            self._already_running("hv", "HV Monitor")
             return
 
         script_path = os.path.abspath(os.path.join("HV_Control_SW", "monitoring_app.py"))
@@ -261,7 +281,11 @@ class AppLauncher(tk.Tk):
 
     def launch_laser_control(self):
         if self._is_alive("laser"):
-            messagebox.showwarning("Already Running", "Laser Control is already running.")
+            self._already_running("laser", "Laser Control")
+            return
+        if instance_lock.is_running("daq"):
+            messagebox.showerror("Laser in use", "The DAQ Control Panel is running and controls the lasers.\n\n"
+                                 "The old Laser Control turns every laser OFF when it connects. Close the DAQ panel first.")
             return
 
         script_path = os.path.abspath(os.path.join("Laser_Control_SW", "app", "laser_gui.py"))
@@ -284,6 +308,8 @@ class AppLauncher(tk.Tk):
         hours, remainder = divmod(total_seconds, 3600)
         minutes, seconds = divmod(remainder, 60)
         self.elapsed_time_var.set(f"{hours:02}:{minutes:02}:{seconds:02}")
+        for proc in self.processes:
+            proc.poll()   # reap exited apps (no zombies)
         self.after(1000, self.update_clock)
 
     def find_most_recent_file(self, *dirs_to_scan):
