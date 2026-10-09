@@ -1,0 +1,8 @@
+# Core -- the driver and CLI need only this.
+hidapi>=0.14.0
+
+# GUI extras. tkinter itself is NOT here: it is a system package
+# (apt install python3-tk), not a pip one. Without these two the GUI still
+# runs, it just disables the plot tab.
+matplotlib>=3.5
+pandas>=1.3

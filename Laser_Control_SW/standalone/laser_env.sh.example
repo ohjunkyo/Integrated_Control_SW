@@ -1,0 +1,12 @@
+# Per-machine settings for the laser control software.
+#
+# Copy to laser_env.sh (drop the .example) to activate. run_gui.sh sources it,
+# so it reaches the GUI even when launched from the desktop menu, where a shell
+# profile's `export` never would.
+#
+#   cp laser_env.sh.example laser_env.sh
+#
+# For the CLI, source it yourself:  source laser_env.sh
+
+# Where the CSV drift logs go. Default is ./log next to the scripts.
+# export LASER_LOG_DIR="$HOME/laser_logs"

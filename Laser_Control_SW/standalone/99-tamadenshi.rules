@@ -1,0 +1,13 @@
+# Tamadenshi (Tama Electric) pico-second LD board -- USB HID access for
+# non-root users. VID/PID taken from tmHIDLD.dll.
+#
+# Install:
+#   sudo cp 99-tamadenshi.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+#   then UNPLUG AND REPLUG the laser's USB cable.
+#
+# Two rules are needed because python-hidapi may be built against either the
+# hidraw backend or the libusb backend, and each claims a different device node.
+
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="04d8", ATTRS{idProduct}=="fa73", MODE="0666"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="04d8", ATTRS{idProduct}=="fa73", MODE="0666"
