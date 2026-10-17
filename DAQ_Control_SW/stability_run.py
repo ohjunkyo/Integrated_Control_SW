@@ -20,7 +20,9 @@ Guard 1 is the one that actually prevents the incident; guard 2 keeps the file
 tidy so the next person reading config3.h isn't misled.
 """
 import os
+import csv
 import re
+import threading
 import time
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -45,6 +47,8 @@ class StabilityRunUI:
     # either way, so the UI marks it with "~".
     BYTES_PER_EVENT_SAMPLE = 3078.7 / 1024.0
     DEFAULT_TIME_WINDOW = 1024
+    # TEC/LD switch-on and settle per wavelength block (rotation_manager._prepare_laser_block).
+    LASER_PREP_S = 20.0
 
     def __init__(self, parent, controller):
         self.controller = controller
@@ -88,9 +92,18 @@ class StabilityRunUI:
             var.trace_add("write", lambda *a: self._recalc())
             return e
 
-        row(0, "Events per acquisition", self.v_events, "events", "from config3.h (Events)")
-        row(1, "Interval between acquisitions", self.v_interval, "s", "script_v7.sh IntervalTime")
-        row(2, "Number of acquisitions", self.v_count, "count", "script_v7.sh NumSequences")
+        row(0, "Events per acquisition", self.v_events, "events", "from config3.h (Events)").config(state="readonly")
+        self.e_interval = row(1, "Interval between acquisitions", self.v_interval, "s", "script_v7.sh IntervalTime")
+        self.e_count = row(2, "Number of acquisitions", self.v_count, "count", "script_v7.sh NumSequences")
+
+        self.v_multi = tk.BooleanVar(value=False)
+        ttk.Checkbutton(box, text="Laser Sequence", variable=self.v_multi,
+                        command=self._on_multi).grid(row=3, column=0, sticky="w", pady=3)
+        self.l_seq = ttk.Label(box, text="", foreground="#b91c1c")
+        self.l_seq.grid(row=3, column=1, columnspan=3, sticky="w", padx=(6, 0))
+        self.seq_box = ttk.Frame(box)
+        self.seq_box.grid(row=4, column=0, columnspan=4, sticky="w", pady=(4, 0))
+        self.seq_vars, self._seq_key = {}, None
 
         # ── calculator ─────────────────────────────────────────────────
         calc = ttk.LabelFrame(wrap, text=" Duration ⇄ count ", padding=10)
@@ -162,6 +175,7 @@ class StabilityRunUI:
 
         self._load_events_from_config()
         self._recalc()
+        self._refresh_seq()
 
     # ------------------------------------------------------------- helpers
     def _load_events_from_config(self):
@@ -175,6 +189,128 @@ class StabilityRunUI:
                 pass
             if not var.get():
                 var.set(default)
+
+    def _laser_sequence(self):
+        """Checked rows of General Scan's Laser Sequence panel as [(wl, bias, pulse)];
+        None when a checked row has a non-numeric current."""
+        vars_ = getattr(getattr(self.controller, "auto_ui", None), "laser_seq_vars", None) or {}
+        seq = []
+        for wl in ["405nm", "375nm", "450nm", "473nm"]:
+            v = vars_.get(wl)
+            if not v or not v["on"].get():
+                continue
+            try:
+                seq.append((wl, float(v["bias"].get()), float(v["pulse"].get())))
+            except (ValueError, tk.TclError):
+                return None
+        return seq
+
+    def _on_multi(self):
+        state = tk.DISABLED if self.v_multi.get() else tk.NORMAL
+        self.e_interval.config(state=state)
+        self.e_count.config(state=state)
+        self._seq_key = None
+        self._refresh_seq(reschedule=False)
+
+    def _sync_config(self):
+        """Follow Events/TimeWindow in config3.h: the DAQ reads them from there, not from this tab."""
+        try:
+            path = self.controller.config_manager.filepath
+            mtime = os.path.getmtime(path)
+        except Exception:
+            return
+        if mtime == getattr(self, "_cfg_mtime", None):
+            return
+        self._cfg_mtime = mtime
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                text = f.read()
+        except OSError:
+            return
+        for key, var in (("Events", self.v_events), ("TimeWindow", self.v_window)):
+            m = re.search(r"const\s+(?:int|std::string)\s+%s\s*=\s*\"?(\d+)\"?\s*;" % key, text)
+            if m and var.get() != m.group(1):
+                var.set(m.group(1))
+                self._recalc()
+
+    def _refresh_seq(self, reschedule=True):
+        self._sync_config()
+        seq = self._laser_sequence() if self.v_multi.get() else []
+        key = (self.v_multi.get(), tuple(seq) if seq is not None else None)
+        if key != self._seq_key:
+            self._seq_key = key
+            self._build_seq_rows(seq or [])
+            if not self.v_multi.get():
+                self.l_seq.config(text="")
+            elif seq is None:
+                self.l_seq.config(text="Invalid Bias/Pulse value in the General Scan Laser Sequence panel")
+            elif not seq:
+                self.l_seq.config(text="No wavelength checked in the General Scan Laser Sequence panel")
+            else:
+                self.l_seq.config(text="")
+            self._recalc()
+        if reschedule:
+            try:
+                self.parent.after(2000, self._refresh_seq)
+            except tk.TclError:
+                pass
+
+    def _build_seq_rows(self, seq):
+        for w in self.seq_box.winfo_children():
+            w.destroy()
+        if not seq:
+            return
+        for c, h in enumerate(["Wavelength", "Pulse", "Length", "", "Interval", "Count", "Time"]):
+            ttk.Label(self.seq_box, text=h, foreground="#666").grid(row=0, column=c, sticky="w", padx=(0, 10))
+        for r, (wl, _b, pulse) in enumerate(seq, start=1):
+            v = self.seq_vars.get(wl)
+            if v is None:
+                v = {"len": tk.StringVar(value="1"), "unit": tk.StringVar(value="h"),
+                     "iv": tk.StringVar(value=self.v_interval.get() or "600")}
+                for var in (v["len"], v["unit"], v["iv"]):
+                    var.trace_add("write", lambda *a: self._recalc())
+                self.seq_vars[wl] = v
+            ttk.Label(self.seq_box, text=wl, font=("Helvetica", 10, "bold")).grid(
+                row=r, column=0, sticky="w", padx=(0, 10), pady=2)
+            ttk.Label(self.seq_box, text=f"{pulse:g} mA").grid(row=r, column=1, sticky="w", padx=(0, 10))
+            ttk.Entry(self.seq_box, textvariable=v["len"], width=7).grid(row=r, column=2, sticky="w")
+            ttk.Combobox(self.seq_box, textvariable=v["unit"], values=["h", "count"], width=6,
+                         state="readonly").grid(row=r, column=3, sticky="w", padx=(4, 10))
+            f = ttk.Frame(self.seq_box)
+            f.grid(row=r, column=4, sticky="w", padx=(0, 10))
+            ttk.Entry(f, textvariable=v["iv"], width=7).pack(side=tk.LEFT)
+            ttk.Label(f, text="s", foreground="#666").pack(side=tk.LEFT, padx=(3, 0))
+            v["l_cnt"] = ttk.Label(self.seq_box, text="—")
+            v["l_cnt"].grid(row=r, column=5, sticky="w", padx=(0, 10))
+            v["l_time"] = ttk.Label(self.seq_box, text="—")
+            v["l_time"].grid(row=r, column=6, sticky="w")
+
+    def _plan(self):
+        """[(block, count, interval)] for the run, block None = current laser only; None if invalid."""
+        n = self._nums()
+        if not n:
+            return None
+        ev, rate, iv, cnt = n
+        if not self.v_multi.get():
+            return [(None, cnt, iv)]
+        seq = self._laser_sequence()
+        if not seq:
+            return None
+        acq = ev / rate + self.OVERHEAD_S
+        plan = []
+        for block in seq:
+            v = self.seq_vars.get(block[0])
+            try:
+                length, biv = float(v["len"].get()), float(v["iv"].get())
+            except (TypeError, ValueError, tk.TclError):
+                return None
+            if length <= 0 or biv < 0:
+                return None
+            c = int((length * 3600 + biv) // (acq + biv)) if v["unit"].get() == "h" else int(length)
+            if c <= 0:
+                return None
+            plan.append((block, c, biv))
+        return plan
 
     def _raw_dir(self):
         """Where RAW files land, for the free-space check."""
@@ -222,22 +358,48 @@ class StabilityRunUI:
             return f"{m}m {s:02d}s"
         return f"{s}s"
 
+    def _block_time(self, acq, cnt, iv):
+        # The interval sits BETWEEN acquisitions, so N acquisitions have N-1
+        # gaps -- counting N gaps overstates a 100-point run by 10 minutes.
+        return cnt * acq + max(0, cnt - 1) * iv
+
+    def _total_time(self, plan, acq):
+        prep = self.LASER_PREP_S * len(plan) if plan[0][0] is not None else 0.0
+        return sum(self._block_time(acq, c, i) for _b, c, i in plan) + prep
+
     def _recalc(self, *_):
+        if not hasattr(self, "l_disk"):
+            return
         n = self._nums()
-        if not n:
-            for lbl in (self.l_per, self.l_total, self.l_end, self.l_fit):
+        plan = self._plan()
+        for v in self.seq_vars.values():
+            if "l_cnt" in v:
+                try:
+                    v["l_cnt"].config(text="—")
+                    v["l_time"].config(text="—")
+                except tk.TclError:
+                    pass
+        if not n or not plan:
+            for lbl in (self.l_per, self.l_total, self.l_end, self.l_fit, self.l_disk):
                 lbl.config(text="—")
             return
         ev, rate, iv, cnt = n
         acq = ev / rate + self.OVERHEAD_S
-        # The interval sits BETWEEN acquisitions, so N acquisitions have N-1
-        # gaps -- counting N gaps overstates a 100-point run by 10 minutes.
-        total = cnt * acq + max(0, cnt - 1) * iv
+        multi = plan[0][0] is not None
+        for block, c, biv in plan:
+            if block is not None and "l_cnt" in self.seq_vars[block[0]]:
+                self.seq_vars[block[0]]["l_cnt"].config(text=str(c))
+                self.seq_vars[block[0]]["l_time"].config(text=self._fmt(self._block_time(acq, c, biv)))
+        nb = len(plan)
+        n_acq = sum(c for _b, c, _i in plan)
+        prep = self.LASER_PREP_S * nb if multi else 0.0
+        total = self._total_time(plan, acq)
 
         self.l_per.config(text=f"{self._fmt(acq)}   "
                                f"(acquisition {self._fmt(ev / rate)} at {rate:.0f} Hz "
                                f"+ overhead {int(self.OVERHEAD_S)}s)")
-        self.l_total.config(text=f"{self._fmt(total)}   ({total / 3600:.2f} h)")
+        self.l_total.config(text=f"{self._fmt(total)}   ({total / 3600:.2f} h)"
+                                 + (f"   {nb} wavelengths, {n_acq} acquisitions" if multi else ""))
         self.l_end.config(text=(datetime.now() + timedelta(seconds=total)).strftime("%Y-%m-%d %H:%M:%S"))
 
         # Disk: RAW dominates (the produced/result files are ~3% of it), and
@@ -247,13 +409,13 @@ class StabilityRunUI:
         except (ValueError, TypeError):
             window = self.DEFAULT_TIME_WINDOW
         per_run = ev * window * self.BYTES_PER_EVENT_SAMPLE
-        need = per_run * cnt
+        need = per_run * n_acq
         try:
             st = os.statvfs(self._raw_dir())
             free = st.f_bavail * st.f_frsize
         except OSError:
             free = None
-        txt = f"~{self._fmt_size(need)}  ({self._fmt_size(per_run)} x {cnt})"
+        txt = f"~{self._fmt_size(need)}  ({self._fmt_size(per_run)} x {n_acq})"
         if free is None:
             self.l_disk.config(text=txt, foreground="#333")
         elif need > free:
@@ -273,7 +435,7 @@ class StabilityRunUI:
         except (ValueError, TypeError):
             self.l_fit.config(text="—")
             return
-        if hours <= 0:
+        if hours <= 0 or multi:
             self.l_fit.config(text="—")
             return
         window = hours * 3600
@@ -283,9 +445,8 @@ class StabilityRunUI:
         if self._fitted <= 0:
             self.l_fit.config(text=f"Not even one acquisition fits in {hours:g} h.")
         else:
-            used = self._fitted * acq + max(0, self._fitted - 1) * iv
-            self.l_fit.config(text=f"{self._fitted} acquisitions fit in {hours:g} h "
-                                   f"(uses {self._fmt(used)})")
+            used = self._block_time(acq, self._fitted, iv)
+            self.l_fit.config(text=f"{self._fitted} acquisitions fit in {hours:g} h (uses {self._fmt(used)})")
 
     def _apply_fitted_count(self):
         if getattr(self, "_fitted", 0) > 0:
@@ -336,14 +497,22 @@ class StabilityRunUI:
                                                   "some field is empty or non-numeric.")
             return
         ev, rate, iv, cnt = n
-        total = cnt * (ev / rate + self.OVERHEAD_S) + max(0, cnt - 1) * iv
+        plan = self._plan()
+        if not plan:
+            messagebox.showerror("Stability Run", "Laser Sequence: check the wavelengths and each row's "
+                                                  "Length / Interval.")
+            return
+        seq = [b for b, _c, _i in plan if b is not None]
+        acq = ev / rate + self.OVERHEAD_S
+        n_acq = sum(c for _b, c, _i in plan)
+        total = self._total_time(plan, acq)
         end = (datetime.now() + timedelta(seconds=total)).strftime("%Y-%m-%d %H:%M:%S")
 
         try:
             window = float(self.v_window.get())
         except (ValueError, TypeError):
             window = self.DEFAULT_TIME_WINDOW
-        need = ev * window * self.BYTES_PER_EVENT_SAMPLE * cnt
+        need = ev * window * self.BYTES_PER_EVENT_SAMPLE * n_acq
         try:
             st = os.statvfs(self._raw_dir())
             free = st.f_bavail * st.f_frsize
@@ -389,9 +558,16 @@ class StabilityRunUI:
         if hv_warn:
             cfg_text += "\n".join("  CHECK: " + w for w in hv_warn) + "\n"
 
+        if seq:
+            head = (f"Acquisitions of {int(ev):,} events, one wavelength after another "
+                    "(the previous LD is switched OFF first):\n"
+                    + "\n".join(f"  {b[0]}   Pulse {b[2]:g} mA   {c} x, {int(i)} s apart   "
+                                 f"({self._fmt(self._block_time(acq, c, i))})" for b, c, i in plan) + "\n\n")
+        else:
+            head = f"{cnt} acquisitions of {int(ev):,} events, {int(iv)} s apart.\n\n"
         if not messagebox.askyesno(
                 "Start Stability Run",
-                f"{cnt} acquisitions of {int(ev):,} events, {int(iv)} s apart.\n\n"
+                f"{head}"
                 f"Estimated duration: {self._fmt(total)}\n"
                 f"Estimated finish:   {end}\n"
                 f"{disk_line}\n"
@@ -400,22 +576,20 @@ class StabilityRunUI:
                 "angle you want to measure.\n\nStart now?"):
             return
 
-        try:
-            self._write_repeat_config(cnt, iv)
-        except Exception as e:
-            messagebox.showerror("Stability Run", f"Could not write config3.h:\n{e}")
-            return
-
+        self._plan_run, self._blocks, self._block_idx = plan, [b for b, _c, _i in plan], 0
+        self._skipped, self._last_code = [], None
         self._running = True
         self._run_started_at = datetime.now()
-        self._planned = cnt
+        self._planned = n_acq
         self._est_finish = datetime.now() + timedelta(seconds=total)
         self.btn_start.config(state=tk.DISABLED)
         self.btn_stop.config(state=tk.NORMAL)
-        self.l_status.config(text=f"Running — {cnt} acquisitions, est. finish {end}",
+        self.l_status.config(text=f"Running — {n_acq} acquisitions"
+                                  + (f", {len(seq)} wavelengths" if seq else "") + f", est. finish {end}",
                              foreground="#1a7f37")
-        self.controller._log(f"[INFO] Stability Run started: NumSequences={cnt}, "
-                             f"IntervalTime={iv:.0f}s, est. finish {end}")
+        self.controller._log("[INFO] Stability Run started: " + "; ".join(
+            f"{b[0] if b else 'current laser'} NumSequences={c} IntervalTime={i:.0f}s" for b, c, i in plan)
+            + f", est. finish {end}")
 
         # Slack start/finish/error, matching General Scan's own notifications
         # -- 2026-09-05, user: "Stabiltiy Run도 오류가 발생하면 Slack으로
@@ -424,17 +598,125 @@ class StabilityRunUI:
         if notifier and notifier.enabled:
             try:
                 notifier.send("Stability Run started",
-                              f"{cnt} acquisitions of {int(ev):,} events, {int(iv)} s apart.\n"
-                              f"Est. finish: {end}",
+                              "".join(f"{b[0] if b else 'Current laser'}: {c} acquisitions, {int(i)} s apart\n"
+                                      for b, c, i in plan)
+                              + f"{int(ev):,} events each. Est. finish: {end}",
                               level="info", dedupe_key=None, blocking=False)
             except Exception as e:
                 self.controller._log(f"[WARNING] Stability Run start-notification failed: {type(e).__name__}.")
 
-        # script_v7.sh does the repeating internally, so this is ONE launch --
-        # the Python side must not also loop, or the two would fight over the
-        # single digitizer (that is exactly the 2026-08-15 failure mode).
+        self._start_block()
+
+    # ----------------------------------------------------- wavelength blocks
+    def _sleep(self, seconds):
+        end = time.time() + seconds
+        while self._running and time.time() < end:
+            time.sleep(0.5)
+
+    def _start_block(self):
+        if not self._running:
+            return
+        block = self._blocks[self._block_idx]
+        if block is None:
+            self._launch_block(True)
+            return
+        n = len(self._blocks)
+        self.l_status.config(text=f"Block {self._block_idx + 1}/{n}: preparing {block[0]} (TEC/LD ON)...",
+                             foreground="#1a7f37")
+        self.controller._log(f"[INFO] Stability Run block {self._block_idx + 1}/{n}: {block[0]}")
+
+        def work():
+            try:
+                return self.controller.auto_mgr._prepare_laser_block(block, sleep=self._sleep)
+            except Exception as e:
+                self.controller._log(f"[ERROR] Stability Run: laser {block[0]} preparation failed: {e}")
+                return False
+        self._in_thread(work, self._launch_block)
+
+    def _in_thread(self, work, then):
+        """Run blocking laser I/O off the Tk thread; `then(result)` runs back on the Tk thread."""
+        box = {}
+        t = threading.Thread(target=lambda: box.setdefault("r", work()), daemon=True)
+        t.start()
+
+        def poll():
+            if t.is_alive():
+                self.parent.after(300, poll)
+            else:
+                then(box.get("r"))
+        self.parent.after(300, poll)
+
+    def _launch_block(self, ok):
+        if not self._running:
+            return
+        block = self._blocks[self._block_idx]
+        if block is not None:
+            if not ok:
+                self._skipped.append(block[0])
+                self.controller._log(f"[WARNING] Stability Run: {block[0]} skipped (laser not ready).")
+                self._next_block()
+                return
+        _b, cnt, iv = self._plan_run[self._block_idx]
+        try:
+            self._write_repeat_config(cnt, iv)
+        except Exception as e:
+            messagebox.showerror("Stability Run", f"Could not write config3.h:\n{e}")
+            self._finish(f"Stopped: could not write config3.h ({e}).", exit_code=1)
+            return
+        if block is not None:
+            wl, bias, pulse = block
+            self.controller.auto_mgr._apply_laser_config(wl, pulse, bias)
+            self.l_status.config(text=f"Block {self._block_idx + 1}/{len(self._blocks)}: {wl}, "
+                                      f"{cnt} acquisitions, {int(iv)} s apart", foreground="#1a7f37")
+        # script_v7.sh does the repeating internally, so this is ONE launch per
+        # block -- the Python side must not also loop over acquisitions, or the
+        # two would fight over the single digitizer (the 2026-08-15 failure mode).
         self.controller.run_daq(category="manual")
         self._watch_for_finish()
+
+    def _block_finished(self, code):
+        self._last_code = code
+        block = self._blocks[self._block_idx]
+        if code not in (None, 0):
+            self._finish("Finished.", exit_code=code)
+            return
+        if block is None:
+            self._next_block()
+            return
+
+        def work():
+            try:
+                self.controller.auto_mgr._finish_laser_block(block[0])
+            except Exception as e:
+                self.controller._log(f"[WARNING] Stability Run: {block[0]} LD OFF failed: {e}")
+        self._in_thread(work, lambda _r: self._next_block())
+
+    def _next_block(self):
+        if not self._running:
+            return
+        self._block_idx += 1
+        if self._block_idx < len(self._blocks):
+            self._start_block()
+        else:
+            self._finish("Finished.", exit_code=self._last_code)
+
+    def _run_ranges(self):
+        """'405nm: 800-899' per wavelength, from the run registry rows of this run."""
+        try:
+            base = os.path.expanduser("~/ADC/ADC_test")
+            getp = getattr(self.controller, "_get_daq_path", None)
+            if getp:
+                base = getp() or base
+            path = os.path.join(base, "Data", "run_registry.csv")
+            start = self._run_started_at.strftime("%Y-%m-%dT%H:%M:%S")
+            runs = {}
+            with open(path, newline="") as f:
+                for r in csv.DictReader(f):
+                    if r.get("registered_at", "") >= start and r.get("kind") in ("stability", "manual"):
+                        runs.setdefault(r.get("wavelength", "?"), []).append(int(r["run"]))
+            return [f"{wl} nm: runs {min(v):03d}-{max(v):03d} ({len(v)})" for wl, v in runs.items()]
+        except Exception:
+            return []
 
     def _watch_for_finish(self):
         """Poll the console slot; restore config once the launcher exits.
@@ -458,11 +740,11 @@ class StabilityRunUI:
         if proc is None:
             # Slot already cleared by main.py -- finished, but the exit code
             # is gone with it, so we can't tell success from failure here.
-            self._finish("Finished.", exit_code=None)
+            self._block_finished(None)
             return
         code = proc.poll()
         if code is not None:
-            self._finish("Finished.", exit_code=code)
+            self._block_finished(code)
             return
         self.parent.after(5000, self._watch_for_finish)
 
@@ -481,8 +763,15 @@ class StabilityRunUI:
         self._finish("Stopped by operator.", exit_code=None, stopped_by_operator=True)
 
     def _finish(self, msg, exit_code=None, stopped_by_operator=False):
+        if not self._running:
+            return
         self._running = False
         self._restore_repeat_config()
+        ranges = self._run_ranges() if any(getattr(self, "_blocks", [None])) else []
+        if getattr(self, "_skipped", None):
+            msg += f" Skipped (laser not ready): {', '.join(self._skipped)}."
+        for line in ranges:
+            self.controller._log(f"[INFO] Stability Run {line}")
         self.btn_start.config(state=tk.NORMAL)
         self.btn_stop.config(state=tk.DISABLED)
         self.l_status.config(text=msg, foreground="#666")
@@ -496,6 +785,9 @@ class StabilityRunUI:
                 if start is not None:
                     dur_min = (datetime.now() - start).total_seconds() / 60.0
                     dur_line = f"Duration: {dur_min:.0f} min\n"
+                dur_line += "".join(f"{line}\n" for line in ranges)
+                if getattr(self, "_skipped", None):
+                    dur_line += f"Skipped (laser not ready): {', '.join(self._skipped)}\n"
                 if stopped_by_operator:
                     notifier.send("Stability Run stopped", f"{dur_line}Stopped by operator.",
                                   level="info", dedupe_key=None, blocking=False)

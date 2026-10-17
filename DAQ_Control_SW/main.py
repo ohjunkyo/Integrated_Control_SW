@@ -42,6 +42,7 @@ import time
 import math
 import sys
 import os
+import shlex
 import signal
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from window_focus import focus_window, is_running, HV_TITLE, HV_PROC, DAQ_TITLE
@@ -353,7 +354,31 @@ class App:
                 self.ui.update_pmt_position_widget(dev_num, tilt, rot)
             except Exception:
                 pass
+        self._write_live_angles(dev_num, tilt, rot)
         self._update_moving_indicator()
+
+    def _write_live_angles(self, dev_num, tilt, rot):
+        """logs/live_angles.json: last read angle per device, for read-only viewers (Qt v2)."""
+        now = time.time()
+        state = getattr(self, "_live_angle_state", None)
+        if state is None:
+            state = self._live_angle_state = {}
+        prev = state.get(str(dev_num))
+        if prev and now - prev["ts"] < 0.5:
+            return
+        try:
+            moving = bool(self.rot_mgr.is_moving.get(dev_num, False))
+        except Exception:
+            moving = False
+        state[str(dev_num)] = {"tilt": tilt, "rot": rot, "moving": moving, "ts": now}
+        try:
+            path = os.path.join(self.base_dir, "logs", "live_angles.json")
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(state, f)
+            os.replace(tmp, path)   # readers never see a half-written file
+        except OSError:
+            pass
 
     def _update_moving_indicator(self):
         """Status-bar indicator so a rotation move (Reset angle, manual Move
@@ -1000,7 +1025,8 @@ class App:
                 self.ui.update_log_view("No logs found.")
                 return
 
-            log_files = [f for f in os.listdir(log_dir) if f.endswith('.txt')]
+            # log_<date>.txt only: heartbeat.txt in the same folder is rewritten constantly
+            log_files = [f for f in os.listdir(log_dir) if f.startswith('log_') and f.endswith('.txt')]
             if not log_files:
                 self.ui.update_log_view("No logs found.")
                 return
@@ -2239,8 +2265,12 @@ class App:
             tag_arg = f'\\\"{tag}\\\"'
             chsel_arg = f'\\\"{chsel}\\\"'
             cmd = " ".join([helper, script, config_path, tag_arg, str(rs), str(re_), chsel_arg])
+            # Finalise the block first (scan W fixed, New fit); a no-op when it already is.
+            refit = f"(cd {shlex.quote(daq_path)} && ./analyze.sh refit {shlex.quote(tag)} {rs} {re_}) ;"
             self.ui.ensure_console_pane(slot)
-            self._run_job_in_console([cmd], job_name="Uniformity", slot=slot)
+            # Report in the Overlay layout (single scan), from the graphs just built.
+            report = f"; (cd {shlex.quote(daq_path)} && ./analyze.sh report {shlex.quote(tag)} {rs} {re_})"
+            self._run_job_in_console([refit, cmd, report], job_name="Uniformity", slot=slot)
             self._log(f"[INFO] Uniformity analysis: tag={tag}, runs {rs}-{re_}")
             messagebox.showinfo("Uniformity Analysis",
                                 f"Running for tag={tag}, runs {rs}-{re_}.\n\n"

@@ -31,15 +31,12 @@ class _Tooltip:
 from tkinter import ttk, scrolledtext, messagebox, font, simpledialog
 import os
 import json
-import csv
 import math
 import re
 import subprocess
-import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import pandas as pd
-from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from image_viewer import ImageViewer
 from config_window import ConfigWindow
@@ -353,18 +350,6 @@ class UIManager:
         self.notebook.add(data_tab, text="Data Files")
         self._create_data_viewer(data_tab)
 
-        # Tab 4b: PMT Info -- per-PMT representative values accumulated across
-        # repeat scans. Sits next to Data Files so the tab order reads
-        # measurement -> data -> results, with the operations/diagnostics tabs
-        # (Log/Backup/DAQ Diag) grouped after it; it was previously wedged
-        # between Backup and DAQ Diag, i.e. among tabs it has nothing to do
-        # with. Still being built out (see the WIP banner inside), so the tab
-        # title carries the marker too: an operator opening it should know the
-        # numbers are not final before reading any of them.
-        pmt_tab = ttk.Frame(self.notebook, padding=10)
-        self.notebook.add(pmt_tab, text="PMT Info (WIP)")
-        self._create_pmt_info_viewer(pmt_tab)
-
         # Tab 4c: Images -- NOT a real tab page. Selecting it pops the
         # ImageViewer window and bounces the selection back to where the user
         # was. The viewer works better as its own window (second monitor,
@@ -427,7 +412,16 @@ class UIManager:
         except Exception as e:
             print(f"[WARNING] Quick Start tab init failed (non-fatal): {e}")
 
-        # 7: Emergency Contact
+        # 7: Information (PMT history from LOG/ScanHistory)
+        try:
+            from managers.info_tab import InfoTab
+            self.info_main_frame = ttk.Frame(self.main_notebook)
+            self.main_notebook.add(self.info_main_frame, text=" Information ")
+            self.info_tab = InfoTab(self.info_main_frame, self.controller)
+        except Exception as e:
+            print(f"[WARNING] Information tab init failed (non-fatal): {e}")
+
+        # 8: Emergency Contact
         self.contact_frame = ttk.Frame(self.main_notebook)
         self.main_notebook.add(self.contact_frame, text=" Emergency ")
         self._create_contact_tab(self.contact_frame)
@@ -750,133 +744,154 @@ class UIManager:
 "GOAL\n"
 "  Pre-calibrate PMTs mounted on a motorised rotation stage.\n"
 "  A pulsed laser illuminates each PMT at many tilt/rotation\n"
-"  angles; DAQ records the response for uniformity / QE analysis.\n"
+"  angles; the DAQ records the response for uniformity / QE /\n"
+"  gain analysis.\n"
 "\n"
-"  Data flow:  DAQ (raw)  ─▶  Produce (prd)  ─▶  Analysis (result)\n"
-"                          ─▶  Uniformity / Overlay (PNG summary)\n"
+"  Data flow:  DAQ (raw)  ─>  Produce (prd)  ─>  Analysis (result)\n"
+"                          ─>  Uniformity / Overlay (PNG summary)\n"
 "\n"
-"  Top status bar: 🟢 = connected / healthy   🔴 = disconnected\n"
-"  Output tab (📟 Output): streams all job stdout in real time.\n"
+"------------------------------------------------------------\n"
+" WHERE THINGS ARE\n"
+"------------------------------------------------------------\n"
+"  Top:   System Connection Overview — one lamp per device\n"
+"         (green = OK, red = no connection / no fresh data).\n"
+"         The same lamps sit next to the DAQ / Laser / B-field /\n"
+"         UPS tab names.\n"
+"  DAQ System tab\n"
+"    left : PMT position, Run Mode & Parameters, Execute Scripts,\n"
+"           View, File & Directory Paths\n"
+"    right: General Scan (Quick Setup, Control Panel (Master),\n"
+"           Live Scan, Stability Run, Schedule Manager,\n"
+"           Live Scan Logs, Scan History), PMT Setup & Helper,\n"
+"           Output, Waveform, Data Files, Images, Log, Backup,\n"
+"           DAQ Diag\n"
+"  Laser Control (one sub-tab per wavelength), B-field Monitoring,\n"
+"  Signal Lamp, UPS Status, Logs, Information (PMT history),\n"
+"  Emergency (contacts).\n"
+"  The HV Monitor is a separate window (launcher: Start HV Monitor).\n"
 "\n"
 "------------------------------------------------------------\n"
 " BEFORE YOU START\n"
 "------------------------------------------------------------\n"
-"  1. General Scan > 'Quick Setup' tab:\n"
-"       Set shifter name, expert, note, laser wavelength,\n"
-"       PMT serials (SN1/2/3), cable direction, rotation offset,\n"
-"       and HV for each PMT. Click 💾 Save Settings.\n"
-"  2. Laser Control tab  (e.g. 405 nm sub-tab):\n"
-"       Connect → TEC ON → set Pulse current → Apply Currents\n"
-"       Trigger must be set to External.\n"
-"       ⚠  Only ONE wavelength LD may be ON at a time.\n"
-"  3. Verify the top status dots: DAQ System 🟢, HV System 🟢,\n"
-"       Laser Controller 🟢, OMRON UPS 🟢.\n"
-"  4. Click the green '🔓 CONTROLS ACTIVE' banner to unlock\n"
-"       motor control (password required once per session).\n"
+"  1. Unlock: click 'Unlock Controls' on the 'SYSTEM LOCKED'\n"
+"     banner (password once per session). 'Lock' locks it again.\n"
+"  2. General Scan > Quick Setup:\n"
+"       shifter, expert, note, wavelength, PMT serials (SN1/2/3),\n"
+"       cable direction and HV. Click 'Save Settings & Compile'.\n"
+"       Leave a note for the next shift in 'Handover Notes'.\n"
+"  3. Laser Control > <wavelength> sub-tab:\n"
+"       Connect -> TEC ON -> set Pulse current -> Apply Currents.\n"
+"       Trigger must be External.\n"
+"       Only ONE wavelength LD may be ON at a time.\n"
+"  4. HV Monitor: the PMT channels are ON at the set voltage.\n"
+"  5. Check the Overview lamps: DAQ System, HV / Env Sensor,\n"
+"     Laser Controller and OMRON UPS should be green.\n"
 "\n"
 "------------------------------------------------------------\n"
-" 1) GENERAL SCAN   (automated, full tilt sweep)  [recommended]\n"
+" 1) GENERAL SCAN   (automated tilt sweep)  [recommended]\n"
 "------------------------------------------------------------\n"
-"  Tab: DAQ System → General Scan → Control Panel (Master)\n"
+"  Tab: DAQ System > General Scan > Control Panel (Master)\n"
 "\n"
-"  1. (Optional) Tick '🧪 TEST RUN' for a dry run without real DAQ.\n"
-"  2. Click '▶ Start run'.\n"
-"     The system loops automatically for each tilt angle:\n"
-"       Move TILT → wait → Run DAQ → Produce → Analysis → Contour\n"
-"       → next angle … until the full sweep is done.\n"
-"  3. Monitor progress in the Scan Matrix (below the buttons)\n"
-"     and in 📟 Output → DAQ Stream.\n"
-"  4. Run numbers auto-increment and are locked to the scan-start\n"
-"     date (no midnight reset).\n"
+"  1. DAQ BACKEND: pick 'CAEN DAQ' (uses local config3.h)\n"
+"     or 'HK Digitizer' (2nd PC, rotation-synced; settings in\n"
+"     'HK Digitizer Config'). The choice is locked during a scan.\n"
+"  2. (Optional) Tick 'TEST RUN (Simulation Mode)' for a dry run.\n"
+"  3. Scan settings (admin, Danger Zone > 'Params'): tilt/rot\n"
+"     steps, repeat angles, and 'Rotate Devices' — untick a PMT\n"
+"     to keep it fixed for the whole scan.\n"
+"  4. Click 'Start run'. A pre-flight dialog shows what will be\n"
+"     written into every run (SN / HV / laser) — check it.\n"
+"     For each angle: Move -> settle -> DAQ -> Produce ->\n"
+"     Analysis -> next angle, until the sweep is done.\n"
+"  5. Watch progress in the Scan Matrix, Live Scan (QE / Gain /\n"
+"     TTS per point), Live Scan Logs and the Output tab.\n"
 "\n"
 "  Pause / Resume:\n"
-"    ⏸ Pause  — waits for the current step, then holds.\n"
-"    ⏯ Continue — resumes from that checkpoint.\n"
+"    'Pause'    — finishes the current step, then holds.\n"
+"    'Continue' — resumes from that point.\n"
+"  Stop completely: 'Re-Run / Abort Scan' (Danger Zone)\n"
+"      [Yes]    -> abort + delete checkpoint -> next Start is FRESH\n"
+"      [No]     -> abort + keep checkpoint   -> next Start can RESUME\n"
+"      [Cancel] -> do nothing\n"
+"    'Stop / Abort Guide' explains the options in the app.\n"
 "\n"
-"  Stop completely:\n"
-"    ⚠ Re-Run / Abort Scan  (Danger Zone)\n"
-"      [Yes]    → abort + delete checkpoint → next Start is FRESH\n"
-"      [No]     → abort + keep checkpoint  → next Start can RESUME\n"
-"      [Cancel] → do nothing\n"
-"\n"
-"  When finished: results are in Data/FinalResult/.\n"
-"    '7. Uniformity' → enter date tag + run range → build PNG summary\n"
-"    '8. Overlay'    → compare multiple datasets\n"
-"    Image Viewer (Ctrl+I) → browse generated plots\n"
+"  Run later: General Scan > Schedule Manager — pick date and\n"
+"  time (JST), 'Add Schedule' (max 3 queued; 'Cancel Selected').\n"
+"  When finished: General Scan > Scan History lists every scan\n"
+"  with its settings; Information shows the history per PMT.\n"
 "\n"
 "------------------------------------------------------------\n"
-" 2) MANUAL SCAN   (single runs, no rotation automation)\n"
+" 2) STABILITY RUN   (repeated runs at a fixed angle)\n"
+"------------------------------------------------------------\n"
+"  Tab: General Scan > Stability Run\n"
+"  The stage does not move — position the PMTs first.\n"
+"  Set events per run, interval and number of runs (or enter the\n"
+"  available time and click 'Use this count'). The panel shows\n"
+"  the total duration, finish time and disk space needed.\n"
+"  'Start Stability Run' / 'Stop'.\n"
+"\n"
+"------------------------------------------------------------\n"
+" 3) MANUAL RUN   (single runs, no rotation automation)\n"
 "------------------------------------------------------------\n"
 "  Tab: DAQ System (left 'Execute Scripts' panel)\n"
-"\n"
-"  1. Unlock Controls (lock banner at top) if moving motors.\n"
-"  2. Select mode: Laser (external trigger) or Dark (self trigger).\n"
-"  3. Run number is auto-suggested (next free #); edit if needed.\n"
-"  4. '2. Run DAQ (Only Click)' → records one raw .root file.\n"
-"  5. '3. Produce (Ctrl+P)'     → creates the prd file.\n"
-"  6. '4. Analysis (Ctrl+A)'    → creates the result file.\n"
-"       ⚠  Analysis needs the prd file — always Produce first.\n"
-"  7. '5. Waveform Inspection'  → opens an interactive waveform\n"
-"       viewer in a new terminal. A settings dialog lets you set:\n"
-"         • Y-axis ±mV around pedestal  (default: 5 mV)\n"
-"         • pC threshold for 's' jump   (default: −0.5 pC)\n"
-"         • X-axis sample range          (default: full)\n"
-"       In the terminal: n=next, s=jump to threshold, #=go to entry\n"
-"  8. '6. Waveform (2D Contour)' → builds a 2D time-vs-voltage\n"
-"       contour plot. Settings dialog:\n"
-"         • Y-axis ±mV around pedestal  (default: 3 mV)\n"
-"         • X-axis sample range          (default: full)\n"
-"       Output saved to Data/image/Contour/.\n"
-"  Tip: select a file in 'Data Files' tab to target that exact\n"
-"       run; if nothing is selected, the Run-number box is used.\n"
-"       Multiple files can be selected for batch Produce/Analysis.\n"
+"  1. Run Mode & Parameters: Manual Mode, then Laser (external\n"
+"     trigger) or Dark (self trigger).\n"
+"  2. '2. Run DAQ (Only Click)'   -> one raw .root file.\n"
+"  3. '3. Produce (Ctrl + P)'     -> prd file.\n"
+"  4. '4. Analysis (Ctrl + A)'    -> result file.\n"
+"       Analysis needs the prd file — always Produce first.\n"
+"  5. '5. Waveform inspection (Ctrl + S)' -> interactive waveform\n"
+"       viewer; '6. Waveform (2D Contour)' -> time-vs-voltage plot\n"
+"       saved to Data/image/Contour/.\n"
+"  Tip: select a file in the Data Files tab to target that run;\n"
+"       several files can be selected for batch Produce/Analysis.\n"
 "\n"
 "------------------------------------------------------------\n"
-" 3) IF SOMETHING GOES WRONG\n"
+" 4) ANALYSIS AND PLOTS\n"
 "------------------------------------------------------------\n"
-"  DAQ hangs / Output tab stuck:\n"
-"     Scan watchdog auto-kills a frozen DAQ.\n"
-"     Manual kill:  pkill -9 execute_DAQ_v2\n"
-"     Then click ⚠ Re-Run / Abort Scan to reset the UI.\n"
+"  '7. Uniformity (tag, runs)'   -> uniformity summary of a block\n"
+"  '8. Overlay Uniformity'       -> compare several blocks\n"
+"  '9. Stability (Monitor Drift)' -> drift plots of a stability run\n"
+"  'Image Viewer (Ctrl + I)' or the Images tab -> browse plots.\n"
 "\n"
-"  Analysis gives empty or tiny result file:\n"
-"     You need the prd file → run Produce first.\n"
-"     Auto-pipeline passes the prd path automatically.\n"
-"\n"
+"------------------------------------------------------------\n"
+" 5) IF SOMETHING GOES WRONG\n"
+"------------------------------------------------------------\n"
+"  DAQ lamp red / DAQ does not start:\n"
+"     DAQ Diag tab -> run the check; it suggests the fix.\n"
+"  DAQ hangs / Output stuck:\n"
+"     The scan watchdog kills a frozen DAQ automatically.\n"
+"     Manual: pkill -9 execute_DAQ_v2, then 'Re-Run / Abort Scan'.\n"
+"  Analysis gives an empty or tiny result file:\n"
+"     The prd file is missing — run Produce first.\n"
 "  Laser INTERLOCK / comms error:\n"
-"     Check the interlock magnets are attached to the enclosure.\n"
-"     The LD is forced OFF on error; reconnect from the\n"
-"     wavelength tab (the app also auto-reconnects in background).\n"
-"\n"
+"     Check the interlock magnets on the enclosure. The LD is\n"
+"     forced OFF on error; reconnect from the wavelength sub-tab.\n"
 "  Motor 'already moving' / unresponsive:\n"
-"     Click Abort. Lock auto-releases on failed connection.\n"
-"     Rotation is blocked when TILT ≠ 0 (safety interlock).\n"
-"\n"
-"  Recovery / Resume after abort:\n"
-"     If checkpoint was kept: click Start run → 'Resume' dialog.\n"
-"     If checkpoint was deleted (or you chose fresh start):\n"
-"     click Start run → scan begins from -55°.\n"
-"\n"
-"  Emergency:\n"
-"     'Emergency' tab → contacts and HV shutdown.\n"
-"     Turn LD OFF and stop motors before cutting power.\n"
+"     Abort. Rotation is blocked while TILT != 0 (safety rule).\n"
+"  Disk filling up:\n"
+"     Backup tab — RAW files are copied to the External HDD every\n"
+"     night at 03:00 and removed locally once the copy is verified.\n"
+"  Resume after an abort:\n"
+"     Checkpoint kept -> 'Start run' offers 'Resume'.\n"
+"     Checkpoint deleted -> 'Start run' begins a fresh sweep.\n"
+"  Emergency: Emergency tab for contacts.\n"
+"     Turn the LD OFF and stop the motors before cutting power.\n"
 "\n"
 "------------------------------------------------------------\n"
-" KEY SHORTCUTS  (when DAQ System tab is focused)\n"
+" KEY SHORTCUTS  (DAQ System tab focused)\n"
 "------------------------------------------------------------\n"
-"  Ctrl+P  Produce       Ctrl+A  Analysis\n"
-"  Ctrl+S  Waveform      Ctrl+I  Image Viewer\n"
+"  Ctrl+O  Global Settings   Ctrl+P  Produce   Ctrl+A  Analysis\n"
+"  Ctrl+S  Waveform          Ctrl+I  Image Viewer\n"
 "\n"
 "------------------------------------------------------------\n"
 " NOTES\n"
 "------------------------------------------------------------\n"
-"  * Recommended laser: 405 nm.  Also tested: 375 / 450 / 473 nm.\n"
+"  * Recommended laser: 405 nm.  Also used: 375 / 450 / 473 nm.\n"
 "  * Only ONE LD ON at a time (enforced by the app).\n"
-"  * 📟 Output tab turns 🟢 while a job is running; sub-tabs\n"
-"    show ✅ Done or ❌ Failed after completion.\n"
-"  * 'Logs' tab shows Laser / DAQ / HV / UPS logs in one place.\n"
-"  * PMT Setup & Helper tab shows real-time TOP VIEW and\n"
-"    RIGHT SIDE VIEW diagrams of each PMT's tilt/rotation angle.\n"
+"  * Logs tab: DAQ / Laser / UPS / App / HV logs in one place.\n"
+"  * PMT Setup & Helper: top and side view of each PMT's\n"
+"    tilt/rotation, and how to mount it for X / Y scans.\n"
 "============================================================\n"
         )
         txt.config(state="normal")
@@ -2100,252 +2115,6 @@ class UIManager:
             cmd, job_name="Backup (sync_data_v2)", slot="backup",
             on_complete=lambda *_: self.master.after(500, self.refresh_backup_view))
         self.focus_console("backup")
-
-    # ------------------------------------------------------------------
-    # PMT Info tab  (WORK IN PROGRESS)
-    # ------------------------------------------------------------------
-    PMT_REP_CSV = os.path.expanduser("~/ADC/ADC_test/Data/summary/pmt_representative.csv")
-    PMT_SUMMARY_CSV = os.path.expanduser("~/ADC/ADC_test/Data/summary/pmt_uniformity_summary.csv")
-
-    def _create_pmt_info_viewer(self, parent):
-        """Per-PMT representative values (mean over repeats +- reproducibility).
-
-        Reads the CSV that PMT_Representative.C writes rather than
-        recomputing here: the ROOT macro is the single definition of how a
-        representative value is formed, and a second implementation in Python
-        would be one more thing to keep in sync."""
-        # ---- WIP banner ---------------------------------------------------
-        wip = tk.Label(parent,
-                       text="⚠  WORK IN PROGRESS -- this tab is still being built. "
-                            "Numbers shown are for checking the pipeline, not for reporting.",
-                       bg="#fff3cd", fg="#7a5b00", font=("Helvetica", 10, "bold"),
-                       anchor="w", padx=10, pady=6)
-        wip.pack(fill=tk.X, pady=(0, 8))
-
-        top = ttk.Frame(parent)
-        top.pack(fill=tk.X, pady=(0, 6))
-        self._pmt_summary_lbl = ttk.Label(top, text="Not loaded yet.",
-                                          font=("Helvetica", 11, "bold"))
-        self._pmt_summary_lbl.pack(side=tk.LEFT)
-        ttk.Button(top, text="🔄 Refresh", command=self.refresh_pmt_info).pack(side=tk.RIGHT)
-        ttk.Button(top, text="↻ Recompute (ROOT)",
-                   command=self._recompute_pmt_representative).pack(side=tk.RIGHT, padx=(0, 6))
-
-        # Tables on the left, curve on the right: the numbers say how much a
-        # PMT varies between repeats, but only the curve says WHERE on the
-        # cathode it varies, and the two are read together.
-        split = ttk.Frame(parent)
-        split.pack(fill=tk.BOTH, expand=True)
-        split.columnconfigure(0, weight=5)
-        split.columnconfigure(1, weight=5)
-        split.rowconfigure(0, weight=1)
-
-        left = ttk.Frame(split)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
-        right = ttk.Frame(split)
-        right.grid(row=0, column=1, sticky="nsew")
-
-        # ---- representative table ----------------------------------------
-        rep_frame = ttk.LabelFrame(left, text=" Representative values (mean over repeats) ",
-                                   padding=4)
-        rep_frame.pack(fill=tk.BOTH, expand=True)
-        cols = ("serial", "axis", "R", "cs_ratio", "cs_err", "cs_repro",
-                "sigma1000", "sig_err", "sig_repro")
-        self._pmt_tree = ttk.Treeview(rep_frame, columns=cols, show="headings", height=10)
-        widths = (80, 60, 34, 80, 70, 78, 80, 70, 78)
-        for c, w in zip(cols, widths):
-            self._pmt_tree.heading(c, text=c)
-            self._pmt_tree.column(c, width=w, anchor="center")
-        vsb = ttk.Scrollbar(rep_frame, orient="vertical", command=self._pmt_tree.yview)
-        self._pmt_tree.configure(yscrollcommand=vsb.set)
-        vsb.pack(side=tk.RIGHT, fill=tk.Y)
-        self._pmt_tree.pack(fill=tk.BOTH, expand=True)
-        self._pmt_tree.tag_configure("single", foreground="#8a6d00")
-        self._pmt_tree.bind("<<TreeviewSelect>>", self._on_pmt_row_selected)
-
-        # ---- per-measurement detail --------------------------------------
-        det_frame = ttk.LabelFrame(left, text=" Individual measurements ", padding=4)
-        det_frame.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
-        dcols = ("timestamp", "serial", "tag", "axis", "n_points", "cs_ratio", "sigma1000")
-        self._pmt_det = ttk.Treeview(det_frame, columns=dcols, show="headings", height=8)
-        for c, w in zip(dcols, (130, 75, 140, 60, 70, 80, 80)):
-            self._pmt_det.heading(c, text=c)
-            self._pmt_det.column(c, width=w, anchor="center")
-        vsb2 = ttk.Scrollbar(det_frame, orient="vertical", command=self._pmt_det.yview)
-        self._pmt_det.configure(yscrollcommand=vsb2.set)
-        vsb2.pack(side=tk.RIGHT, fill=tk.Y)
-        self._pmt_det.pack(fill=tk.BOTH, expand=True)
-
-        # ---- curve panel --------------------------------------------------
-        plot_frame = ttk.LabelFrame(right, text=" Uniformity curve ", padding=4)
-        plot_frame.pack(fill=tk.BOTH, expand=True)
-        self._pmt_plot_hint = ttk.Label(
-            plot_frame, text="Select a PMT row on the left to plot its curve.",
-            foreground="#888888", anchor="center")
-        self._pmt_plot_hint.pack(fill=tk.X, pady=(2, 4))
-
-        self._pmt_fig = Figure(figsize=(5.6, 5.2), dpi=100)
-        self._pmt_ax = self._pmt_fig.add_subplot(111)
-        self._pmt_fig.subplots_adjust(left=0.15, right=0.97, top=0.93, bottom=0.12)
-        self._pmt_canvas = FigureCanvasTkAgg(self._pmt_fig, master=plot_frame)
-        self._pmt_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-        self._pmt_draw_placeholder()
-
-        self.refresh_pmt_info()
-
-    # ---- PMT curve plotting -------------------------------------------
-    PMT_UNIFORMITY_DIR = os.path.expanduser("~/ADC/ADC_test/Data/UNIFORMITY")
-    PMT_PLOT_METRIC = "MonNorm_CorrRawQE"
-
-    def _pmt_draw_placeholder(self, msg="No curve selected."):
-        self._pmt_ax.clear()
-        self._pmt_ax.text(0.5, 0.5, msg, ha="center", va="center",
-                          transform=self._pmt_ax.transAxes, color="#888", fontsize=10)
-        self._pmt_ax.set_xticks([]); self._pmt_ax.set_yticks([])
-        self._pmt_canvas.draw_idle()
-
-    def _on_pmt_row_selected(self, _event=None):
-        sel = self._pmt_tree.selection()
-        if not sel:
-            return
-        vals = self._pmt_tree.item(sel[0]).get("values") or []
-        if len(vals) < 2:
-            return
-        self._plot_pmt_curve(str(vals[0]), str(vals[1]))
-
-    def _plot_pmt_curve(self, serial, axis):
-        """Overlay every repeat of one PMT/axis, plus their point-wise mean.
-
-        The mean band is the spread ACROSS repeats at each angle -- the same
-        reproducibility the table quotes as a single number, shown here per
-        angle so a PMT that only disagrees at the edges is distinguishable
-        from one that disagrees everywhere."""
-        try:
-            import uproot
-        except ImportError:
-            self._pmt_draw_placeholder("uproot not installed.")
-            return
-
-        # "pooled" has no graph of its own; it is X and Y together.
-        axes = ["X", "Y"] if axis == "pooled" else [axis]
-        tags = []
-        for r in self._read_csv_rows(self.PMT_SUMMARY_CSV):
-            if r.get("serial") == serial and r.get("tag") not in tags:
-                tags.append(r.get("tag"))
-        if not tags:
-            self._pmt_draw_placeholder(f"No measurements found for {serial}.")
-            return
-
-        self._pmt_ax.clear()
-        self._pmt_ax.grid(alpha=0.3)
-        curves = []
-        for ax_name in axes:
-            for i, tag in enumerate(tags):
-                path = os.path.join(self.PMT_UNIFORMITY_DIR, f"Graphs_Uniformity_{tag}.root")
-                if not os.path.exists(path):
-                    continue
-                try:
-                    with uproot.open(path) as f:
-                        g = f[f"gr_{serial}_{ax_name}_{self.PMT_PLOT_METRIC}"]
-                        x = np.asarray(g.member("fX"), dtype=float)
-                        y = np.asarray(g.member("fY"), dtype=float)
-                except Exception:
-                    continue
-                good = y > 0
-                if not good.any():
-                    continue
-                order = np.argsort(x[good])
-                xs, ys = x[good][order], y[good][order]
-                curves.append((xs, ys))
-                self._pmt_ax.plot(xs, ys, marker="o", ms=3, lw=0.8, alpha=0.55,
-                                  label=f"{tag} {ax_name}" if len(axes) > 1 else tag)
-
-        if not curves:
-            self._pmt_draw_placeholder(f"No curve data for {serial} {axis}.")
-            return
-
-        # Point-wise mean +- spread, on the angle grid of the first curve.
-        ref_x = curves[0][0]
-        stacked = []
-        for xs, ys in curves:
-            stacked.append(np.interp(ref_x, xs, ys))
-        stacked = np.vstack(stacked)
-        mean = stacked.mean(axis=0)
-        if stacked.shape[0] >= 2:
-            sd = stacked.std(axis=0, ddof=1)
-            self._pmt_ax.fill_between(ref_x, mean - sd, mean + sd, color="#d62728",
-                                      alpha=0.18, label="mean ± repro")
-        self._pmt_ax.plot(ref_x, mean, color="#d62728", lw=2, label="mean")
-
-        self._pmt_ax.set_xlabel("Position angle [degree]")
-        self._pmt_ax.set_ylabel("Monitor-normalized QE [a.u.]")
-        self._pmt_ax.set_title(f"{serial}  ({axis})", fontsize=11)
-        # Headroom so the legend never lands on the curve.
-        lo, hi = self._pmt_ax.get_ylim()
-        self._pmt_ax.set_ylim(lo, hi + (hi - lo) * 0.28)
-        self._pmt_ax.legend(fontsize=7, ncol=2, framealpha=0.9, loc="upper right")
-        self._pmt_plot_hint.config(
-            text=f"{serial} {axis} — {len(curves)} curve(s) from {len(tags)} measurement(s)")
-        self._pmt_canvas.draw_idle()
-
-    def _read_csv_rows(self, path):
-        """Small CSV reader -> list of dicts. Returns [] when absent."""
-        if not os.path.exists(path):
-            return []
-        try:
-            with open(path, newline="", encoding="utf-8") as f:
-                return list(csv.DictReader(f))
-        except OSError:
-            return []
-
-    def refresh_pmt_info(self):
-        tree = getattr(self, "_pmt_tree", None)
-        if tree is None:
-            return
-        tree.delete(*tree.get_children())
-        self._pmt_det.delete(*self._pmt_det.get_children())
-
-        rep = self._read_csv_rows(self.PMT_REP_CSV)
-        if not rep:
-            self._pmt_summary_lbl.config(
-                text="No representative values yet — run  ./analyze.sh pmtrep",
-                foreground="#8a8a8a")
-        else:
-            # X and Y are always wanted separately, so the merged "pooled" row
-            # is filtered out here as well as no longer being written by
-            # Draw_HamamatsuStyle_Uniformity.C -- rows written before that
-            # change are still in the CSVs, and without this filter they would
-            # keep showing a third row per PMT (2026-08-26).
-            rep = [r for r in rep if r.get("axis", "") != "pooled"]
-            serials = {r.get("serial", "") for r in rep}
-            self._pmt_summary_lbl.config(
-                text=f"{len(serials)} PMT(s), {len(rep)} rows", foreground="#1a7f37")
-            for r in rep:
-                single = not r.get("cs_err")      # blank -> only one measurement
-                tree.insert("", tk.END, tags=("single",) if single else (), values=(
-                    r.get("serial", ""), r.get("axis", ""), r.get("n_repeats", ""),
-                    r.get("cs_ratio", ""), r.get("cs_err", "—"),
-                    r.get("cs_reproducibility", "—"),
-                    r.get("sigma1000", ""), r.get("sigma1000_err", "—"),
-                    r.get("sigma1000_reproducibility", "—")))
-
-        for r in self._read_csv_rows(self.PMT_SUMMARY_CSV):
-            if r.get("axis", "") == "pooled":
-                continue
-            self._pmt_det.insert("", tk.END, values=(
-                r.get("timestamp", ""), r.get("serial", ""), r.get("tag", ""),
-                r.get("axis", ""), r.get("n_points", ""),
-                r.get("cs_ratio", ""), r.get("sigma1000", "")))
-
-    def _recompute_pmt_representative(self):
-        """Re-run PMT_Representative.C, then reload the table it writes."""
-        adc = os.path.expanduser("~/ADC/ADC_test")
-        self.ensure_console_pane("analysis")
-        self.controller._run_job_in_console(
-            [f"cd {adc} && ./analyze.sh pmtrep"],
-            job_name="PMT Representative", slot="analysis",
-            on_complete=lambda *_: self.master.after(500, self.refresh_pmt_info))
-        self.focus_console("analysis")
 
     # ------------------------------------------------------------------
     # DAQ Diagnostics tab
@@ -4690,7 +4459,7 @@ class UIManager:
             lbl = ttk.Label(frame, text=label, font=("Helvetica", 10, "bold"))
             lbl.pack(side=tk.LEFT)
             # Keep the DAQ label so the dashboard loop can rewrite it to name
-            # the ACTIVE backend (Korean DAQ / HK Digitizer) -- see
+            # the ACTIVE backend (CAEN DAQ / HK Digitizer) -- see
             # _refresh_daq_backend_label. A bigger, colored badge sits next to
             # it so an operator can tell at a glance which data path is live.
             if key == "DAQ":
@@ -4707,7 +4476,7 @@ class UIManager:
 
     def _refresh_daq_backend_label(self):
         """Rewrite the DAQ System entry to name the ACTIVE data backend --
-        'Korean DAQ (CAEN)' vs 'HK Digitizer' -- so which acquisition path is
+        'CAEN DAQ' vs 'HK Digitizer' -- so which acquisition path is
         live is obvious from the System Connection Overview at a glance,
         instead of only being visible on the Control Panel's small toggle."""
         lbl = getattr(self, "_daq_backend_lbl", None)
@@ -4720,7 +4489,7 @@ class UIManager:
             badge.config(text="🖧 HK Digitizer", foreground="#8e44ad")
         else:
             lbl.config(text="DAQ System:")
-            badge.config(text="🇰🇷 Korean DAQ (CAEN)", foreground="#0a84ff")
+            badge.config(text="CAEN DAQ", foreground="#0a84ff")
 
     def _create_status_dashboard_tail(self, dashboard):
         self.global_job_status_label = ttk.Label(dashboard, text="📊 Pipeline Monitor: Idle", 
@@ -4834,7 +4603,7 @@ class UIManager:
         if getattr(self.controller, '_shutting_down', False):
             return
 
-        # Keep the "Korean DAQ / HK Digitizer" badge current even if the
+        # Keep the "CAEN DAQ / HK Digitizer" badge current even if the
         # backend was switched by something other than the toggle handler.
         self._refresh_daq_backend_label()
 

@@ -9,6 +9,8 @@ HV_TITLE = "Real-time Monitoring System"
 DAQ_TITLE = "DAQ/LASER/UPS Control Panel"
 HV_PROC = "HV_Control_SW/monitoring_app.py"
 DAQ_PROC = "DAQ_Control_SW/main"
+V2_TITLE = "DAQ Control v2"
+V2_PROC = "DAQ_Control_SW_v2/main.py"
 
 
 def focus_window(title_prefix):

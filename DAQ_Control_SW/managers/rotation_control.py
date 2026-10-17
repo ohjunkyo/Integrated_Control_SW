@@ -4,8 +4,12 @@ import json
 import time
 import struct
 import threading
-from tkinter import messagebox
 from pymodbus.client.sync import ModbusTcpClient
+
+
+def _show_error(title, msg):
+    from tkinter import messagebox   # imported here so headless readers (Qt v2) never load Tk
+    messagebox.showerror(title, msg)
 
 
 class RotationManager:
@@ -394,6 +398,10 @@ class RotationManager:
     # ------------------------------------------------------------------
     # Motion commands
     # ------------------------------------------------------------------
+    def _alert(self, title, msg):
+        hook = getattr(self.controller, "dialogs", None)
+        (hook.showerror if hook is not None else _show_error)(title, msg)
+
     def _angle_in_range(self, axis_label, value, skip_lock):
         """Reject a move outside the axis' safe range.
 
@@ -413,7 +421,7 @@ class RotationManager:
                f"[{rng['start']}°, {rng['end']}°].")
         self.controller._log(f"ERROR: {msg}")
         if not skip_lock:
-            messagebox.showerror("Angle Out of Range", msg)
+            self._alert("Angle Out of Range", msg)
         return False
 
     def _send_move(self, dev_num, axis, value, skip_lock=False):
@@ -456,7 +464,7 @@ class RotationManager:
                     # not sit in a phantom "moving" state for that whole time.
                     self._release_motion(dev_num)
                     if not skip_lock:
-                        messagebox.showerror(
+                        self._alert(
                             "Safety Interlock",
                             f"Cannot rotate Device {dev_num}!\n\n"
                             f"Tilt must be 0.0° before rotating.\n"

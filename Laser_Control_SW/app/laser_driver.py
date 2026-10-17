@@ -239,6 +239,23 @@ class TamadenshiLaser:
             self._handle_disconnection()
             return False
             
+    def _drain(self) -> int:
+        """Discard input reports left from an earlier transaction (e.g. two processes polling at once);
+        otherwise the next read returns the previous command's reply. Caller holds _io_lock."""
+        n = 0
+        try:
+            self.device.set_nonblocking(1)
+            while n < 8 and self.device.read(self.PACKET_LENGTH):
+                n += 1
+        except Exception:
+            pass
+        finally:
+            try:
+                self.device.set_nonblocking(0)
+            except Exception:
+                pass
+        return n
+
     def _read_command(self, cmd_code: int, payload_bytes: List[int] = []) -> Union[bytearray, None]:
         """(Internal low-level) Sends a command (Write) and receives a response (Read)."""
         if not self.is_connected():
@@ -260,6 +277,7 @@ class TamadenshiLaser:
             # (e.g. from the watchdog thread) cannot slip a write in between and steal
             # this response.
             with self._io_lock:
+                self._drain()
                 # Step 1: Write the command to the device
                 self.device.write(report)
 
@@ -306,6 +324,7 @@ class TamadenshiLaser:
         report[1] = self.CMD_GET_ALL_STATUS
         try:
             with self._io_lock:
+                self._drain()
                 self.device.write(report)
                 data = self.device.read(self.PACKET_LENGTH, 1000)
             return list(data) if data else None
@@ -356,9 +375,16 @@ class TamadenshiLaser:
         
     def set_temp(self, temp_c: float) -> bool:
         """Sets the target TEC temperature. (Unit: °C, max 40°C)"""
-        # The max value for SetTemp is assumed to be 40.0 (based on GetTemp logic)
-        hb, lb = self._val_to_dac(temp_c, max_ma=40.0)
+        # Same as the vendor DLL's SetTemp -> Val2Dac(temp, 40): round(temp * 4095 / 40), high byte first.
+        hb, lb = self._val_to_dac(min(float(temp_c), 40.0), max_ma=40.0)
         return self._send_command(self.CMD_SET_TEMP, [hb, lb])
+
+    def get_temp_setpoint(self) -> Optional[float]:
+        """Reads the TEC target temperature (vendor GetTemp: command 0x0A with 128, 0; 12-bit over 0-40 C)."""
+        resp = self._read_command(self.CMD_SET_TEMP, [128, 0])
+        if resp is None or len(resp) < 2:
+            return None
+        return (resp[0] * 256 + resp[1]) * 40.0 / 4095.0
 
     CMD_PULSE_WIDTH = 0x08   # (PulseWidth) -- found via decompiling tmHIDLD.dll;
     # not documented in any vendor manual we have. add+128, dat=0 reads EEPROM

@@ -39,9 +39,26 @@ class ControlAccessManager:
                     continue   # process gone by the time we checked
                 except Exception:
                     continue
-                if comm.lower().startswith("python"):
+                if comm.lower().startswith("python") and not self._is_v2(pid):
                     return True
             return False
+        except Exception:
+            return False
+
+    @staticmethod
+    def _is_v2(pid):
+        """The Qt v2 app is also started as main.py; it only views unless it holds 'daq_v2_control'."""
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                return b"DAQ_Control_SW_v2" in f.read()
+        except OSError:
+            return False
+
+    @staticmethod
+    def v2_holds_controls():
+        try:
+            import instance_lock
+            return instance_lock.is_running("daq_v2_control")
         except Exception:
             return False
 
@@ -52,6 +69,11 @@ class ControlAccessManager:
             messagebox.showinfo("Lock", "Control access has been locked.")
             return True
 
+        if self.v2_holds_controls():
+            messagebox.showerror("Collision Alert",
+                                 "DAQ Control v2 has its controls unlocked.\n"
+                                 "Lock it there first, so only one app drives the hardware.")
+            return False
         if self.is_production_running():
             messagebox.showerror("Collision Alert", 
                                  "⚠️ Production (main.py) is already running!\n"

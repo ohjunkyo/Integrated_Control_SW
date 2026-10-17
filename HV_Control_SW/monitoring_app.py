@@ -8,7 +8,7 @@ import numpy as np
 from worker_manager import WorkerManager
 from database_manager import DatabaseManager
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from window_focus import focus_window, is_running, DAQ_TITLE, DAQ_PROC, HV_TITLE
+from window_focus import focus_window, is_running, DAQ_TITLE, DAQ_PROC, HV_TITLE, V2_TITLE, V2_PROC
 
 # Dark Box #1/#2 were swapped in config_precal.json's arduino_settings.sensors
 # on 2026-07-27 17:42 (pin 2 was mislabeled "Dark Box #1", pin 3 "Dark Box #2" --
@@ -735,10 +735,12 @@ class MonitoringApp(QMainWindow):
 
     def go_to_daq_panel(self):
         result = focus_window(DAQ_TITLE)
+        if result == 'no-window':
+            result = focus_window(V2_TITLE)
         if result == 'raised':
             return
         if result == 'no-window':
-            if is_running(DAQ_PROC):
+            if is_running(DAQ_PROC) or is_running(V2_PROC):
                 QMessageBox.information(self, "DAQ Panel", "DAQ Control is running but its window is not ready yet.")
             else:
                 QMessageBox.warning(self, "DAQ Panel", "DAQ Control is not running.\nStart it from the Launcher.")

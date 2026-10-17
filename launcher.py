@@ -10,11 +10,12 @@ from datetime import datetime
 from tkinter import messagebox
 
 import instance_lock
-from window_focus import focus_window, HV_TITLE, DAQ_TITLE
+from window_focus import focus_window, HV_TITLE, DAQ_TITLE, V2_TITLE
 
 # Which instance lock each launcher button corresponds to.
-LOCK_OF = {"daq": "daq", "test": "daq", "hv": "hv", "laser": "laser_gui"}
-WINDOW_OF = {"daq": DAQ_TITLE, "test": DAQ_TITLE, "hv": HV_TITLE, "laser": "Laser Control"}
+LOCK_OF = {"daq": "daq", "test": "daq", "v2": "daq_v2", "hv": "hv", "laser": "laser_gui"}
+WINDOW_OF = {"daq": DAQ_TITLE, "test": DAQ_TITLE, "v2": V2_TITLE, "hv": HV_TITLE, "laser": "Laser Control"}
+V2_PYTHON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "venv", "bin", "python")
 
 class AppLauncher(tk.Tk):
     def __init__(self):
@@ -26,7 +27,7 @@ class AppLauncher(tk.Tk):
         signal.signal(signal.SIGHUP, signal.SIG_IGN)
 
         self.title("Integrated Control Software Launcher")
-        self.geometry("550x800")
+        self.geometry("550x880")
 
         self.configure(bg='#333333')
         button_font = ("Helvetica", 14, "bold")
@@ -35,7 +36,7 @@ class AppLauncher(tk.Tk):
 
         self.processes = []
         # Per-app process handles — checked with poll() instead of pgrep
-        self._procs = {"daq": None, "test": None, "hv": None, "laser": None}
+        self._procs = {"daq": None, "test": None, "v2": None, "hv": None, "laser": None}
 
         self.protocol("WM_DELETE_WINDOW", self._hide_to_tray)
 
@@ -44,6 +45,9 @@ class AppLauncher(tk.Tk):
 
         daq_button = tk.Button(button_frame, text="Start DAQ Control", font=button_font, bg="#007ACC", fg="white", padx=20, pady=15, command=self.launch_daq_control)
         daq_button.pack(pady=10, fill=tk.X)
+
+        v2_button = tk.Button(button_frame, text="Start DAQ Control v2", font=button_font, bg="#005A9E", fg="white", padx=20, pady=15, command=self.launch_daq_v2)
+        v2_button.pack(pady=10, fill=tk.X)
 
         test_button = tk.Button(button_frame, text="Start DAQ (TEST MODE)", font=button_font, bg="#f0ad4e", fg="black", padx=20, pady=15, command=self.launch_test_control)
         test_button.pack(pady=10, fill=tk.X)
@@ -201,12 +205,12 @@ class AppLauncher(tk.Tk):
     def on_closing(self):
         """Called on window close or 'Exit' button press."""
         running_processes = [p for p in self.processes if p.poll() is None]
-        foreign = [n for n in ("daq", "hv", "laser_gui") if instance_lock.is_running(n)
+        foreign = [n for n in ("daq", "daq_v2", "hv", "laser_gui") if instance_lock.is_running(n)
                    and not any(p.poll() is None and instance_lock.holder(n)
                                and instance_lock.holder(n)["pid"] == p.pid for p in running_processes)]
 
         if running_processes or foreign:
-            names = ", ".join(instance_lock.APP_LABELS[n] for n in ("daq", "hv", "laser_gui")
+            names = ", ".join(instance_lock.APP_LABELS[n] for n in ("daq", "daq_v2", "hv", "laser_gui")
                               if instance_lock.is_running(n)) or f"{len(running_processes)} app(s)"
             msg = f"Exit the launcher and stop every running application?\n\n{names}"
             if messagebox.askyesno("Confirm Exit", msg):
@@ -247,6 +251,19 @@ class AppLauncher(tk.Tk):
         except Exception as e:
             messagebox.showerror("Error", f"Failed to launch DAQ Control:\n{e}")
 
+    def launch_daq_v2(self):
+        if self._is_alive("v2"):
+            self._already_running("v2", "DAQ Control v2")
+            return
+
+        script_path = os.path.abspath(os.path.join("DAQ_Control_SW_v2", "main.py"))
+        python = V2_PYTHON if os.path.exists(V2_PYTHON) else self.get_python_executable()
+        print(f"Launching DAQ Control v2: {script_path}")
+        try:
+            self._launch_proc("v2", [python, script_path], os.path.dirname(script_path))
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to launch DAQ Control v2:\n{e}")
+
     def launch_test_control(self):
         if self._is_alive("test"):
             self._already_running("test", "DAQ Control Panel (production or test mode)")
@@ -283,10 +300,11 @@ class AppLauncher(tk.Tk):
         if self._is_alive("laser"):
             self._already_running("laser", "Laser Control")
             return
-        if instance_lock.is_running("daq"):
-            messagebox.showerror("Laser in use", "The DAQ Control Panel is running and controls the lasers.\n\n"
-                                 "The old Laser Control turns every laser OFF when it connects. Close the DAQ panel first.")
-            return
+        for name in ("daq", "daq_v2"):
+            if instance_lock.is_running(name):
+                messagebox.showerror("Laser in use", f"{instance_lock.APP_LABELS[name]} is running and controls the lasers.\n\n"
+                                     "The old Laser Control turns every laser OFF when it connects. Close it first.")
+                return
 
         script_path = os.path.abspath(os.path.join("Laser_Control_SW", "app", "laser_gui.py"))
         if not os.path.exists(script_path):

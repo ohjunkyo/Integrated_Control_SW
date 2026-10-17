@@ -16,9 +16,12 @@ APP_LABELS = {
     "daq": "DAQ/LASER/UPS Control Panel",
     "hv": "HV Monitor",
     "laser_gui": "Laser Control (old)",
+    "daq_v2": "DAQ Control v2",
+    "daq_v2_control": "DAQ Control v2 (controls unlocked)",
 }
 
 _held = {}
+PROBE_TRIES = 5   # a lock blocked by another probe (dead pid in the file) is retried, 50 ms apart
 
 
 def _path(name):
@@ -42,13 +45,17 @@ def acquire(name):
     """Take the lock. Returns None on success, else the holder's info dict."""
     if name in _held:
         return None
-    fd = os.open(_path(name), os.O_RDWR | os.O_CREAT, 0o644)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        info = _read(fd)
-        os.close(fd)
-        return info
+    for attempt in range(PROBE_TRIES):
+        fd = os.open(_path(name), os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            info = _read(fd)
+            os.close(fd)
+            if pid_alive(info["pid"]) or attempt == PROBE_TRIES - 1:
+                return info
+            time.sleep(0.05)
     os.ftruncate(fd, 0)
     os.lseek(fd, 0, os.SEEK_SET)
     os.write(fd, f"{os.getpid()}\n{time.strftime('%Y-%m-%d %H:%M:%S')}\n{' '.join(sys.argv)}\n".encode())
@@ -56,18 +63,30 @@ def acquire(name):
     return None
 
 
+def release(name):
+    """Give a lock back before the process exits (no-op if not held)."""
+    fd = _held.pop(name, None)
+    if fd is not None:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
 def holder(name):
     """Info dict of whoever holds the lock, or None if nobody does."""
-    fd = os.open(_path(name), os.O_RDWR | os.O_CREAT, 0o644)
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        info = _read(fd)
+    for attempt in range(PROBE_TRIES):
+        fd = os.open(_path(name), os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)   # shared: probes never block each other
+        except BlockingIOError:
+            info = _read(fd)
+            os.close(fd)
+            if pid_alive(info["pid"]) or attempt == PROBE_TRIES - 1:
+                return info
+            time.sleep(0.05)
+            continue
+        fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
-        return info
-    fcntl.flock(fd, fcntl.LOCK_UN)
-    os.close(fd)
-    return None
+        return None
 
 
 def is_running(name):
@@ -146,7 +165,7 @@ def ensure_single_tk(name, window_title, warn_if=None):
     _resolve(name, window_title, choice["v"], warn_if, gui="tk")
 
 
-def ensure_single_qt(name, window_title, parent=None):
+def ensure_single_qt(name, window_title, parent=None, warn_if=None):
     info = acquire(name)
     if info is None:
         return
@@ -164,7 +183,7 @@ def ensure_single_qt(name, window_title, parent=None):
     box.exec_()
     clicked = box.clickedButton()
     v = "show" if clicked is b_show else "replace" if clicked is b_rep else "cancel"
-    _resolve(name, window_title, v, None, gui="qt")
+    _resolve(name, window_title, v, warn_if, gui="qt")
 
 
 def _confirm(gui, title, text):

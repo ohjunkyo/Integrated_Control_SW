@@ -1,15 +1,19 @@
 # config_manager.py
-import tkinter as tk
-from tkinter import ttk, messagebox
 import re
 import os
 import subprocess
-try:
-    import customtkinter as ctk
-    CTK_AVAILABLE = True
-except Exception:
-    ctk = None
-    CTK_AVAILABLE = False
+
+
+def _tk():
+    """tkinter (+ customtkinter if installed), imported only by the methods that build widgets,
+    so a non-Tk app (Qt v2) can use the parsing / pre-flight parts."""
+    import tkinter as tk
+    from tkinter import ttk, messagebox
+    try:
+        import customtkinter as ctk
+    except Exception:
+        ctk = None
+    return tk, ttk, messagebox, ctk
 
 class ConfigManager:
     def __init__(self, filepath):
@@ -142,6 +146,8 @@ class ConfigManager:
         window height) with CTk widgets; otherwise it falls back to the old
         single-column ttk rows. Returns {var_name: entry}; entry.get() works
         the same for both widget types."""
+        tk, ttk, messagebox, ctk = _tk()
+        CTK_AVAILABLE = ctk is not None
         entries = {}
         items = []
         try:
@@ -184,6 +190,7 @@ class ConfigManager:
         return entries
 
     def save_from_ui(self, entries):
+        messagebox = _tk()[2]
         try:
             with open(self.filepath, 'r') as f:
                 lines = f.readlines()

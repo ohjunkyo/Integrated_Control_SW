@@ -1375,6 +1375,7 @@ class WaveformViewerPanel:
                         entry_start=b_start, entry_stop=b_end, library="np")
 
                     for i, adc_flat in enumerate(adcs):
+                        adc_flat = np.asarray(adc_flat).ravel()   # one event is stored as (8, samples)
                         entry = b_start + i
                         for ch in self._channels:
                             if ch == TRIGGER_CH:
@@ -1459,6 +1460,7 @@ class WaveformViewerPanel:
                     adcs = self._tree["ADC"].array(
                         entry_start=b_start, entry_stop=b_end, library="np")
                     for i, adc_flat in enumerate(adcs):
+                        adc_flat = np.asarray(adc_flat).ravel()   # one event is stored as (8, samples)
                         seg = adc_flat[ch_target * n:(ch_target + 1) * n].astype(np.float64)
                         ped_mv = float(np.mean(seg[ped_start:ped_end])) * ADC_TO_MV
                         voltage = seg * ADC_TO_MV

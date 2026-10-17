@@ -8,10 +8,19 @@ import glob
 import subprocess
 import signal
 import shutil
-import tkinter as tk
-from tkinter import messagebox, ttk
 
 from managers import angle_convert
+
+class _TkDialogs:
+    """tkinter.messagebox, imported on first use; a host without Tk passes its own as controller.dialogs."""
+
+    def __getattr__(self, name):
+        from tkinter import messagebox
+        return getattr(messagebox, name)
+
+
+_TK_DIALOGS = _TkDialogs()
+
 
 class AutomationManager:
     # Whether Slack alerts name the Shifter/Expert. A single switch here (not
@@ -105,6 +114,22 @@ class AutomationManager:
         expert = expert or "-"
         return f"Shifter: {shifter}  ·  Expert: {expert}"
 
+    def daq_backend_label(self):
+        """'CAEN' / 'HK Digitizer' / 'Dummy' -- recorded with every scan and shown in its notifications."""
+        try:
+            if self.controller.auto_ui.dummy_var.get():
+                return "Dummy"
+        except Exception:
+            pass
+        return "HK Digitizer" if getattr(self, "daq_backend", "caen") == "hk" else "CAEN"
+
+    def _daq_line(self):
+        label = self.daq_backend_label()
+        if label == "HK Digitizer":
+            return (f"DAQ: HK Digitizer :warning: data go to the HK PC "
+                    f"({self.hk_config.get('ssh_target', '?')}), no CAEN data")
+        return f"DAQ: {label}"
+
     def _notify_scan_started(self, cfg, sn2_name, sn3_name, shifter, expert):
         notifier = getattr(self.controller, 'notifier', None)
         if not notifier or not notifier.enabled:
@@ -114,12 +139,15 @@ class AutomationManager:
             n_wl = max(1, len(self.laser_sequence)) if getattr(self, 'laser_sequence', None) else 1
             total_steps = points_per_axis * 2 * n_wl
             is_dummy = self.controller.auto_ui.dummy_var.get()
+            hk = self.hk_config
             nominal_per_pt = 1 if is_dummy else (
-                self._estimate_nominal_per_point_seconds() if self.daq_backend != "hk" else 60)
+                self._estimate_nominal_per_point_seconds() if self.daq_backend != "hk"
+                else float(hk.get("acq_time", 10)) + float(hk.get("move_delay", 20)) + self.daq_settle_time)
             eta_min = total_steps * nominal_per_pt / 60.0
 
             wl_list = ", ".join(w for w, _b, _p in self.laser_sequence) if getattr(self, 'laser_sequence', None) else "-"
             lines = [
+                self._daq_line(),
                 f"SN2 {sn2_name} / SN3 {sn3_name}",
                 f"HV: {cfg.get('HV1','-')}/{cfg.get('HV2','-')}/{cfg.get('HV3','-')}   "
                 f"Tilt step: {self.tilt_step}°   Points: {total_steps}",
@@ -129,7 +157,8 @@ class AutomationManager:
             op = self._operator_line(shifter, expert)
             if op:
                 lines.append(op)
-            notifier.send("General Scan started", "\n".join(lines), level="info",
+            title = "General Scan started" + (" (HK Digitizer)" if self.daq_backend_label() == "HK Digitizer" else "")
+            notifier.send(title, "\n".join(lines), level="info",
                           dedupe_key=None, blocking=False)
         except Exception as e:
             self.controller._log(f"[WARNING] Scan-start notification failed: {type(e).__name__}.")
@@ -152,7 +181,7 @@ class AutomationManager:
                     matched = next((needle for needle, _ in self._ERROR_HINTS if needle in reason), None)
                     key = matched or reason
                     by_kind.setdefault(key, []).append(reason)
-                lines = [f"{len(errors)} point(s) affected:"]
+                lines = [self._daq_line(), f"{len(errors)} point(s) affected:"]
                 for kind, occurrences in by_kind.items():
                     hint = self._error_hint(occurrences[0])
                     lines.append(f"  • {kind} ×{len(occurrences)} — {hint}")
@@ -162,7 +191,7 @@ class AutomationManager:
                 notifier.send(f"General Scan finished: BAD RUN ({len(errors)} error(s))",
                               "\n".join(lines), level="warning", dedupe_key=None, blocking=False)
             else:
-                lines = [f"Duration: {dur_min:.0f} min"]
+                lines = [self._daq_line(), f"Duration: {dur_min:.0f} min"]
                 op = self._operator_line(shifter, getattr(self, '_current_expert', None))
                 if op:
                     lines.append(op)
@@ -183,7 +212,7 @@ class AutomationManager:
         self._reset_cancel = False       # operator pressed Cancel on the reset dialog
 
         # Which digitizer actually takes the data:
-        #   "caen" = Korean DAQ (CAEN), the existing path driven by config3.h.
+        #   "caen" = CAEN DAQ, the existing path driven by config3.h.
         #   "hk"   = HK Digitizer on the 2nd PC (rotation-synced; config3.h NOT used).
         self.daq_backend = "caen"
 
@@ -195,13 +224,23 @@ class AutomationManager:
             "run_number": 0,
             "acq_time": 10.0,      # --l : seconds of data-taking per point
             "move_delay": 20.0,    # extra wait AFTER acq before rotating
-            "gatelist": 30,        # --gatelist
-            "chanlist": 0,         # --chanlist
-            "threshold_preset": "",  # --threpreset VALUE; blank = bare flag (no value)
-            "trg_channel": "",     # --trgch VALUE; blank = flag omitted entirely
-            "trg_vth": "",         # --trgch-Vth VALUE; blank = flag omitted entirely
-            "pedestal_mode": False, # --pedestal bare flag; per-mode toggle, not an infra field
-            "auto_hittree": False,  # run RunAnalysisChain.py on each .bin ScanManager just wrote
+            # ScanManager options, sent in this order after "-i <run_id> --l <acq>".
+            # bare = flag only (sent when on); otherwise "flag value", omitted when value is blank.
+            "scan_options": [
+                {"label": "Threshold preset", "flag": "--threpreset", "value": "", "on": True, "bare": True},
+                {"label": "Gate", "flag": "--gatelist", "value": "30", "on": True, "bare": False},
+                {"label": "Pedestal run", "flag": "--pedestal", "value": "", "on": False, "bare": True},
+                {"label": "Trigger ch", "flag": "--trgch", "value": "", "on": True, "bare": False},
+                {"label": "Trigger Vth", "flag": "--trgch-Vth", "value": "", "on": True, "bare": False},
+                {"label": "Channels", "flag": "--chanlist", "value": "", "on": True, "bare": False},
+            ],
+            # Commands run in order on each .bin just written; {bin} = that file, {base} = without .bin.
+            "post_steps": [
+                {"name": "Hit-tree", "on": False,
+                 "cmd": 'RunAnalysisChain.py --inputBinFile "{bin}" -t "{base}_hittree.root"'},
+                {"name": "Event-tree", "on": False,
+                 "cmd": 'RunAnalysisChain.py --inputHitTreeFile "{base}_hittree.root" -T "{base}_eventtree.root"'},
+            ],
             "work_dir": "~/hkelec/DiscreteSoftware/data/{date}/",  # cd'd into before ScanManager; {date}=YYYYMMDD
             "ssh_target": "hkpd@hkdaq",              # user@host to run the HK DAQ on
             "setup_cmd": ". ~/setup_hkelec.sh",      # sourced before ScanManager
@@ -319,6 +358,9 @@ class AutomationManager:
         self.history_dir = os.path.join(self.controller.base_dir, "LOG", "ScanHistory")
         os.makedirs(self.history_dir, exist_ok=True)
 
+    def _dlg(self):
+        return getattr(self.controller, "dialogs", None) or _TK_DIALOGS
+
     def build_tilt_angles(self):
         """Single source of truth for the tilt-angle list a General Scan
         visits -- the step grid (scan_range/tilt_step) with mandatory_tilt_angles
@@ -344,6 +386,10 @@ class AutomationManager:
         table; label=None renders a full-width separator/plain line. Runs on
         the Tk main thread (start_general_scan is a button handler), grabs
         input, and blocks until the operator answers."""
+        hook = getattr(self._dlg(), "wide_confirm", None)
+        if hook is not None and self._dlg() is not _TK_DIALOGS:
+            return hook(title, header, rows, question, accent)
+        import tkinter as tk
         parent = self.controller.master
         win = tk.Toplevel(parent)
         win.title(title)
@@ -754,7 +800,7 @@ class AutomationManager:
 
         if not skip_validation:
             if not self.controller.access_mgr.unlocked:
-                messagebox.showwarning("Locked", "🔒 Please click 'Unlock Controls' first.")
+                self._dlg().showwarning("Locked", "🔒 Please click 'Unlock Controls' first.")
                 return
 
         if self.is_running: return
@@ -840,11 +886,11 @@ class AutomationManager:
                 and hasattr(self.controller.auto_ui, 'get_laser_sequence'):
             seq = self.controller.auto_ui.get_laser_sequence()
             if seq is None:
-                messagebox.showerror("Laser Sequence",
+                self._dlg().showerror("Laser Sequence",
                                      "Invalid Bias/Pulse value in the Laser Sequence panel.")
                 return
             if not seq:
-                messagebox.showwarning("Laser Sequence",
+                self._dlg().showwarning("Laser Sequence",
                                        "No wavelength is selected in the Laser Sequence panel.")
                 return
             self.laser_sequence = seq
@@ -861,13 +907,13 @@ class AutomationManager:
             hk = self.hk_config
             per_pt = hk["acq_time"] + hk["move_delay"] + self.daq_settle_time
             hk_total = total_steps * per_pt
-            chan_disp = str(hk.get('chanlist') or '').strip() or "(default, --chanlist omitted)"
+            opt_disp = self.hk_option_args(hk).strip() or "(none)"
             self.controller._log(
                 f"[INFO] HK Pre-flight: {total_steps} pts ({steps_per_block}×{n_wl} wl), "
                 f"acq {hk['acq_time']}s + delay {hk['move_delay']}s + settle {self.daq_settle_time}s "
                 f"= {per_pt:.0f}s/pt → est {hk_total/60:.1f} min. "
                 f"run# start {hk['run_number']}, target {hk['ssh_target']}, "
-                f"gate {hk['gatelist']}, chan {chan_disp}.")
+                f"options {opt_disp}.")
             if not skip_validation:
                 rows = [
                     ("Backend:", "HK Digitizer  (local config3.h NOT used)"),
@@ -875,7 +921,7 @@ class AutomationManager:
                     ("ScanManager:", hk['scan_manager']),
                     (None, "---"),
                     ("Run # start:", hk['run_number']),
-                    ("Gate / Chan:", f"{hk['gatelist']} / {chan_disp}"),
+                    ("Options:", opt_disp),
                     ("Per point:", f"{hk['acq_time']}s acq  +  {hk['move_delay']}s move-delay  "
                                    f"+  {self.daq_settle_time}s settle   =  {per_pt:.0f}s"),
                     ("Points:", f"{total_steps}   ({steps_per_block} angles × {n_wl} wavelength block(s))"),
@@ -905,7 +951,7 @@ class AutomationManager:
                         notifier.send("Scheduled scan NOT started: HV no current", msg,
                                       level="critical", dedupe_key=None, blocking=False)
                 else:
-                    messagebox.showerror("HV: No Current", msg + "\n\nThe scan was not started.")
+                    self._dlg().showerror("HV: No Current", msg + "\n\nThe scan was not started.")
                 return
             for w in hv_warn:
                 self.controller._log(f"[WARNING] HV pre-flight: {w}")
@@ -913,7 +959,7 @@ class AutomationManager:
         if backend == "caen" and not is_dummy and not skip_validation:
             raw_path = cfg.get("RawDataPath", "")
             if not os.path.exists(raw_path):
-                messagebox.showerror("Error", f"Save path not found:\n{raw_path}")
+                self._dlg().showerror("Error", f"Save path not found:\n{raw_path}")
                 return
             
             usage = shutil.disk_usage(raw_path)
@@ -930,14 +976,14 @@ class AutomationManager:
                     f"There is a high risk of a system crash due to a full disk during the scan.\n"
                     f"Are you sure you want to force the scan?"
                 )
-                if not messagebox.askyesno("Storage Warning", warning_msg):
+                if not self._dlg().askyesno("Storage Warning", warning_msg):
                     return
 
             sn2, dir2 = cfg.get("SN2", "N/A"), cfg.get("direction2", "N/A")
             sn3, dir3 = cfg.get("SN3", "N/A"), cfg.get("direction3", "N/A")
 
             rows = [
-                ("Backend:", "Korean DAQ (CAEN)  —  local config3.h"),
+                ("Backend:", "CAEN DAQ  —  local config3.h"),
                 ("Est. space:", f"~{estimated_required_gb:.1f} GB required"),
                 ("Free space:", f"{free_gb:.1f} GB available  (OK)"),
             ]
@@ -971,7 +1017,7 @@ class AutomationManager:
             for w in hv_warn:
                 rows.append(("CHECK:", w))
             if not self._wide_confirm(
-                    "Pre-flight Checklist", "🚀 Korean DAQ (CAEN) Pre-flight",
+                    "Pre-flight Checklist", "🚀 CAEN DAQ Pre-flight",
                     rows, "Is the hardware setup correct? Start the scan?", accent="#0a84ff"):
                 return
 
@@ -982,7 +1028,7 @@ class AutomationManager:
                 os.remove(self.state_file) 
                 ans = False 
             else:
-                ans = messagebox.askyesno(
+                ans = self._dlg().askyesno(
                     "Recovery Found", 
                     "🚨 A record of an abnormally terminated scan was found.\n\n"
                     "Would you like to resume from the last angle?\n"
@@ -1086,14 +1132,14 @@ class AutomationManager:
 
     def schedule_general_scan(self, time_str):
         if not self.controller.access_mgr.unlocked:
-            messagebox.showwarning("Locked", "🔒 Please click 'Unlock Controls' first.")
+            self._dlg().showwarning("Locked", "🔒 Please click 'Unlock Controls' first.")
             return
         if self.is_running: return
 
         try:
             target_time = datetime.strptime(time_str.strip(), "%H:%M").time()
         except ValueError:
-            messagebox.showerror("Invalid Time", "Please use HH:MM format (e.g., 14:30).")
+            self._dlg().showerror("Invalid Time", "Please use HH:MM format (e.g., 14:30).")
             return
 
         cfg = self.controller.config_manager.get_all_variables()
@@ -1104,7 +1150,7 @@ class AutomationManager:
         if not is_dummy:
             raw_path = cfg.get("RawDataPath", "")
             if not os.path.exists(raw_path):
-                messagebox.showerror("Error", f"Save path not found:\n{raw_path}")
+                self._dlg().showerror("Error", f"Save path not found:\n{raw_path}")
                 return
             
             usage = shutil.disk_usage(raw_path)
@@ -1112,14 +1158,14 @@ class AutomationManager:
             estimated_required_gb = total_steps * 0.8
             
             if free_gb < estimated_required_gb:
-                if not messagebox.askyesno("Storage Warning", f"⚠️ Low Storage: {free_gb:.1f} GB left. Schedule anyway?"): 
+                if not self._dlg().askyesno("Storage Warning", f"⚠️ Low Storage: {free_gb:.1f} GB left. Schedule anyway?"): 
                     return
 
             sn2, dir2 = cfg.get("SN2", "N/A"), cfg.get("direction2", "N/A")
             sn3, dir3 = cfg.get("SN3", "N/A"), cfg.get("direction3", "N/A")
             
             if sn2 == "N/A" or sn3 == "N/A":
-                if not messagebox.askyesno("Missing Info", "SN2 or SN3 is missing! Schedule anyway?"): return
+                if not self._dlg().askyesno("Missing Info", "SN2 or SN3 is missing! Schedule anyway?"): return
 
             checklist_msg = (
                 f"⏰ Schedule Pre-flight Checklist (JST)\n\n"
@@ -1129,13 +1175,13 @@ class AutomationManager:
                 f"• Target SN3: {sn3} (Dir: {dir3})\n\n"
                 f"Are these parameters correct? The scan will start automatically at {time_str} JST."
             )
-            if not messagebox.askyesno("Schedule Checklist", checklist_msg): return
+            if not self._dlg().askyesno("Schedule Checklist", checklist_msg): return
 
         self.is_scheduled = True
         
         self.controller.auto_ui.add_auto_log(f"⏰ Scan scheduled successfully for {time_str} (JST).")
         self._update_scan_status_label(f"SCHEDULED: {time_str} (JST)", "#007ACC")
-        self.controller.auto_ui.btn_start.config(state=tk.DISABLED)
+        self.controller.auto_ui.btn_start.config(state="disabled")
         
         threading.Thread(target=self._wait_for_schedule, args=(target_time,), daemon=True).start()
 
@@ -1158,7 +1204,7 @@ class AutomationManager:
         self.is_scheduled = False
         self.controller._log("[INFO] ⏰ Scheduled scan cancelled by user.")
         self._update_scan_status_label("SYSTEM STATUS: IDLE", "gray")
-        self.controller.auto_ui.btn_start.config(state=tk.NORMAL)
+        self.controller.auto_ui.btn_start.config(state="normal")
 
     def _save_state(self, axis, tilt, step):
         state = {"axis": axis, "tilt": tilt, "step": step,
@@ -1411,8 +1457,11 @@ class AutomationManager:
 
                     if hasattr(self.controller, 'ups_mgr') and self.controller.ups_mgr.ups_serial:
                         ups_msg = self.controller.ui.ups_vars["status_msg"].get()
-                        if "Battery" in ups_msg or "Fail" in ups_msg:
-                            self.controller._log("🚨 [INTERLOCK] UPS Battery Mode! Automation paused.")
+                        ups_fault = next((label for key, label in (("POWER FAILURE", "Battery Mode"),
+                                                                   ("OVERLOAD", "Overload"))
+                                          if key in ups_msg.upper()), None)
+                        if ups_fault:
+                            self.controller._log(f"🚨 [INTERLOCK] UPS {ups_fault}! Automation paused.")
                             self.pause_event.clear()
                             self.controller.auto_ui.update_stop_button(False)
 
@@ -1434,6 +1483,22 @@ class AutomationManager:
                             if not self.is_running: return "stopped"
                         elif lstate == "usb":
                             return "usb_lost"
+                        # No point is taken unless TEC and LD read ON.
+                        while True:
+                            why = self._verify_block_laser_on()
+                            if not why:
+                                break
+                            self.controller._log(f"🚨 Laser {self._current_block_wl}: {why}. "
+                                                 "Scan paused -- fix the laser, then press Continue.")
+                            notifier = getattr(self.controller, 'notifier', None)
+                            if notifier:
+                                notifier.send(f"Scan paused: laser {self._current_block_wl} not ON",
+                                              f"{why}.\nNo DAQ is taken until it is fixed and Continue is pressed.",
+                                              level="critical", dedupe_key=f"laser-off-{self._current_block_wl}")
+                            self.pause_event.clear()
+                            self.controller.auto_ui.update_stop_button(False)
+                            self.pause_event.wait()
+                            if not self.is_running: return "stopped"
 
                     self._save_state(axis, tilt, current_step)
                     # Live "currently taking data here" marker for the Scan
@@ -1611,63 +1676,91 @@ class AutomationManager:
             return "stopped"
 
     @staticmethod
+    def hk_legacy_options(hk):
+        """Convert a pre-list hk_config (threshold_preset, trg_channel, ...,
+        auto_hittree/auto_eventtree) to scan_options/post_steps, keeping the
+        exact flag order the old formatter emitted."""
+        d = dict(hk)
+        if "scan_options" not in d:
+            thr = str(d.get("threshold_preset") or "").strip()
+            d["scan_options"] = [
+                {"label": "Threshold preset", "flag": "--threpreset" if thr in ("", "1") else f"--threpreset{thr}",
+                 "value": "", "on": True, "bare": True},
+                {"label": "Gate", "flag": "--gatelist", "value": str(d.get("gatelist", 30)), "on": True, "bare": False},
+                {"label": "Pedestal run", "flag": "--pedestal", "value": "", "on": bool(d.get("pedestal_mode")), "bare": True},
+                {"label": "Trigger ch", "flag": "--trgch", "value": str(d.get("trg_channel") or ""), "on": True, "bare": False},
+                {"label": "Trigger Vth", "flag": "--trgch-Vth", "value": str(d.get("trg_vth") or ""), "on": True, "bare": False},
+                {"label": "Channels", "flag": "--chanlist", "value": str(d.get("chanlist") or ""), "on": True, "bare": False},
+            ]
+        if "post_steps" not in d:
+            ev = bool(d.get("auto_eventtree"))
+            d["post_steps"] = [
+                {"name": "Hit-tree", "on": bool(d.get("auto_hittree")) or ev,
+                 "cmd": 'RunAnalysisChain.py --inputBinFile "{bin}" -t "{base}_hittree.root"'},
+                {"name": "Event-tree", "on": ev,
+                 "cmd": 'RunAnalysisChain.py --inputHitTreeFile "{base}_hittree.root" -T "{base}_eventtree.root"'},
+            ]
+        for k in ("gatelist", "chanlist", "threshold_preset", "trg_channel", "trg_vth",
+                  "pedestal_mode", "auto_hittree", "auto_eventtree"):
+            d.pop(k, None)
+        return d
+
+    @staticmethod
+    def hk_option_args(hk):
+        """ScanManager option string (leading space per option) from scan_options."""
+        out = ""
+        for o in hk.get("scan_options", []):
+            flag = str(o.get("flag") or "").strip()
+            if not flag or not o.get("on"):
+                continue
+            if o.get("bare"):
+                out += f" {flag}"
+            else:
+                val = str(o.get("value") or "").strip()
+                if val:
+                    out += f" {flag} {val}"
+        return out
+
+    @staticmethod
+    def hk_option_on(hk, flag):
+        return any(str(o.get("flag")).strip() == flag and o.get("on") for o in hk.get("scan_options", []))
+
+    @staticmethod
+    def hk_option_value(hk, flag):
+        for o in hk.get("scan_options", []):
+            if str(o.get("flag")).strip() == flag and o.get("on"):
+                return str(o.get("value") or "").strip()
+        return ""
+
+    @staticmethod
+    def hk_post_cmd(hk, run_id):
+        """Loop over the .bin files this acquisition just wrote and chain the
+        enabled post_steps on each. ScanManager appends its own suffix to -i
+        (e.g. "<run_id>-001-1mV-Gate30.bin"), so the file is globbed, and
+        -mmin -1 skips older files with the same prefix. Empty if no step is on."""
+        steps = [str(p.get("cmd") or "").strip() for p in hk.get("post_steps", []) if p.get("on")]
+        steps = [c.replace("{bin}", "$f").replace("{base}", "${f%.bin}") for c in steps if c]
+        if not steps:
+            return ""
+        return ('for f in ' + run_id + '*.bin; do '
+                '[ -f "$f" ] || continue; '
+                '[ "$(find "$f" -mmin -1)" ] || continue; '
+                + " && ".join(steps) + '; done')
+
+    @staticmethod
     def hk_format_remote(hk, run_id, acq_time):
-        """Pure formatter: build the remote ScanManager command from an
-        hk_config-shaped dict:
-        `<setup_cmd> && cd <work_dir> && <scan_manager> -i <run_id> --l <acq>
-         --threpreset[N] --gatelist <g> --chanlist <c>`.
-        A @staticmethod (not tied to self.hk_config) so the HK Config dialog
-        can call it with the UNSAVED on-screen field values to render a live
-        "Final Command" preview -- the preview and the real trigger share this
-        one formatter, so they can never drift apart."""
+        """Pure formatter: `<setup_cmd> && cd <work_dir> && <scan_manager> -i
+        <run_id> --l <acq> <scan_options> [&& <post_steps loop>]`. Static so
+        the HK Config dialog can preview UNSAVED values with the same code
+        the real trigger uses."""
         work_dir = (hk.get("work_dir") or "").strip()
         if "{date}" in work_dir:
             work_dir = work_dir.replace("{date}", datetime.now().strftime("%Y%m%d"))
         cd_part = f"cd {work_dir} && " if work_dir else ""
-        # --threpreset is a BARE FLAG, not a valued option: ScanManager exposes
-        # --threpreset / --threpreset2 / --threpreset3 as three separate flags
-        # (preset 1/2/3). So threshold "2" → "--threpreset2" (suffix, no space);
-        # blank or "1" → plain "--threpreset". Passing "--threpreset 2" makes
-        # ScanManager reject the trailing "2" as an unrecognized argument.
-        thr = (hk.get("threshold_preset") or "").strip()
-        thr_part = "--threpreset" if thr in ("", "1") else f"--threpreset{thr}"
-        # --trgch / --trgch-Vth / --chanlist are all OPTIONAL valued options:
-        # emitted only when a value is present, omitted entirely when blank
-        # (so leaving a field empty keeps ScanManager's own default for that
-        # option instead of sending an empty/invalid flag it would reject).
-        trg_ch = str(hk.get("trg_channel") or "").strip()
-        trg_vth = str(hk.get("trg_vth") or "").strip()
-        chanlist = str(hk.get("chanlist") or "").strip()
-        extra = ""
-        if hk.get("pedestal_mode"):
-            extra += " --pedestal"
-        if trg_ch:
-            extra += f" --trgch {trg_ch}"
-        if trg_vth:
-            extra += f" --trgch-Vth {trg_vth}"
-        if chanlist:
-            extra += f" --chanlist {chanlist}"
-        scan_cmd = (f"{hk['scan_manager']} -i {run_id} --l {int(round(acq_time))} "
-                   f"{thr_part} --gatelist {hk['gatelist']}{extra}")
-
-        if not hk.get("auto_hittree"):
-            return f"{hk['setup_cmd']} && {cd_part}{scan_cmd}"
-
-        # ScanManager appends its own suffix to -i before writing the .bin
-        # (e.g. "<run_id>-001-1mV-Gate30.bin"), so the output filename can't be
-        # predicted from run_id alone -- confirmed 2026-09-15 against a real
-        # run. Glob for whatever run_id*.bin just appeared instead of guessing
-        # the suffix, and hit-tree only the ones this call actually produced
-        # (mtime -1min excludes older .bin files with the same run_id prefix
-        # sitting in the same dated folder from an earlier acquisition).
-        analysis_cmd = (
-            'for f in ' + run_id + '*.bin; do '
-            '[ -f "$f" ] || continue; '
-            '[ "$(find "$f" -mmin -1)" ] || continue; '
-            'RunAnalysisChain.py --inputBinFile "$f" -t "${f%.bin}_hittree.root"; '
-            'done'
-        )
-        return f"{hk['setup_cmd']} && {cd_part}{scan_cmd} && {analysis_cmd}"
+        scan_cmd = (f"{hk['scan_manager']} -i {run_id} --l {int(round(acq_time))}"
+                    f"{AutomationManager.hk_option_args(hk)}")
+        post = AutomationManager.hk_post_cmd(hk, run_id)
+        return f"{hk['setup_cmd']} && {cd_part}{scan_cmd}" + (f" && {post}" if post else "")
 
     def hk_build_remote(self, run_id, acq_time):
         return self.hk_format_remote(self.hk_config, run_id, acq_time)
@@ -1790,13 +1883,10 @@ class AutomationManager:
         device's live angle), it falls back to `rot` so a template using
         {rot3} still resolves instead of silently returning `base`.
 
-        {trgch}/{trgvth} pull straight from hk_config's trg_channel/trg_vth
-        (the Config dialog's Trigger ch/Vth fields) -- these are fixed setup
-        values, not per-point live data like tilt/rot, so no argument is
-        needed for them; blank in the config just becomes an empty string in
-        the filename rather than raising.
+        {trgch}/{trgvth} are the values of the --trgch / --trgch-Vth options
+        (empty when the option is off or missing).
 
-        {mode} follows the Pedestal Run checkbox -> "ped" / "normal", matching
+        {mode} follows the --pedestal option -> "ped" / "normal", matching
         the HK side's own convention. It is a macro rather than typed text
         because the two have to agree: a literal "normal" in the template
         stayed put when the checkbox was ticked, so a --pedestal run wrote a
@@ -1804,9 +1894,9 @@ class AutomationManager:
         base = self.hk_config.get("run_id", "Run%03d" % run_no)
         tmpl = base.replace("{run}", "{run:03d}")   # bare {run} → 001; {run:0Nd} untouched
         rot3_val = rot3 if rot3 is not None else rot
-        trg_ch = self.hk_config.get("trg_channel", "") or ""
-        trg_vth = self.hk_config.get("trg_vth", "") or ""
-        mode = "ped" if self.hk_config.get("pedestal_mode") else "normal"
+        trg_ch = self.hk_option_value(self.hk_config, "--trgch")
+        trg_vth = self.hk_option_value(self.hk_config, "--trgch-Vth")
+        mode = "ped" if self.hk_option_on(self.hk_config, "--pedestal") else "normal"
         try:
             return tmpl.format(run=int(run_no), tilt=tilt, rot=rot, rot2=rot, rot3=rot3_val,
                                trgch=trg_ch, trgvth=trg_vth, mode=mode)
@@ -2259,20 +2349,62 @@ class AutomationManager:
             self.controller.master.after(0, _refresh_ui)
         return True
 
-    def _prepare_laser_block(self, block):
+    # Laser readiness: TEC and LD must be confirmed ON by the board's own status
+    # (update_status() reads them back) before and during every DAQ point.
+    LASER_SET_TRIES = 3
+    LASER_CONFIRM_S = 6.0      # the status read-back lags the command by a few seconds
+
+    def _laser_status(self, inst):
+        """Fresh status read from the board; None if the read failed."""
+        try:
+            return dict(inst.status) if inst.update_status() else None
+        except Exception:
+            return None
+
+    def _laser_set_verified(self, inst, wl, what, state):
+        """Switch TEC or LD and confirm it from the status read-back, retrying."""
+        setter = inst.set_tec_on if what == "tec" else inst.set_ld_on
+        word = f"{what.upper()} {'ON' if state else 'OFF'}"
+        for k in range(1, self.LASER_SET_TRIES + 1):
+            if setter(state):
+                deadline = time.time() + self.LASER_CONFIRM_S
+                while time.time() < deadline:
+                    time.sleep(0.5)
+                    st = self._laser_status(inst)
+                    if st is not None and bool(st.get(f"{what}_on")) == state:
+                        return True
+            else:
+                time.sleep(1.0)
+            self.controller._log(f"[WARNING] Laser {wl} {word} not confirmed (try {k}/{self.LASER_SET_TRIES}).")
+        return False
+
+    def _laser_not_ready(self, wl, reason):
+        """Log + Slack, and make sure the LD is not left on half-prepared."""
+        self.controller._log(f"[ERROR] Laser {wl} not ready: {reason} -- no DAQ for this block.")
+        notifier = getattr(self.controller, 'notifier', None)
+        if notifier:
+            notifier.send(f"Laser {wl} not ready", f"{reason}\nThis wavelength block was skipped (no DAQ taken).",
+                          level="warning", dedupe_key=f"laser-not-ready-{wl}")
+        try:
+            inst = self.controller.laser_mgr.laser_instances.get(wl)
+            if inst and inst.is_connected():
+                inst.set_ld_on(False)
+        except Exception:
+            pass
+        return False
+
+    def _prepare_laser_block(self, block, sleep=None):
         """Blocking laser preparation, called from the scan thread.
-        Exclusive LD (all others OFF first) → TEC ON → temperature-stability
-        gate → apply Bias/Pulse → LD ON → settle. Returns True when the block
-        may start, False to skip this wavelength."""
+        Exclusive LD (all others OFF first) -> TEC ON (confirmed) -> Bias/Pulse ->
+        LD ON (confirmed) -> settle -> both still ON. Returns True when the block
+        may start, False to skip it."""
         wl, bias, pulse = block
         lm = getattr(self.controller, 'laser_mgr', None)
         inst = lm.laser_instances.get(wl) if lm else None
         if not inst:
-            self.controller._log(f"[WARNING] Laser {wl} not connected — block skipped.")
-            return False
+            return self._laser_not_ready(wl, "no driver instance")
         if not inst.is_connected() and not self._auto_connect_laser(wl):
-            self.controller._log(f"[WARNING] Laser {wl} not connected — block skipped.")
-            return False
+            return self._laser_not_ready(wl, "not connected (auto-connect failed)")
         try:
             for owl, oinst in lm.laser_instances.items():
                 if owl != wl and oinst.is_connected():
@@ -2280,38 +2412,49 @@ class AutomationManager:
                         oinst.set_ld_on(False)
                     except Exception:
                         pass
-            inst.set_tec_on(True)
-            self._wait_laser_temp_stable(wl)
-            if not self.is_running:
-                return False
+            if not self._laser_set_verified(inst, wl, "tec", True):
+                return self._laser_not_ready(wl, "TEC did not switch ON")
+            self.controller._log(f"[INFO] Laser {wl} TEC ON (confirmed).")
             inst.set_bias_current(float(bias))
             inst.set_pulse_current(float(pulse))
             time.sleep(0.5)
-            inst.set_ld_on(True)
-            self.controller._log(f"[INFO] Laser {wl} ready: Bias={bias} mA, Pulse={pulse} mA, LD ON.")
+            if not self._laser_set_verified(inst, wl, "ld", True):
+                return self._laser_not_ready(wl, "LD did not switch ON")
+            self.controller._log(f"[INFO] Laser {wl} ready: Bias={bias} mA, Pulse={pulse} mA, TEC ON, LD ON.")
             # Short settle so the first DAQ point is taken with stable output.
-            self._safe_sleep(10.0)
+            (sleep or self._safe_sleep)(10.0)
+            st = self._laser_status(inst)
+            if st is None or not (st.get("tec_on") and st.get("ld_on")):
+                return self._laser_not_ready(wl, "TEC/LD not ON after the settle time")
             return True
         except Exception as e:
-            self.controller._log(f"[WARNING] Laser {wl} preparation failed: {e} — block skipped.")
-            return False
+            return self._laser_not_ready(wl, f"preparation error: {e}")
 
-    def _wait_laser_temp_stable(self, wl, max_wait=120):
-        """TEC temperature-stability gate: proceed when the last ~30 s of the
-        telemetry history moved < 0.3 °C (pre-warmed lasers pass immediately);
-        fall through after max_wait so a flaky sensor can't hang the scan."""
-        hist = getattr(self.controller.laser_mgr, 'plot_history', {}).get(wl, {})
-        self.controller._log(f"[INFO] Waiting for {wl} TEC temperature to stabilise (max {max_wait}s)...")
-        t0 = time.time()
-        while time.time() - t0 < max_wait:
-            if not self.is_running:
-                return
-            temps = list(hist.get("temp", []))[-31:]
-            if len(temps) >= 31 and abs(temps[-1] - temps[0]) < 0.3:
-                self.controller._log(f"[INFO] {wl} temperature stable ({temps[-1]:.2f} °C).")
-                return
-            time.sleep(2)
-        self.controller._log(f"[INFO] {wl} stability wait timed out — continuing anyway.")
+    def _verify_block_laser_on(self):
+        """Before each DAQ point: TEC and LD of the active block must read ON.
+        One recovery attempt (TEC, then LD); returns a reason if still off."""
+        wl = getattr(self, '_current_block_wl', None)
+        lm = getattr(self.controller, 'laser_mgr', None)
+        inst = lm.laser_instances.get(wl) if lm and wl else None
+        if not inst:
+            return ""
+        st = self._laser_status(inst)
+        if st is None:
+            st = self._laser_status(inst)       # one retry; a lost link is _check_block_laser's job
+            if st is None:
+                return ""
+        if st.get("tec_on") and st.get("ld_on"):
+            return ""
+        off = " and ".join(n for n, k in (("TEC", "tec_on"), ("LD", "ld_on")) if not st.get(k))
+        self.controller._log(f"[WARNING] Laser {wl} {off} read OFF before a DAQ point -- trying to restore.")
+        if not st.get("tec_on"):
+            if not self._laser_set_verified(inst, wl, "tec", True):
+                return f"{off} OFF and TEC could not be restored"
+        if not self._laser_set_verified(inst, wl, "ld", True):
+            return f"{off} OFF and LD could not be restored"
+        self._safe_sleep(10.0)
+        self.controller._log(f"[INFO] Laser {wl} restored: TEC ON, LD ON.")
+        return ""
 
     def _finish_laser_block(self, wl):
         """LD OFF at the end of a wavelength block (safety between blocks).
@@ -2319,8 +2462,10 @@ class AutomationManager:
         try:
             inst = self.controller.laser_mgr.laser_instances.get(wl)
             if inst and inst.is_connected():
-                inst.set_ld_on(False)
-                self.controller._log(f"[INFO] Laser {wl} LD OFF (block finished).")
+                if self._laser_set_verified(inst, wl, "ld", False):
+                    self.controller._log(f"[INFO] Laser {wl} LD OFF (block finished).")
+                else:
+                    self.controller._log(f"[WARNING] Laser {wl} LD OFF not confirmed after the block.")
         except Exception as e:
             self.controller._log(f"[WARNING] Failed to switch {wl} LD off: {e}")
 
@@ -2825,6 +2970,18 @@ class AutomationManager:
         # 2026-08-28, but this one fires on every normal completion, not just
         # a watchdog misfire). The window stays open and answerable whenever
         # someone does return; the scan pipeline itself doesn't wait on it.
+        def _next_run():
+            self.controller.auto_ui.reset_matrix()
+            self.reset_all_angles()
+            self.controller._log("User selected NEXT RUN. UI & Hardware Reset initiated.")
+            self.controller.refresh_all_data()
+
+        hook = getattr(self._dlg(), "scan_summary", None)
+        if hook is not None and self._dlg() is not _TK_DIALOGS:
+            hook(compact, error_block, _next_run)
+            return
+        import tkinter as tk
+        from tkinter import ttk
         win = tk.Toplevel(self.controller.master)
         win.title("Scan Completed")
         win.resizable(False, False)
@@ -2851,10 +3008,7 @@ class AutomationManager:
                      font=("Courier", 10), foreground="#b91c1c").pack(anchor="w")
 
         def _on_yes():
-            self.controller.auto_ui.reset_matrix()
-            self.reset_all_angles()
-            self.controller._log("User selected NEXT RUN. UI & Hardware Reset initiated.")
-            self.controller.refresh_all_data()
+            _next_run()
             win.destroy()
 
         btn_row = ttk.Frame(frame)
@@ -2997,7 +3151,7 @@ class AutomationManager:
                 self.controller.rot_mgr.stop_rotation(dev_num)
                 
                 # Pop up immediate critical alert notification window to the active shifter
-                self.controller.master.after(0, lambda d=dev_num: messagebox.showerror(
+                self.controller.master.after(0, lambda d=dev_num: self._dlg().showerror(
                     "HARDWARE EMERGENCY INTERLOCK",
                     f"🚨 MECHANICAL BLOCKAGE DETECTED!\n\n"
                     f"Device {d} has stalled for more than 5 seconds.\n"
@@ -3038,27 +3192,11 @@ class AutomationManager:
         self._reset_cancel = False
         self.reset_in_progress = True
 
-        # ── Progress dialog (built on the main thread) ──────────────────────
-        win = tk.Toplevel(self.controller.master)
-        win.title("Reset Angle")
-        win.transient(self.controller.master)
-        win.geometry("400x170")
-        win.attributes("-topmost", True)
-        status_var = tk.StringVar(value="Starting…")
-        ttk.Label(win, text="🔄 Reset Angle in progress",
-                  font=("Helvetica", 13, "bold")).pack(pady=(16, 4))
-        ttk.Label(win, textvariable=status_var, font=("Helvetica", 11),
-                  foreground="#007ACC").pack(pady=(0, 6))
-        pb = ttk.Progressbar(win, mode="indeterminate", length=320)
-        # 40ms (~25Hz) reads just as smooth as a faster tick and avoids
-        # needlessly churning the Tk event loop while this dialog is open.
-        pb.pack(pady=4); pb.start(40)
-
         def _do_cancel():
             if self._reset_cancel:
                 return
             self._reset_cancel = True
-            status_var.set("Cancelling — stopping motors…")
+            prog.set_status("Cancelling — stopping motors…")
             self.controller._log("[INFO] Reset Angle: Cancel requested by operator.")
             try:
                 self.controller.rot_mgr.stop_rotation(2)
@@ -3066,20 +3204,17 @@ class AutomationManager:
             except Exception:
                 pass
 
-        cancel_btn = ttk.Button(win, text="✖ Cancel Reset", command=_do_cancel)
-        cancel_btn.pack(pady=(6, 10))
-        win.protocol("WM_DELETE_WINDOW", _do_cancel)
+        hook = getattr(self._dlg(), "progress", None)
+        if hook is not None and self._dlg() is not _TK_DIALOGS:
+            prog = hook("Reset Angle", "Reset Angle in progress", "Cancel Reset", _do_cancel)
+        else:
+            prog = self._tk_progress(_do_cancel)
 
         def _set_status(text):
-            self.controller.master.after(0, lambda: status_var.set(text))
+            prog.set_status(text)
 
         def _close_win():
-            def _c():
-                try: pb.stop()
-                except Exception: pass
-                try: win.destroy()
-                except Exception: pass
-            self.controller.master.after(0, _c)
+            prog.close()
 
         def _reset_sequence():
             try:
@@ -3099,7 +3234,7 @@ class AutomationManager:
                         self._safe_sleep(1.0, bypass_check=True)
                     if self._reset_cancel:
                         self.controller._log("[INFO] Reset Angle (TEST RUN) cancelled.")
-                        self.controller.master.after(0, lambda: messagebox.showinfo(
+                        self.controller.master.after(0, lambda: self._dlg().showinfo(
                             "Reset Cancelled", "Simulated reset was cancelled."))
                     else:
                         self.controller._log("✅ Reset Completed (TEST RUN, simulated).")
@@ -3124,7 +3259,7 @@ class AutomationManager:
 
                 if self._reset_cancel:
                     self.controller._log("[INFO] Reset Angle CANCELLED. Stage left at its current position.")
-                    self.controller.master.after(0, lambda: messagebox.showinfo(
+                    self.controller.master.after(0, lambda: self._dlg().showinfo(
                         "Reset Cancelled",
                         "Reset Angle was cancelled.\n\n"
                         "The stage is left wherever it stopped — verify the read-back\n"
@@ -3145,7 +3280,7 @@ class AutomationManager:
                     self.controller._log(
                         "🚨 [ERROR] Reset Angle FAILED — a motor did not confirm arrival "
                         "(comm timeout). Stage may be at a mid-point, not (0,0).")
-                    self.controller.master.after(0, lambda: messagebox.showerror(
+                    self.controller.master.after(0, lambda: self._dlg().showerror(
                         "Reset Failed",
                         "Reset Angle stopped partway through — a motor did not confirm\n"
                         "arrival (Modbus comm timeout). The stage is likely NOT at (0, 0).\n\n"
@@ -3167,6 +3302,44 @@ class AutomationManager:
                 _close_win()
 
         threading.Thread(target=_reset_sequence, daemon=True).start()
+
+    def _tk_progress(self, on_cancel):
+        """The Tk app's Reset Angle progress window (set_status / close are thread-safe)."""
+        import tkinter as tk
+        from tkinter import ttk
+        win = tk.Toplevel(self.controller.master)
+        win.title("Reset Angle")
+        win.transient(self.controller.master)
+        win.geometry("400x170")
+        win.attributes("-topmost", True)
+        status_var = tk.StringVar(value="Starting…")
+        ttk.Label(win, text="🔄 Reset Angle in progress",
+                  font=("Helvetica", 13, "bold")).pack(pady=(16, 4))
+        ttk.Label(win, textvariable=status_var, font=("Helvetica", 11),
+                  foreground="#007ACC").pack(pady=(0, 6))
+        pb = ttk.Progressbar(win, mode="indeterminate", length=320)
+        # 40ms (~25Hz) reads just as smooth as a faster tick and avoids
+        # needlessly churning the Tk event loop while this dialog is open.
+        pb.pack(pady=4); pb.start(40)
+        cancel_btn = ttk.Button(win, text="✖ Cancel Reset", command=on_cancel)
+        cancel_btn.pack(pady=(6, 10))
+        win.protocol("WM_DELETE_WINDOW", on_cancel)
+        master = self.controller.master
+
+        class _Progress:
+            @staticmethod
+            def set_status(text):
+                master.after(0, lambda: status_var.set(text))
+
+            @staticmethod
+            def close():
+                def _c():
+                    try: pb.stop()
+                    except Exception: pass
+                    try: win.destroy()
+                    except Exception: pass
+                master.after(0, _c)
+        return _Progress()
 
     def emergency_stop(self):
         self.is_running = False
@@ -3242,13 +3415,13 @@ class AutomationManager:
     def _verify_file_integrity(self, file_path):
         """Checks if the recorded file has a valid size. Thread-safe version."""
         if not os.path.exists(file_path):
-            self.controller.master.after(0, lambda: messagebox.showwarning("File Missing", f"⚠️ File not found!\n{file_path}"))
+            self.controller.master.after(0, lambda: self._dlg().showwarning("File Missing", f"⚠️ File not found!\n{file_path}"))
             return False
             
         file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
         
         if file_size_mb < 0.05: 
-            self.controller.master.after(0, lambda: messagebox.showwarning("Incomplete Data", 
+            self.controller.master.after(0, lambda: self._dlg().showwarning("Incomplete Data", 
                                    f"⚠️ Integrity Check Failed!\nFile: {os.path.basename(file_path)}\n"
                                    f"Size: {file_size_mb:.2f} MB is too small."))
             return False
@@ -3265,6 +3438,7 @@ class AutomationManager:
             "end_time": end_time_jst.strftime('%H:%M:%S'),
             "shifter": shifter,
             "status": "SUCCESS" if is_success else "ABORTED/ERROR",
+            "daq_backend": self.daq_backend_label(),
             "config": cfg_snapshot
         }
         
@@ -3284,7 +3458,7 @@ class AutomationManager:
     def add_schedule(self, date_str, hour, minute):
         """[수정본] 스케줄 추가 및 파일 저장"""
         if len(self.schedules) >= 3:
-            messagebox.showwarning("Limit Reached", "You can only schedule up to 3 runs.")
+            self._dlg().showwarning("Limit Reached", "You can only schedule up to 3 runs.")
             return False
 
         try:
@@ -3296,7 +3470,7 @@ class AutomationManager:
             now_jst = datetime.now(JST)
 
             if target_dt <= now_jst:
-                messagebox.showerror("Time Error", f"Cannot schedule for a past time.\n(Input: {full_str} JST)")
+                self._dlg().showerror("Time Error", f"Cannot schedule for a past time.\n(Input: {full_str} JST)")
                 return False
 
             cfg_snapshot = self.controller.config_manager.get_all_variables()
@@ -3315,7 +3489,7 @@ class AutomationManager:
             return True
 
         except Exception as e:
-            messagebox.showerror("Format Error", f"Invalid input: {e}")
+            self._dlg().showerror("Format Error", f"Invalid input: {e}")
             return False
 
 
@@ -3331,17 +3505,39 @@ class AutomationManager:
             if os.path.exists(self.hk_config_file):
                 with open(self.hk_config_file, "r", encoding="utf-8") as f:
                     saved = json.load(f)
+                saved = self.hk_legacy_options(saved)
                 # merge onto defaults so a new field never KeyErrors
                 self.hk_config.update({k: saved[k] for k in saved if k in self.hk_config})
         except Exception as e:
             self.controller._log(f"[WARNING] Failed to load hk_config: {e}")
 
-    def save_hk_config(self):
+    def save_hk_config(self, snapshot=False):
+        """snapshot=True (the dialog's Save) also keeps a dated copy in
+        hk_configs/ so an earlier setup can be loaded back."""
         try:
             with open(self.hk_config_file, "w", encoding="utf-8") as f:
                 json.dump(self.hk_config, f, indent=2)
+            if snapshot:
+                now = datetime.now()
+                d = os.path.join(os.path.dirname(self.hk_config_file), "hk_configs")
+                os.makedirs(d, exist_ok=True)
+                with open(os.path.join(d, now.strftime("hk_config_%Y%m%d_%H%M%S.json")), "w", encoding="utf-8") as f:
+                    json.dump(dict(self.hk_config, saved_at=now.strftime("%Y-%m-%d %H:%M:%S")), f, indent=2)
         except Exception as e:
             self.controller._log(f"[ERROR] Failed to save hk_config: {e}")
+
+    def hk_config_snapshots(self):
+        """[(path, saved_at, cfg)] of hk_configs/*.json, newest first."""
+        d = os.path.join(os.path.dirname(self.hk_config_file), "hk_configs")
+        out = []
+        for p in sorted(glob.glob(os.path.join(d, "hk_config_*.json")), reverse=True):
+            try:
+                with open(p, encoding="utf-8") as f:
+                    cfg = self.hk_legacy_options(json.load(f))
+                out.append((p, cfg.get("saved_at", os.path.basename(p)), cfg))
+            except Exception:
+                continue
+        return out
 
     def _save_schedules_to_disk(self):
         try:
