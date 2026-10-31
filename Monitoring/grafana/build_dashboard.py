@@ -105,6 +105,8 @@ OK_AGES = [("backup_logs_last_ok", "Log backup", 26 * 3600), ("bfield_sync_last_
            ("data_sync_last_ok", "Data sync", 26 * 3600)]
 GREEN, YELLOW, RED, GRAY, ORANGE = "green", "yellow", "red", "gray", "orange"
 PCT = lambda warn, crit: [{"color": GREEN, "value": None}, {"color": YELLOW, "value": warn}, {"color": RED, "value": crit}]
+# A collector source is late when it has not run successfully for 3 of its periods (+1 min).
+RUN_LATE = f"{NOW} - last_ok_epoch > 3 * COALESCE(period_s, 60) + 60"
 
 
 def latest(host, expr):
@@ -154,9 +156,14 @@ daq_over = [{"matcher": {"id": "byName", "options": n}, "properties": [plain]}
             for n in ("Progress", "Since last run", "Last run")]
 daq_over.append({"matcher": {"id": "byName", "options": "Since last run"},
                  "properties": [{"id": "unit", "value": "s"}, {"id": "decimals", "value": 1}]})
+# Connection only (not run state): CAEN on this PC's USB, HK DPB answers ping, Logic unit TCP.
+panel("stat", "DAQ connection", "SELECT " + ", ".join(
+      f'CASE WHEN {NOW} - time > 600 THEN -1 ELSE {c} END AS "{n}"' for c, n in
+      (("caen_connected", "CAEN"), ("hk_connected", "HK"), ("logic_unit_up", "Logic unit"))) + " " + LATEST, 7, 4, 0,
+      mappings=lamp_map("OK", "OFF", "STALE"), colorMode="background", graphMode="none", textMode="value_and_name")
 panel("stat", "DAQ", f"SELECT scan_running AS \"Scan\", {progress} AS \"Progress\", "
       f"(SELECT {NOW} - MAX(ts_epoch) FROM daq_run) AS \"Since last run\", {run_label} AS \"Last run\" {LATEST}",
-      24, 4, 0, colorMode="value", graphMode="none", textMode="value_and_name", justifyMode="center",
+      17, 4, 7, colorMode="value", graphMode="none", textMode="value_and_name", justifyMode="center",
       text={"titleSize": 13, "valueSize": 24}, overrides=daq_over,
       mappings=[{"type": "value", "options": {"1": {"text": "SCANNING", "color": GREEN},
                                               "0": {"text": "IDLE", "color": GRAY}}}])
@@ -237,13 +244,13 @@ panel("timeseries", "HV voltage [V]", f"SELECT {hv_bucket} AS time, {vsel} FROM 
 panel("timeseries", "HV current [uA]", f"SELECT {hv_bucket} AS time, {isel} FROM monitoring_data WHERE {HV_RANGE} "
       f"AND NOT {READERR_SQL} GROUP BY 1 ORDER BY 1", 12, 8, 12, ds=HV, unit="suffix: µA", min=0)
 y += 8
-tsel = ", ".join(f'AVG(Dark_Box_{b}_T) AS "{n} T"' for b, n in BOXES)
-hsel = ", ".join(f'AVG(Dark_Box_{b}_H) AS "{n} H"' for b, n in BOXES)
-panel("timeseries", "Dark box temperature [C] and humidity [%]", f"SELECT {hv_bucket} AS time, {tsel}, {hsel} "
-      f"FROM monitoring_data WHERE {HV_RANGE} GROUP BY 1 ORDER BY 1", 24, 7, 0, ds=HV, unit="celsius",
-      overrides=[{"matcher": {"id": "byRegexp", "options": ".* H$"}, "properties": [
-          {"id": "unit", "value": "humidity"}, {"id": "custom.axisPlacement", "value": "right"},
-          {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}]}])
+BOX_COLORS = {"Rot#1": "blue", "Rot#2": "orange", "Mon.": "green"}   # same colour per box in both panels
+box_over = [{"matcher": {"id": "byName", "options": n}, "properties": [
+    {"id": "color", "value": {"mode": "fixed", "fixedColor": c}}]} for n, c in BOX_COLORS.items()]
+for x, (k, title, unit) in ((0, ("T", "Dark box temperature [C]", "celsius")), (12, ("H", "Dark box humidity [%]", "humidity"))):
+    sel = ", ".join(f'AVG(Dark_Box_{b}_{k}) AS "{n}"' for b, n in BOXES)
+    panel("timeseries", title, f"SELECT {hv_bucket} AS time, {sel} FROM monitoring_data WHERE {HV_RANGE} "
+          "GROUP BY 1 ORDER BY 1", 12, 7, x, ds=HV, unit=unit, overrides=box_over)
 y += 7
 
 to("details")
@@ -260,13 +267,6 @@ panel("table", "HV status bits (last good read)", " UNION ALL ".join(
       f"(SELECT * FROM monitoring_data WHERE {HV_GOOD_SQL} ORDER BY timestamp DESC LIMIT 1)" for c, n in CHANNELS),
       12, 5, 12, ds=HV, cellHeight="sm")
 y += 5
-tsel = ", ".join(f'AVG(Dark_Box_{b}_T) AS "{n}"' for b, n in BOXES)
-hsel = ", ".join(f'AVG(Dark_Box_{b}_H) AS "{n}"' for b, n in BOXES)
-panel("timeseries", "Dark box temperature [C]", f"SELECT {hv_bucket} AS time, {tsel} FROM monitoring_data "
-      f"WHERE {HV_RANGE} GROUP BY 1 ORDER BY 1", 12, 7, 0, ds=HV, unit="celsius")
-panel("timeseries", "Dark box humidity [%]", f"SELECT {hv_bucket} AS time, {hsel} FROM monitoring_data "
-      f"WHERE {HV_RANGE} GROUP BY 1 ORDER BY 1", 12, 7, 12, ds=HV, unit="humidity")
-y += 7
 
 to("main")
 row("B-field")
@@ -295,18 +295,27 @@ panel("stat", "LD", "SELECT " + ", ".join(
       mappings=[{"type": "value", "options": {"1": {"text": "ON", "color": GREEN}, "0": {"text": "OFF", "color": GRAY},
                                               "-1": {"text": "NO DATA", "color": ORANGE}}}],
       colorMode="background", graphMode="none", textMode="value_and_name")
-lsel = ", ".join(f"AVG(CASE WHEN wl = '{w}' THEN temp_c END) AS \"{w} T\", "
-                 f"AVG(CASE WHEN wl = '{w}' THEN pd_current_ma END) AS \"{w} PD\"" for w in WLS)
-panel("timeseries", "Laser temperature [C] and photodiode [mA]", f"SELECT (ts_epoch / {BUCKET}) * {BUCKET} AS time, "
-      f"{lsel} FROM laser WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000 GROUP BY 1 ORDER BY 1",
-      18, 7, 6, unit="celsius",
-      overrides=[{"matcher": {"id": "byRegexp", "options": ".* PD$"}, "properties": [
-          {"id": "unit", "value": "suffix: mA"}, {"id": "custom.axisPlacement", "value": "right"},
-          {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}]}])
+for x, (col, title, unit) in ((6, ("pd_current_ma", "LD intensity, photodiode [mA]", "suffix: mA")),
+                               (18, ("temp_c", "Laser board temperature [C]", "celsius"))):
+    panel("timeseries", title, per_wl(col), 6, 7, x, unit=unit)
+tec = ", ".join(f"MAX(CASE WHEN wl = '{w}' THEN tec_on END) AS \"{w}\"" for w in WLS)
+panel("state-timeline", "TEC", f"SELECT (ts_epoch / {BUCKET}) * {BUCKET} AS time, {tec} FROM laser "
+      "WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000 GROUP BY 1 ORDER BY 1", 6, 7, 12,
+      showValue="never", mergeValues=True,
+      mappings=[{"type": "value", "options": {"1": {"text": "ON", "color": GREEN}, "0": {"text": "OFF", "color": GRAY}}}])
 y += 7
 
 to("details")
 row("Laser")
+lsel = ", ".join(f"AVG(CASE WHEN wl = '{w}' THEN temp_c END) AS \"{w} T\", "
+                 f"AVG(CASE WHEN wl = '{w}' THEN pd_current_ma END) AS \"{w} PD\"" for w in WLS)
+panel("timeseries", "Laser temperature [C] and photodiode [mA]", f"SELECT (ts_epoch / {BUCKET}) * {BUCKET} AS time, "
+      f"{lsel} FROM laser WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000 GROUP BY 1 ORDER BY 1",
+      24, 7, 0, unit="celsius",
+      overrides=[{"matcher": {"id": "byRegexp", "options": ".* PD$"}, "properties": [
+          {"id": "unit", "value": "suffix: mA"}, {"id": "custom.axisPlacement", "value": "right"},
+          {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}}]}])
+y += 7
 panel("timeseries", "Laser temperature [C]", per_wl("temp_c"), 8, 7, 0, unit="celsius")
 panel("timeseries", "Pulse current [mA]", per_wl("pulse_ma"), 8, 7, 8)
 panel("timeseries", "LD on", per_wl("ld_on"), 8, 7, 16)
@@ -342,25 +351,6 @@ panel("timeseries", "On battery", wide([("on_battery", "on_battery"), ("battery_
       8, 7, 8)
 panel("timeseries", "Input / output [V]", wide([("vin", "Vin"), ("vout", "Vout")], "ups"), 8, 7, 16, unit="volt")
 y += 7
-
-to("main")
-row("Services and sync")
-svc_latest = f"FROM pc_health WHERE host = 'kor' ORDER BY ts_epoch DESC LIMIT 1"
-# "Collector data": FAIL when any source has not run successfully for 3 of its periods (+1 min).
-RUN_LATE = f"{NOW} - last_ok_epoch > 3 * COALESCE(period_s, 60) + 60"
-panel("stat", "Services and timers", "SELECT " + ", ".join(f'{c} AS "{n}"' for c, n in UNITS) +
-      f", (SELECT CASE WHEN SUM({RUN_LATE}) > 0 THEN 0 ELSE 1 END FROM source_status) "
-      "AS \"Collector data\" " + svc_latest,
-      16, 4, 0, mappings=lamp_map("RUNNING", "DOWN"), colorMode="background", graphMode="none",
-      textMode="value_and_name",
-      overrides=[{"matcher": {"id": "byName", "options": "Collector data"},
-                  "properties": [{"id": "mappings", "value": lamp_map("OK", "FAIL")}]}])
-age_over = [{"matcher": {"id": "byName", "options": n},
-             "properties": [{"id": "thresholds", "value": {"mode": "absolute", "steps": [
-                 {"color": GREEN, "value": None}, {"color": RED, "value": lim}]}}]} for _c, n, lim in OK_AGES]
-panel("stat", "Last [OK]", "SELECT " + ", ".join(f"{NOW} - {c} AS \"{n}\"" for c, n, _l in OK_AGES) + " " + LATEST,
-      8, 4, 16, unit="s", colorMode="background", graphMode="none", textMode="value_and_name", overrides=age_over)
-y += 4
 
 to("details")
 row("Services and sync")
@@ -455,6 +445,25 @@ panels.append({"type": "text", "title": "Camera", "gridPos": {"x": 0, "y": y, "w
                "options": {"mode": "html",
                            "content": '<a href="https://hk-precal-kor.tailcec6f0.ts.net/camera/" target="_blank" '
                                       'rel="noopener noreferrer">Open camera (password)</a>'}})
+y += 3
+
+to("main")
+row("Services and sync")
+svc_latest = f"FROM pc_health WHERE host = 'kor' ORDER BY ts_epoch DESC LIMIT 1"
+panel("stat", "Services and timers", "SELECT " + ", ".join(f'{c} AS "{n}"' for c, n in UNITS) +
+      f", (SELECT CASE WHEN SUM({RUN_LATE}) > 0 THEN 0 ELSE 1 END FROM source_status) "
+      "AS \"Collector data\" " + svc_latest,
+      16, 4, 0, mappings=lamp_map("RUNNING", "DOWN"), colorMode="background", graphMode="none",
+      textMode="value_and_name",
+      overrides=[{"matcher": {"id": "byName", "options": "Collector data"},
+                  "properties": [{"id": "mappings", "value": lamp_map("OK", "FAIL")}]}])
+age_over = [{"matcher": {"id": "byName", "options": n},
+             "properties": [{"id": "thresholds", "value": {"mode": "absolute", "steps": [
+                 {"color": GREEN, "value": None}, {"color": RED, "value": lim}]}}]} for _c, n, lim in OK_AGES]
+panel("stat", "Last [OK]", "SELECT " + ", ".join(f"{NOW} - {c} AS \"{n}\"" for c, n, _l in OK_AGES) + " " + LATEST,
+      8, 4, 16, unit="s", colorMode="background", graphMode="none", textMode="value_and_name", overrides=age_over)
+y += 4
+
 
 to("main")
 LINKS = {"main": ("Details", "/d/precal-details"), "details": ("Main (common view)", "/d/precal-overview")}

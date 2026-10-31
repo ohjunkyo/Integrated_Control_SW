@@ -494,97 +494,17 @@
    "id": 8
   },
   {
-   "type": "timeseries",
-   "title": "Dark box temperature [C]",
-   "datasource": {
-    "type": "frser-sqlite-datasource",
-    "uid": "precal-hv"
-   },
-   "targets": [
-    {
-     "datasource": {
-      "type": "frser-sqlite-datasource",
-      "uid": "precal-hv"
-     },
-     "refId": "A",
-     "queryText": "SELECT (CAST(strftime('%s', timestamp, 'utc') AS INTEGER) / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(Dark_Box_1_T) AS \"Rot#1\", AVG(Dark_Box_2_T) AS \"Rot#2\", AVG(Dark_Box_3_T) AS \"Mon.\" FROM monitoring_data WHERE timestamp >= strftime('%Y-%m-%dT%H:%M:%S', $__from / 1000, 'unixepoch', 'localtime') AND timestamp < strftime('%Y-%m-%dT%H:%M:%S', $__to / 1000, 'unixepoch', 'localtime') GROUP BY 1 ORDER BY 1",
-     "rawQueryText": "SELECT (CAST(strftime('%s', timestamp, 'utc') AS INTEGER) / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(Dark_Box_1_T) AS \"Rot#1\", AVG(Dark_Box_2_T) AS \"Rot#2\", AVG(Dark_Box_3_T) AS \"Mon.\" FROM monitoring_data WHERE timestamp >= strftime('%Y-%m-%dT%H:%M:%S', $__from / 1000, 'unixepoch', 'localtime') AND timestamp < strftime('%Y-%m-%dT%H:%M:%S', $__to / 1000, 'unixepoch', 'localtime') GROUP BY 1 ORDER BY 1",
-     "queryType": "table",
-     "timeColumns": [
-      "time"
-     ]
-    }
-   ],
-   "gridPos": {
-    "x": 0,
-    "y": 33,
-    "w": 12,
-    "h": 7
-   },
-   "fieldConfig": {
-    "defaults": {
-     "unit": "celsius",
-     "custom": {
-      "spanNulls": 900000
-     }
-    },
-    "overrides": []
-   },
-   "options": {},
-   "id": 9
-  },
-  {
-   "type": "timeseries",
-   "title": "Dark box humidity [%]",
-   "datasource": {
-    "type": "frser-sqlite-datasource",
-    "uid": "precal-hv"
-   },
-   "targets": [
-    {
-     "datasource": {
-      "type": "frser-sqlite-datasource",
-      "uid": "precal-hv"
-     },
-     "refId": "A",
-     "queryText": "SELECT (CAST(strftime('%s', timestamp, 'utc') AS INTEGER) / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(Dark_Box_1_H) AS \"Rot#1\", AVG(Dark_Box_2_H) AS \"Rot#2\", AVG(Dark_Box_3_H) AS \"Mon.\" FROM monitoring_data WHERE timestamp >= strftime('%Y-%m-%dT%H:%M:%S', $__from / 1000, 'unixepoch', 'localtime') AND timestamp < strftime('%Y-%m-%dT%H:%M:%S', $__to / 1000, 'unixepoch', 'localtime') GROUP BY 1 ORDER BY 1",
-     "rawQueryText": "SELECT (CAST(strftime('%s', timestamp, 'utc') AS INTEGER) / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(Dark_Box_1_H) AS \"Rot#1\", AVG(Dark_Box_2_H) AS \"Rot#2\", AVG(Dark_Box_3_H) AS \"Mon.\" FROM monitoring_data WHERE timestamp >= strftime('%Y-%m-%dT%H:%M:%S', $__from / 1000, 'unixepoch', 'localtime') AND timestamp < strftime('%Y-%m-%dT%H:%M:%S', $__to / 1000, 'unixepoch', 'localtime') GROUP BY 1 ORDER BY 1",
-     "queryType": "table",
-     "timeColumns": [
-      "time"
-     ]
-    }
-   ],
-   "gridPos": {
-    "x": 12,
-    "y": 33,
-    "w": 12,
-    "h": 7
-   },
-   "fieldConfig": {
-    "defaults": {
-     "unit": "humidity",
-     "custom": {
-      "spanNulls": 900000
-     }
-    },
-    "overrides": []
-   },
-   "options": {},
-   "id": 10
-  },
-  {
    "type": "row",
    "title": "B-field",
    "collapsed": false,
    "gridPos": {
     "x": 0,
-    "y": 40,
+    "y": 33,
     "w": 24,
     "h": 1
    },
    "panels": [],
-   "id": 11
+   "id": 9
   },
   {
    "type": "timeseries",
@@ -610,7 +530,7 @@
    ],
    "gridPos": {
     "x": 0,
-    "y": 41,
+    "y": 34,
     "w": 12,
     "h": 7
    },
@@ -623,7 +543,7 @@
     "overrides": []
    },
    "options": {},
-   "id": 12
+   "id": 10
   },
   {
    "type": "timeseries",
@@ -649,7 +569,7 @@
    ],
    "gridPos": {
     "x": 12,
-    "y": 41,
+    "y": 34,
     "w": 12,
     "h": 7
    },
@@ -663,7 +583,7 @@
     "overrides": []
    },
    "options": {},
-   "id": 13
+   "id": 11
   },
   {
    "type": "row",
@@ -671,12 +591,79 @@
    "collapsed": false,
    "gridPos": {
     "x": 0,
-    "y": 48,
+    "y": 41,
     "w": 24,
     "h": 1
    },
    "panels": [],
-   "id": 14
+   "id": 12
+  },
+  {
+   "type": "timeseries",
+   "title": "Laser temperature [C] and photodiode [mA]",
+   "datasource": {
+    "type": "frser-sqlite-datasource",
+    "uid": "precal-monitor"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "frser-sqlite-datasource",
+      "uid": "precal-monitor"
+     },
+     "refId": "A",
+     "queryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(CASE WHEN wl = '375nm' THEN temp_c END) AS \"375nm T\", AVG(CASE WHEN wl = '375nm' THEN pd_current_ma END) AS \"375nm PD\", AVG(CASE WHEN wl = '405nm' THEN temp_c END) AS \"405nm T\", AVG(CASE WHEN wl = '405nm' THEN pd_current_ma END) AS \"405nm PD\", AVG(CASE WHEN wl = '450nm' THEN temp_c END) AS \"450nm T\", AVG(CASE WHEN wl = '450nm' THEN pd_current_ma END) AS \"450nm PD\", AVG(CASE WHEN wl = '473nm' THEN temp_c END) AS \"473nm T\", AVG(CASE WHEN wl = '473nm' THEN pd_current_ma END) AS \"473nm PD\" FROM laser WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000 GROUP BY 1 ORDER BY 1",
+     "rawQueryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(CASE WHEN wl = '375nm' THEN temp_c END) AS \"375nm T\", AVG(CASE WHEN wl = '375nm' THEN pd_current_ma END) AS \"375nm PD\", AVG(CASE WHEN wl = '405nm' THEN temp_c END) AS \"405nm T\", AVG(CASE WHEN wl = '405nm' THEN pd_current_ma END) AS \"405nm PD\", AVG(CASE WHEN wl = '450nm' THEN temp_c END) AS \"450nm T\", AVG(CASE WHEN wl = '450nm' THEN pd_current_ma END) AS \"450nm PD\", AVG(CASE WHEN wl = '473nm' THEN temp_c END) AS \"473nm T\", AVG(CASE WHEN wl = '473nm' THEN pd_current_ma END) AS \"473nm PD\" FROM laser WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000 GROUP BY 1 ORDER BY 1",
+     "queryType": "table",
+     "timeColumns": [
+      "time"
+     ]
+    }
+   ],
+   "gridPos": {
+    "x": 0,
+    "y": 42,
+    "w": 24,
+    "h": 7
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "celsius",
+     "custom": {
+      "spanNulls": 900000
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byRegexp",
+       "options": ".* PD$"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "suffix: mA"
+       },
+       {
+        "id": "custom.axisPlacement",
+        "value": "right"
+       },
+       {
+        "id": "custom.lineStyle",
+        "value": {
+         "fill": "dash",
+         "dash": [
+          10,
+          10
+         ]
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {},
+   "id": 13
   },
   {
    "type": "timeseries",
@@ -716,7 +703,7 @@
     "overrides": []
    },
    "options": {},
-   "id": 15
+   "id": 14
   },
   {
    "type": "timeseries",
@@ -755,7 +742,7 @@
     "overrides": []
    },
    "options": {},
-   "id": 16
+   "id": 15
   },
   {
    "type": "timeseries",
@@ -794,7 +781,7 @@
     "overrides": []
    },
    "options": {},
-   "id": 17
+   "id": 16
   },
   {
    "type": "table",
@@ -829,7 +816,7 @@
     "overrides": []
    },
    "options": {},
-   "id": 18
+   "id": 17
   },
   {
    "type": "row",
@@ -842,7 +829,7 @@
     "h": 1
    },
    "panels": [],
-   "id": 19
+   "id": 18
   },
   {
    "type": "timeseries",
@@ -882,7 +869,7 @@
     "overrides": []
    },
    "options": {},
-   "id": 20
+   "id": 19
   },
   {
    "type": "timeseries",
@@ -921,7 +908,7 @@
     "overrides": []
    },
    "options": {},
-   "id": 21
+   "id": 20
   },
   {
    "type": "timeseries",
@@ -961,7 +948,7 @@
     "overrides": []
    },
    "options": {},
-   "id": 22
+   "id": 21
   },
   {
    "type": "row",
@@ -974,7 +961,7 @@
     "h": 1
    },
    "panels": [],
-   "id": 23
+   "id": 22
   },
   {
    "type": "state-timeline",
@@ -1028,7 +1015,7 @@
     "showValue": "never",
     "mergeValues": true
    },
-   "id": 24
+   "id": 23
   },
   {
    "type": "table",
@@ -1174,7 +1161,7 @@
    "options": {
     "cellHeight": "sm"
    },
-   "id": 25
+   "id": 24
   },
   {
    "type": "row",
@@ -1187,7 +1174,7 @@
     "h": 1
    },
    "panels": [],
-   "id": 26
+   "id": 25
   },
   {
    "type": "stat",
@@ -1236,7 +1223,7 @@
      "fields": "/.*/"
     }
    },
-   "id": 27
+   "id": 26
   },
   {
    "type": "stat",
@@ -1285,7 +1272,7 @@
      "fields": "/.*/"
     }
    },
-   "id": 28
+   "id": 27
   },
   {
    "type": "timeseries",
@@ -1351,7 +1338,7 @@
     ]
    },
    "options": {},
-   "id": 29
+   "id": 28
   },
   {
    "type": "timeseries",
@@ -1417,7 +1404,7 @@
     ]
    },
    "options": {},
-   "id": 30
+   "id": 29
   },
   {
    "type": "timeseries",
@@ -1457,7 +1444,7 @@
     "overrides": []
    },
    "options": {},
-   "id": 31
+   "id": 30
   },
   {
    "type": "timeseries",
@@ -1498,7 +1485,7 @@
     "overrides": []
    },
    "options": {},
-   "id": 32
+   "id": 31
   },
   {
    "type": "timeseries",
@@ -1540,7 +1527,7 @@
     "overrides": []
    },
    "options": {},
-   "id": 33
+   "id": 32
   },
   {
    "type": "timeseries",
@@ -1581,7 +1568,7 @@
    },
    "options": {},
    "timeFrom": "7d",
-   "id": 34
+   "id": 33
   },
   {
    "type": "timeseries",
@@ -1622,7 +1609,7 @@
     "overrides": []
    },
    "options": {},
-   "id": 35
+   "id": 34
   },
   {
    "type": "timeseries",
@@ -1663,7 +1650,7 @@
     "overrides": []
    },
    "options": {},
-   "id": 36
+   "id": 35
   }
  ]
 }

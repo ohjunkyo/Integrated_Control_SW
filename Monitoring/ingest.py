@@ -568,6 +568,12 @@ def probe_daq_status(db, cfg, src, backfill):
             row[name + "_last_ok"] = None
     for name, addr in src.get("tcp", {}).items():
         row.update(tcp_check(db, src["table"], name, addr, row["ts_epoch"]))
+    for name, vendor in src.get("usb", {}).items():   # device present on this PC's USB bus
+        row[name + "_connected"] = int(any(open(f).read().strip() == vendor
+                                           for f in glob.glob("/sys/bus/usb/devices/*/idVendor")))
+    for name, host in src.get("ping", {}).items():   # ICMP only: never open the board's data port
+        row[name + "_connected"] = int(subprocess.run(["ping", "-c", "1", "-W", "1", host],
+                                                      capture_output=True).returncode == 0)
     n = db.insert(src["table"], [row])
     db.set_state("probe:" + src["name"], src["name"])
     db.con.commit()
