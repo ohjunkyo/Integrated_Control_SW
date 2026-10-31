@@ -39,6 +39,119 @@
    "id": 1
   },
   {
+   "type": "stat",
+   "title": "DAQ",
+   "datasource": {
+    "type": "frser-sqlite-datasource",
+    "uid": "precal-monitor"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "frser-sqlite-datasource",
+      "uid": "precal-monitor"
+     },
+     "refId": "A",
+     "queryText": "SELECT CASE WHEN scan_running = 1 AND scan_total > 0 THEN printf('%d / %d  (%.0f %%)', scan_done, scan_total, 100.0 * scan_done / scan_total) || '  ' || COALESCE(NULLIF(CAST(scan_tag AS TEXT), ''), '') ELSE '\u2014' END AS \"Progress\", (SELECT CAST(strftime('%s','now') AS INTEGER) - MAX(ts_epoch) FROM daq_run) AS \"Since last run\", (SELECT CAST(CAST(date AS INT) AS TEXT) || '_' || printf('%03d', CAST(run AS INT)) || '  ' || CAST(CAST(wavelength AS INT) AS TEXT) || ' nm  ' || COALESCE(NULLIF(CAST(purpose AS TEXT), ''), 'Other') FROM daq_run ORDER BY ts_epoch DESC LIMIT 1) AS \"Last run\" FROM v_daq_status ORDER BY time DESC LIMIT 1",
+     "rawQueryText": "SELECT CASE WHEN scan_running = 1 AND scan_total > 0 THEN printf('%d / %d  (%.0f %%)', scan_done, scan_total, 100.0 * scan_done / scan_total) || '  ' || COALESCE(NULLIF(CAST(scan_tag AS TEXT), ''), '') ELSE '\u2014' END AS \"Progress\", (SELECT CAST(strftime('%s','now') AS INTEGER) - MAX(ts_epoch) FROM daq_run) AS \"Since last run\", (SELECT CAST(CAST(date AS INT) AS TEXT) || '_' || printf('%03d', CAST(run AS INT)) || '  ' || CAST(CAST(wavelength AS INT) AS TEXT) || ' nm  ' || COALESCE(NULLIF(CAST(purpose AS TEXT), ''), 'Other') FROM daq_run ORDER BY ts_epoch DESC LIMIT 1) AS \"Last run\" FROM v_daq_status ORDER BY time DESC LIMIT 1",
+     "queryType": "table",
+     "timeColumns": [
+      "time"
+     ]
+    }
+   ],
+   "gridPos": {
+    "x": 0,
+    "y": 1,
+    "w": 24,
+    "h": 4
+   },
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Progress"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "text"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Since last run"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "text"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Last run"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "text"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Since last run"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "s"
+       },
+       {
+        "id": "decimals",
+        "value": 1
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "colorMode": "value",
+    "graphMode": "none",
+    "textMode": "value_and_name",
+    "justifyMode": "center",
+    "text": {
+     "titleSize": 13,
+     "valueSize": 24
+    },
+    "reduceOptions": {
+     "values": false,
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "/.*/"
+    }
+   },
+   "id": 2
+  },
+  {
    "type": "timeseries",
    "title": "Run timeline, 7 days (laser mA; dark and HK runs at 0)",
    "datasource": {
@@ -62,7 +175,7 @@
    ],
    "gridPos": {
     "x": 0,
-    "y": 1,
+    "y": 5,
     "w": 24,
     "h": 8
    },
@@ -192,7 +305,7 @@
     }
    },
    "timeFrom": "7d",
-   "id": 2
+   "id": 3
   },
   {
    "type": "table",
@@ -218,7 +331,7 @@
    ],
    "gridPos": {
     "x": 0,
-    "y": 9,
+    "y": 13,
     "w": 24,
     "h": 8
    },
@@ -229,7 +342,7 @@
    "options": {
     "cellHeight": "sm"
    },
-   "id": 3
+   "id": 4
   },
   {
    "type": "table",
@@ -255,7 +368,7 @@
    ],
    "gridPos": {
     "x": 0,
-    "y": 17,
+    "y": 21,
     "w": 24,
     "h": 10
    },
@@ -308,7 +421,7 @@
     ]
    },
    "options": {},
-   "id": 4
+   "id": 5
   },
   {
    "type": "row",
@@ -316,12 +429,12 @@
    "collapsed": false,
    "gridPos": {
     "x": 0,
-    "y": 27,
+    "y": 31,
     "w": 24,
     "h": 1
    },
    "panels": [],
-   "id": 5
+   "id": 6
   },
   {
    "type": "state-timeline",
@@ -347,7 +460,7 @@
    ],
    "gridPos": {
     "x": 0,
-    "y": 28,
+    "y": 32,
     "w": 9,
     "h": 5
    },
@@ -387,7 +500,7 @@
     "showValue": "never",
     "mergeValues": true
    },
-   "id": 6
+   "id": 7
   },
   {
    "type": "stat",
@@ -413,7 +526,7 @@
    ],
    "gridPos": {
     "x": 9,
-    "y": 28,
+    "y": 32,
     "w": 3,
     "h": 5
    },
@@ -454,7 +567,7 @@
      "fields": "/.*/"
     }
    },
-   "id": 7
+   "id": 8
   },
   {
    "type": "table",
@@ -480,7 +593,7 @@
    ],
    "gridPos": {
     "x": 12,
-    "y": 28,
+    "y": 32,
     "w": 12,
     "h": 5
    },
@@ -491,7 +604,7 @@
    "options": {
     "cellHeight": "sm"
    },
-   "id": 8
+   "id": 9
   },
   {
    "type": "row",
@@ -499,12 +612,12 @@
    "collapsed": false,
    "gridPos": {
     "x": 0,
-    "y": 33,
+    "y": 37,
     "w": 24,
     "h": 1
    },
    "panels": [],
-   "id": 9
+   "id": 10
   },
   {
    "type": "timeseries",
@@ -530,7 +643,7 @@
    ],
    "gridPos": {
     "x": 0,
-    "y": 34,
+    "y": 38,
     "w": 12,
     "h": 7
    },
@@ -543,7 +656,7 @@
     "overrides": []
    },
    "options": {},
-   "id": 10
+   "id": 11
   },
   {
    "type": "timeseries",
@@ -569,7 +682,7 @@
    ],
    "gridPos": {
     "x": 12,
-    "y": 34,
+    "y": 38,
     "w": 12,
     "h": 7
    },
@@ -583,7 +696,7 @@
     "overrides": []
    },
    "options": {},
-   "id": 11
+   "id": 12
   },
   {
    "type": "row",
@@ -591,12 +704,12 @@
    "collapsed": false,
    "gridPos": {
     "x": 0,
-    "y": 41,
+    "y": 45,
     "w": 24,
     "h": 1
    },
    "panels": [],
-   "id": 12
+   "id": 13
   },
   {
    "type": "timeseries",
@@ -622,7 +735,7 @@
    ],
    "gridPos": {
     "x": 0,
-    "y": 42,
+    "y": 46,
     "w": 24,
     "h": 7
    },
@@ -663,7 +776,7 @@
     ]
    },
    "options": {},
-   "id": 13
+   "id": 14
   },
   {
    "type": "timeseries",
@@ -689,7 +802,7 @@
    ],
    "gridPos": {
     "x": 0,
-    "y": 49,
+    "y": 53,
     "w": 8,
     "h": 7
    },
@@ -703,7 +816,7 @@
     "overrides": []
    },
    "options": {},
-   "id": 14
+   "id": 15
   },
   {
    "type": "timeseries",
@@ -729,7 +842,7 @@
    ],
    "gridPos": {
     "x": 8,
-    "y": 49,
+    "y": 53,
     "w": 8,
     "h": 7
    },
@@ -742,7 +855,7 @@
     "overrides": []
    },
    "options": {},
-   "id": 15
+   "id": 16
   },
   {
    "type": "timeseries",
@@ -768,7 +881,7 @@
    ],
    "gridPos": {
     "x": 16,
-    "y": 49,
+    "y": 53,
     "w": 8,
     "h": 7
    },
@@ -781,7 +894,7 @@
     "overrides": []
    },
    "options": {},
-   "id": 16
+   "id": 17
   },
   {
    "type": "table",
@@ -807,7 +920,7 @@
    ],
    "gridPos": {
     "x": 0,
-    "y": 56,
+    "y": 60,
     "w": 24,
     "h": 6
    },
@@ -816,7 +929,7 @@
     "overrides": []
    },
    "options": {},
-   "id": 17
+   "id": 18
   },
   {
    "type": "row",
@@ -824,12 +937,12 @@
    "collapsed": false,
    "gridPos": {
     "x": 0,
-    "y": 62,
+    "y": 66,
     "w": 24,
     "h": 1
    },
    "panels": [],
-   "id": 18
+   "id": 19
   },
   {
    "type": "timeseries",
@@ -855,7 +968,7 @@
    ],
    "gridPos": {
     "x": 0,
-    "y": 63,
+    "y": 67,
     "w": 8,
     "h": 7
    },
@@ -869,7 +982,7 @@
     "overrides": []
    },
    "options": {},
-   "id": 19
+   "id": 20
   },
   {
    "type": "timeseries",
@@ -895,7 +1008,7 @@
    ],
    "gridPos": {
     "x": 8,
-    "y": 63,
+    "y": 67,
     "w": 8,
     "h": 7
    },
@@ -908,7 +1021,7 @@
     "overrides": []
    },
    "options": {},
-   "id": 20
+   "id": 21
   },
   {
    "type": "timeseries",
@@ -934,7 +1047,7 @@
    ],
    "gridPos": {
     "x": 16,
-    "y": 63,
+    "y": 67,
     "w": 8,
     "h": 7
    },
@@ -948,7 +1061,7 @@
     "overrides": []
    },
    "options": {},
-   "id": 21
+   "id": 22
   },
   {
    "type": "row",
@@ -956,12 +1069,12 @@
    "collapsed": false,
    "gridPos": {
     "x": 0,
-    "y": 70,
+    "y": 74,
     "w": 24,
     "h": 1
    },
    "panels": [],
-   "id": 22
+   "id": 23
   },
   {
    "type": "state-timeline",
@@ -987,7 +1100,7 @@
    ],
    "gridPos": {
     "x": 0,
-    "y": 71,
+    "y": 75,
     "w": 24,
     "h": 7
    },
@@ -1015,7 +1128,7 @@
     "showValue": "never",
     "mergeValues": true
    },
-   "id": 23
+   "id": 24
   },
   {
    "type": "table",
@@ -1041,7 +1154,7 @@
    ],
    "gridPos": {
     "x": 0,
-    "y": 78,
+    "y": 82,
     "w": 24,
     "h": 8
    },
@@ -1161,7 +1274,7 @@
    "options": {
     "cellHeight": "sm"
    },
-   "id": 24
+   "id": 25
   },
   {
    "type": "row",
@@ -1169,12 +1282,12 @@
    "collapsed": false,
    "gridPos": {
     "x": 0,
-    "y": 86,
+    "y": 90,
     "w": 24,
     "h": 1
    },
    "panels": [],
-   "id": 25
+   "id": 26
   },
   {
    "type": "stat",
@@ -1200,7 +1313,7 @@
    ],
    "gridPos": {
     "x": 0,
-    "y": 87,
+    "y": 91,
     "w": 8,
     "h": 4
    },
@@ -1223,7 +1336,7 @@
      "fields": "/.*/"
     }
    },
-   "id": 26
+   "id": 27
   },
   {
    "type": "stat",
@@ -1249,7 +1362,7 @@
    ],
    "gridPos": {
     "x": 8,
-    "y": 87,
+    "y": 91,
     "w": 16,
     "h": 4
    },
@@ -1272,7 +1385,7 @@
      "fields": "/.*/"
     }
    },
-   "id": 27
+   "id": 28
   },
   {
    "type": "timeseries",
@@ -1298,73 +1411,7 @@
    ],
    "gridPos": {
     "x": 0,
-    "y": 91,
-    "w": 8,
-    "h": 7
-   },
-   "fieldConfig": {
-    "defaults": {
-     "min": 0,
-     "custom": {
-      "spanNulls": 900000
-     }
-    },
-    "overrides": [
-     {
-      "matcher": {
-       "id": "byName",
-       "options": "cores"
-      },
-      "properties": [
-       {
-        "id": "custom.lineStyle",
-        "value": {
-         "fill": "dash",
-         "dash": [
-          10,
-          10
-         ]
-        }
-       },
-       {
-        "id": "color",
-        "value": {
-         "mode": "fixed",
-         "fixedColor": "red"
-        }
-       }
-      ]
-     }
-    ]
-   },
-   "options": {},
-   "id": 28
-  },
-  {
-   "type": "timeseries",
-   "title": "Load average Shifter",
-   "datasource": {
-    "type": "frser-sqlite-datasource",
-    "uid": "precal-monitor"
-   },
-   "targets": [
-    {
-     "datasource": {
-      "type": "frser-sqlite-datasource",
-      "uid": "precal-monitor"
-     },
-     "refId": "A",
-     "queryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(load1) AS \"load1\", AVG(load5) AS \"load5\", AVG(load15) AS \"load15\", MAX(ncpu) AS \"cores\" FROM pc_health WHERE host = 'shifter' AND ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000 GROUP BY 1 ORDER BY 1",
-     "rawQueryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(load1) AS \"load1\", AVG(load5) AS \"load5\", AVG(load15) AS \"load15\", MAX(ncpu) AS \"cores\" FROM pc_health WHERE host = 'shifter' AND ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000 GROUP BY 1 ORDER BY 1",
-     "queryType": "table",
-     "timeColumns": [
-      "time"
-     ]
-    }
-   ],
-   "gridPos": {
-    "x": 8,
-    "y": 91,
+    "y": 95,
     "w": 8,
     "h": 7
    },
@@ -1408,6 +1455,72 @@
   },
   {
    "type": "timeseries",
+   "title": "Load average Shifter",
+   "datasource": {
+    "type": "frser-sqlite-datasource",
+    "uid": "precal-monitor"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "frser-sqlite-datasource",
+      "uid": "precal-monitor"
+     },
+     "refId": "A",
+     "queryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(load1) AS \"load1\", AVG(load5) AS \"load5\", AVG(load15) AS \"load15\", MAX(ncpu) AS \"cores\" FROM pc_health WHERE host = 'shifter' AND ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000 GROUP BY 1 ORDER BY 1",
+     "rawQueryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(load1) AS \"load1\", AVG(load5) AS \"load5\", AVG(load15) AS \"load15\", MAX(ncpu) AS \"cores\" FROM pc_health WHERE host = 'shifter' AND ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000 GROUP BY 1 ORDER BY 1",
+     "queryType": "table",
+     "timeColumns": [
+      "time"
+     ]
+    }
+   ],
+   "gridPos": {
+    "x": 8,
+    "y": 95,
+    "w": 8,
+    "h": 7
+   },
+   "fieldConfig": {
+    "defaults": {
+     "min": 0,
+     "custom": {
+      "spanNulls": 900000
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "cores"
+      },
+      "properties": [
+       {
+        "id": "custom.lineStyle",
+        "value": {
+         "fill": "dash",
+         "dash": [
+          10,
+          10
+         ]
+        }
+       },
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "red"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {},
+   "id": 30
+  },
+  {
+   "type": "timeseries",
    "title": "CPU temperature [C]",
    "datasource": {
     "type": "frser-sqlite-datasource",
@@ -1430,7 +1543,7 @@
    ],
    "gridPos": {
     "x": 16,
-    "y": 91,
+    "y": 95,
     "w": 8,
     "h": 7
    },
@@ -1444,7 +1557,7 @@
     "overrides": []
    },
    "options": {},
-   "id": 30
+   "id": 31
   },
   {
    "type": "timeseries",
@@ -1470,7 +1583,7 @@
    ],
    "gridPos": {
     "x": 0,
-    "y": 98,
+    "y": 102,
     "w": 8,
     "h": 7
    },
@@ -1485,7 +1598,7 @@
     "overrides": []
    },
    "options": {},
-   "id": 31
+   "id": 32
   },
   {
    "type": "timeseries",
@@ -1511,7 +1624,7 @@
    ],
    "gridPos": {
     "x": 8,
-    "y": 98,
+    "y": 102,
     "w": 8,
     "h": 7
    },
@@ -1527,7 +1640,7 @@
     "overrides": []
    },
    "options": {},
-   "id": 32
+   "id": 33
   },
   {
    "type": "timeseries",
@@ -1553,7 +1666,7 @@
    ],
    "gridPos": {
     "x": 16,
-    "y": 98,
+    "y": 102,
     "w": 8,
     "h": 7
    },
@@ -1568,7 +1681,7 @@
    },
    "options": {},
    "timeFrom": "7d",
-   "id": 33
+   "id": 34
   },
   {
    "type": "timeseries",
@@ -1594,7 +1707,7 @@
    ],
    "gridPos": {
     "x": 0,
-    "y": 105,
+    "y": 109,
     "w": 12,
     "h": 7
    },
@@ -1609,7 +1722,7 @@
     "overrides": []
    },
    "options": {},
-   "id": 34
+   "id": 35
   },
   {
    "type": "timeseries",
@@ -1635,7 +1748,7 @@
    ],
    "gridPos": {
     "x": 12,
-    "y": 105,
+    "y": 109,
     "w": 12,
     "h": 7
    },
@@ -1650,7 +1763,7 @@
     "overrides": []
    },
    "options": {},
-   "id": 35
+   "id": 36
   }
  ]
 }

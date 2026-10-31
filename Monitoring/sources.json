@@ -45,7 +45,7 @@
      "ok_logs": {"backup_logs": "~/logs/backup_logs.log", "bfield_sync": "~/logs/bfield_log_sync.log",
                  "data_sync": {"path": "~/logs/sync_data_v2.log", "marker": "failures (left on local): 0"}},
      "tcp": {"logic_unit": "192.168.10.208:8080"},
-     "usb": {"caen": "21e1"}, "ping": {"hk": "192.168.0.188"}},
+     "usb": {"caen": "21e1"}, "ping": {"hk": "192.168.0.188"}, "not_yet": ["aus"]},
 
     {"name": "kor_health", "kind": "probe", "probe": "health", "table": "pc_health", "host": "kor", "every_s": 60,
      "disks": {"root": "/", "ext_hdd": "/home/precalkor/external_HDD_1_4T"},

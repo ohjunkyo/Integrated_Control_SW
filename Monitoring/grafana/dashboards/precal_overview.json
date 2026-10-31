@@ -118,8 +118,8 @@
       "uid": "precal-monitor"
      },
      "refId": "A",
-     "queryText": "SELECT hv_state_code AS \"HV\", scan_running AS \"Scan running\" FROM v_daq_status ORDER BY time DESC LIMIT 1",
-     "rawQueryText": "SELECT hv_state_code AS \"HV\", scan_running AS \"Scan running\" FROM v_daq_status ORDER BY time DESC LIMIT 1",
+     "queryText": "SELECT hv_state_code AS \"HV\" FROM v_daq_status ORDER BY time DESC LIMIT 1",
+     "rawQueryText": "SELECT hv_state_code AS \"HV\" FROM v_daq_status ORDER BY time DESC LIMIT 1",
      "queryType": "table",
      "timeColumns": [
       "time"
@@ -162,34 +162,7 @@
       }
      ]
     },
-    "overrides": [
-     {
-      "matcher": {
-       "id": "byName",
-       "options": "Scan running"
-      },
-      "properties": [
-       {
-        "id": "mappings",
-        "value": [
-         {
-          "type": "value",
-          "options": {
-           "1": {
-            "text": "YES",
-            "color": "green"
-           },
-           "0": {
-            "text": "no",
-            "color": "gray"
-           }
-          }
-         }
-        ]
-       }
-      ]
-     }
-    ]
+    "overrides": []
    },
    "options": {
     "colorMode": "background",
@@ -232,8 +205,8 @@
       "uid": "precal-monitor"
      },
      "refId": "A",
-     "queryText": "SELECT CASE WHEN CAST(strftime('%s','now') AS INTEGER) - time > 600 THEN -1 ELSE caen_connected END AS \"CAEN\", CASE WHEN CAST(strftime('%s','now') AS INTEGER) - time > 600 THEN -1 ELSE hk_connected END AS \"HK\", CASE WHEN CAST(strftime('%s','now') AS INTEGER) - time > 600 THEN -1 ELSE logic_unit_up END AS \"Logic unit\" FROM v_daq_status ORDER BY time DESC LIMIT 1",
-     "rawQueryText": "SELECT CASE WHEN CAST(strftime('%s','now') AS INTEGER) - time > 600 THEN -1 ELSE caen_connected END AS \"CAEN\", CASE WHEN CAST(strftime('%s','now') AS INTEGER) - time > 600 THEN -1 ELSE hk_connected END AS \"HK\", CASE WHEN CAST(strftime('%s','now') AS INTEGER) - time > 600 THEN -1 ELSE logic_unit_up END AS \"Logic unit\" FROM v_daq_status ORDER BY time DESC LIMIT 1",
+     "queryText": "SELECT CASE WHEN CAST(strftime('%s','now') AS INTEGER) - time > 600 THEN -1 ELSE COALESCE(caen_connected, -2) END AS \"KOR (CAEN)\", CASE WHEN CAST(strftime('%s','now') AS INTEGER) - time > 600 THEN -1 ELSE COALESCE(hk_connected, -2) END AS \"HK\", CASE WHEN CAST(strftime('%s','now') AS INTEGER) - time > 600 THEN -1 ELSE COALESCE(aus_connected, -2) END AS \"AUS (CAEN)\" FROM v_daq_status ORDER BY time DESC LIMIT 1",
+     "rawQueryText": "SELECT CASE WHEN CAST(strftime('%s','now') AS INTEGER) - time > 600 THEN -1 ELSE COALESCE(caen_connected, -2) END AS \"KOR (CAEN)\", CASE WHEN CAST(strftime('%s','now') AS INTEGER) - time > 600 THEN -1 ELSE COALESCE(hk_connected, -2) END AS \"HK\", CASE WHEN CAST(strftime('%s','now') AS INTEGER) - time > 600 THEN -1 ELSE COALESCE(aus_connected, -2) END AS \"AUS (CAEN)\" FROM v_daq_status ORDER BY time DESC LIMIT 1",
      "queryType": "table",
      "timeColumns": [
       "time"
@@ -243,7 +216,7 @@
    "gridPos": {
     "x": 0,
     "y": 6,
-    "w": 7,
+    "w": 14,
     "h": 4
    },
    "fieldConfig": {
@@ -262,6 +235,10 @@
         },
         "-1": {
          "text": "STALE",
+         "color": "gray"
+        },
+        "-2": {
+         "text": "N/A",
          "color": "gray"
         }
        }
@@ -286,7 +263,7 @@
   },
   {
    "type": "stat",
-   "title": "DAQ",
+   "title": "Scan",
    "datasource": {
     "type": "frser-sqlite-datasource",
     "uid": "precal-monitor"
@@ -298,8 +275,8 @@
       "uid": "precal-monitor"
      },
      "refId": "A",
-     "queryText": "SELECT scan_running AS \"Scan\", CASE WHEN scan_running = 1 AND scan_total > 0 THEN printf('%d / %d  (%.0f %%)', scan_done, scan_total, 100.0 * scan_done / scan_total) || '  ' || COALESCE(NULLIF(CAST(scan_tag AS TEXT), ''), '') ELSE '\u2014' END AS \"Progress\", (SELECT CAST(strftime('%s','now') AS INTEGER) - MAX(ts_epoch) FROM daq_run) AS \"Since last run\", (SELECT CAST(CAST(date AS INT) AS TEXT) || '_' || printf('%03d', CAST(run AS INT)) || '  ' || CAST(CAST(wavelength AS INT) AS TEXT) || ' nm  ' || COALESCE(NULLIF(CAST(purpose AS TEXT), ''), 'Other') FROM daq_run ORDER BY ts_epoch DESC LIMIT 1) AS \"Last run\" FROM v_daq_status ORDER BY time DESC LIMIT 1",
-     "rawQueryText": "SELECT scan_running AS \"Scan\", CASE WHEN scan_running = 1 AND scan_total > 0 THEN printf('%d / %d  (%.0f %%)', scan_done, scan_total, 100.0 * scan_done / scan_total) || '  ' || COALESCE(NULLIF(CAST(scan_tag AS TEXT), ''), '') ELSE '\u2014' END AS \"Progress\", (SELECT CAST(strftime('%s','now') AS INTEGER) - MAX(ts_epoch) FROM daq_run) AS \"Since last run\", (SELECT CAST(CAST(date AS INT) AS TEXT) || '_' || printf('%03d', CAST(run AS INT)) || '  ' || CAST(CAST(wavelength AS INT) AS TEXT) || ' nm  ' || COALESCE(NULLIF(CAST(purpose AS TEXT), ''), 'Other') FROM daq_run ORDER BY ts_epoch DESC LIMIT 1) AS \"Last run\" FROM v_daq_status ORDER BY time DESC LIMIT 1",
+     "queryText": "SELECT CASE WHEN scan_running = 1 THEN 'SCANNING' || CASE WHEN scan_total > 0 THEN '  ' || scan_done || '/' || scan_total ELSE '' END ELSE 'IDLE' END AS \"Scan\" FROM v_daq_status ORDER BY time DESC LIMIT 1",
+     "rawQueryText": "SELECT CASE WHEN scan_running = 1 THEN 'SCANNING' || CASE WHEN scan_total > 0 THEN '  ' || scan_done || '/' || scan_total ELSE '' END ELSE 'IDLE' END AS \"Scan\" FROM v_daq_status ORDER BY time DESC LIMIT 1",
      "queryType": "table",
      "timeColumns": [
       "time"
@@ -307,102 +284,39 @@
     }
    ],
    "gridPos": {
-    "x": 7,
+    "x": 14,
     "y": 6,
-    "w": 17,
+    "w": 10,
     "h": 4
    },
    "fieldConfig": {
     "defaults": {
      "mappings": [
       {
+       "type": "regex",
+       "options": {
+        "pattern": "^SCANNING.*",
+        "result": {
+         "color": "green"
+        }
+       }
+      },
+      {
        "type": "value",
        "options": {
-        "1": {
-         "text": "SCANNING",
-         "color": "green"
-        },
-        "0": {
-         "text": "IDLE",
+        "IDLE": {
          "color": "gray"
         }
        }
       }
      ]
     },
-    "overrides": [
-     {
-      "matcher": {
-       "id": "byName",
-       "options": "Progress"
-      },
-      "properties": [
-       {
-        "id": "color",
-        "value": {
-         "mode": "fixed",
-         "fixedColor": "text"
-        }
-       }
-      ]
-     },
-     {
-      "matcher": {
-       "id": "byName",
-       "options": "Since last run"
-      },
-      "properties": [
-       {
-        "id": "color",
-        "value": {
-         "mode": "fixed",
-         "fixedColor": "text"
-        }
-       }
-      ]
-     },
-     {
-      "matcher": {
-       "id": "byName",
-       "options": "Last run"
-      },
-      "properties": [
-       {
-        "id": "color",
-        "value": {
-         "mode": "fixed",
-         "fixedColor": "text"
-        }
-       }
-      ]
-     },
-     {
-      "matcher": {
-       "id": "byName",
-       "options": "Since last run"
-      },
-      "properties": [
-       {
-        "id": "unit",
-        "value": "s"
-       },
-       {
-        "id": "decimals",
-        "value": 1
-       }
-      ]
-     }
-    ]
+    "overrides": []
    },
    "options": {
-    "colorMode": "value",
+    "colorMode": "background",
     "graphMode": "none",
-    "textMode": "value_and_name",
-    "justifyMode": "center",
-    "text": {
-     "titleSize": 13,
-     "valueSize": 24
-    },
+    "textMode": "value",
     "reduceOptions": {
      "values": false,
      "calcs": [

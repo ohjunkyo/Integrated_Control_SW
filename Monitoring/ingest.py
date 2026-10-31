@@ -571,6 +571,8 @@ def probe_daq_status(db, cfg, src, backfill):
     for name, vendor in src.get("usb", {}).items():   # device present on this PC's USB bus
         row[name + "_connected"] = int(any(open(f).read().strip() == vendor
                                            for f in glob.glob("/sys/bus/usb/devices/*/idVendor")))
+    for name in src.get("not_yet", []):   # reserved lamp without a source yet: NULL shows as N/A
+        row[name + "_connected"] = None
     for name, host in src.get("ping", {}).items():   # ICMP only: never open the board's data port
         row[name + "_connected"] = int(subprocess.run(["ping", "-c", "1", "-W", "1", host],
                                                       capture_output=True).returncode == 0)
@@ -754,7 +756,8 @@ def scan_running(cfg, ps=None):
     if ps is None:
         ps = subprocess.run(["ps", "-eo", "args"], capture_output=True, text=True).stdout.splitlines()
     scan = re.compile(cfg["scan_pattern"])
-    return any(scan.search(l) and " -j" not in l for l in ps)
+    # Match the program and its script argument only: a shell whose command text merely mentions the pattern is not a scan.
+    return any(scan.search(" ".join(l.split()[:2])) and " -j" not in l for l in ps)
 
 
 def main():

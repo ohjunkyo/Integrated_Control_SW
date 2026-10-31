@@ -133,10 +133,8 @@ lamps = [("lamp_hv_env_sensor", "HV / Env"), ("lamp_laser_controller", "Laser"),
 panel("stat", "System lamps", "SELECT " + ", ".join(f'CASE WHEN {NOW} - time > 600 THEN -1 ELSE {c} END AS "{n}"'
                                                     for c, n in lamps) + " " + LATEST, 15, 4, 0,
       mappings=lamp_map("OK", "FAIL", "STALE"), colorMode="background", graphMode="none", textMode="value_and_name")
-panel("stat", "HV state", f"SELECT hv_state_code AS \"HV\", scan_running AS \"Scan running\" {LATEST}", 9, 4, 15,
-      colorMode="background", graphMode="none", textMode="value_and_name", mappings=HV_MAP,
-      overrides=[{"matcher": {"id": "byName", "options": "Scan running"}, "properties": [{"id": "mappings", "value": [
-          {"type": "value", "options": {"1": {"text": "YES", "color": GREEN}, "0": {"text": "no", "color": GRAY}}}]}]}])
+panel("stat", "HV state", f"SELECT hv_state_code AS \"HV\" {LATEST}", 9, 4, 15,
+      colorMode="background", graphMode="none", textMode="value_and_name", mappings=HV_MAP)
 y += 4
 
 row("DAQ")
@@ -156,17 +154,19 @@ daq_over = [{"matcher": {"id": "byName", "options": n}, "properties": [plain]}
             for n in ("Progress", "Since last run", "Last run")]
 daq_over.append({"matcher": {"id": "byName", "options": "Since last run"},
                  "properties": [{"id": "unit", "value": "s"}, {"id": "decimals", "value": 1}]})
-# Connection only (not run state): CAEN on this PC's USB, HK DPB answers ping, Logic unit TCP.
+# Connection only (not run state): KOR CAEN on USB, HK DPB answers ping, AUS reserved (NULL -> N/A).
 panel("stat", "DAQ connection", "SELECT " + ", ".join(
-      f'CASE WHEN {NOW} - time > 600 THEN -1 ELSE {c} END AS "{n}"' for c, n in
-      (("caen_connected", "CAEN"), ("hk_connected", "HK"), ("logic_unit_up", "Logic unit"))) + " " + LATEST, 7, 4, 0,
-      mappings=lamp_map("OK", "OFF", "STALE"), colorMode="background", graphMode="none", textMode="value_and_name")
-panel("stat", "DAQ", f"SELECT scan_running AS \"Scan\", {progress} AS \"Progress\", "
-      f"(SELECT {NOW} - MAX(ts_epoch) FROM daq_run) AS \"Since last run\", {run_label} AS \"Last run\" {LATEST}",
-      17, 4, 7, colorMode="value", graphMode="none", textMode="value_and_name", justifyMode="center",
-      text={"titleSize": 13, "valueSize": 24}, overrides=daq_over,
-      mappings=[{"type": "value", "options": {"1": {"text": "SCANNING", "color": GREEN},
-                                              "0": {"text": "IDLE", "color": GRAY}}}])
+      f'CASE WHEN {NOW} - time > 600 THEN -1 ELSE COALESCE({c}, -2) END AS "{n}"' for c, n in
+      (("caen_connected", "KOR (CAEN)"), ("hk_connected", "HK"), ("aus_connected", "AUS (CAEN)"))) + " " + LATEST,
+      14, 4, 0, colorMode="background", graphMode="none", textMode="value_and_name",
+      mappings=[{"type": "value", "options": {"1": {"text": "OK", "color": GREEN}, "0": {"text": "OFF", "color": RED},
+                                              "-1": {"text": "STALE", "color": GRAY},
+                                              "-2": {"text": "N/A", "color": GRAY}}}])
+scan_txt = ("CASE WHEN scan_running = 1 THEN 'SCANNING' || CASE WHEN scan_total > 0 THEN '  ' || scan_done || '/' "
+            "|| scan_total ELSE '' END ELSE 'IDLE' END")
+panel("stat", "Scan", f"SELECT {scan_txt} AS \"Scan\" {LATEST}", 10, 4, 14, colorMode="background", graphMode="none",
+      textMode="value", mappings=[{"type": "regex", "options": {"pattern": "^SCANNING.*", "result": {"color": GREEN}}},
+                                  {"type": "value", "options": {"IDLE": {"color": GRAY}}}])
 y += 4
 PURPOSES = {"General scan": "blue", "Stability": "green", "Manual": "orange", "Self trigger (dark)": "purple",
             "External trigger (LDs off)": "red", "Other": "gray", "HK Digitizer": "#00A896"}
@@ -201,6 +201,10 @@ y += 8
 
 to("details")
 row("DAQ")
+panel("stat", "DAQ", f"SELECT {progress} AS \"Progress\", (SELECT {NOW} - MAX(ts_epoch) FROM daq_run) "
+      f"AS \"Since last run\", {run_label} AS \"Last run\" {LATEST}", 24, 4, 0, colorMode="value", graphMode="none",
+      textMode="value_and_name", justifyMode="center", text={"titleSize": 13, "valueSize": 24}, overrides=daq_over)
+y += 4
 tl = ", ".join(f"CASE WHEN {PUR} = '{n}' THEN " +
                ("0" if "dark" in n or "LDs off" in n or n == "HK Digitizer" else "laser_ma") +
                f" END AS \"{n}\"" for n in PURPOSES)
