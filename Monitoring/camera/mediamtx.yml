@@ -1,0 +1,49 @@
+# Template: copy to ~/.config/mediamtx/mediamtx.yml and set the viewer password hash there (never commit it).
+logLevel: info
+logDestinations: [stdout]
+
+authMethod: internal
+authInternalUsers:
+  - user: any
+    pass:
+    ips: ['127.0.0.1', '::1']
+    permissions:
+      - action: publish
+        path: camera
+  - user: viewer
+    pass: sha256:REPLACE_WITH_HASH
+    ips: []
+    permissions:
+      - action: read
+        path: camera
+
+api: no
+metrics: no
+pprof: no
+playback: no
+rtmp: no
+srt: no
+# Keep webrtc/whip off and never route them through the Funnel: only HLS /camera is public.
+webrtc: no
+moq: no
+
+rtsp: yes
+rtspAddress: 127.0.0.1:8554
+rtspTransports: [tcp]
+
+hls: yes
+hlsAddress: 127.0.0.1:8888
+hlsAlwaysRemux: no
+hlsVariant: lowLatency
+hlsSegmentCount: 7
+hlsSegmentDuration: 1s
+hlsPartDuration: 200ms
+hlsAllowOrigins: []
+
+paths:
+  camera:
+    # Started when someone opens /camera, stopped 15 s after the last viewer leaves.
+    runOnDemand: /home/precalkor/Integrated_Control_SW/Monitoring/camera/bfield_camera.sh
+    runOnDemandRestart: yes
+    runOnDemandStartTimeout: 30s
+    runOnDemandCloseAfter: 15s

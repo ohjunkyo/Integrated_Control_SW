@@ -1,0 +1,1669 @@
+{
+ "uid": "precal-details",
+ "title": "Precalibration Details",
+ "timezone": "browser",
+ "editable": false,
+ "refresh": "1m",
+ "time": {
+  "from": "now-24h",
+  "to": "now"
+ },
+ "schemaVersion": 39,
+ "tags": [
+  "precal"
+ ],
+ "links": [
+  {
+   "title": "Main (common view)",
+   "type": "link",
+   "url": "/d/precal-overview",
+   "targetBlank": false,
+   "icon": "dashboard",
+   "asDropdown": false,
+   "includeVars": false,
+   "keepTime": true
+  }
+ ],
+ "panels": [
+  {
+   "type": "row",
+   "title": "DAQ",
+   "collapsed": false,
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 24,
+    "h": 1
+   },
+   "panels": [],
+   "id": 1
+  },
+  {
+   "type": "timeseries",
+   "title": "Run timeline, 7 days (laser mA; dark and HK runs at 0)",
+   "datasource": {
+    "type": "frser-sqlite-datasource",
+    "uid": "precal-monitor"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "frser-sqlite-datasource",
+      "uid": "precal-monitor"
+     },
+     "refId": "A",
+     "queryText": "SELECT ts_epoch AS time, CASE WHEN COALESCE(NULLIF(CAST(purpose AS TEXT), ''), 'Other') = 'General scan' THEN laser_ma END AS \"General scan\", CASE WHEN COALESCE(NULLIF(CAST(purpose AS TEXT), ''), 'Other') = 'Stability' THEN laser_ma END AS \"Stability\", CASE WHEN COALESCE(NULLIF(CAST(purpose AS TEXT), ''), 'Other') = 'Manual' THEN laser_ma END AS \"Manual\", CASE WHEN COALESCE(NULLIF(CAST(purpose AS TEXT), ''), 'Other') = 'Self trigger (dark)' THEN 0 END AS \"Self trigger (dark)\", CASE WHEN COALESCE(NULLIF(CAST(purpose AS TEXT), ''), 'Other') = 'External trigger (LDs off)' THEN 0 END AS \"External trigger (LDs off)\", CASE WHEN COALESCE(NULLIF(CAST(purpose AS TEXT), ''), 'Other') = 'Other' THEN laser_ma END AS \"Other\", CASE WHEN COALESCE(NULLIF(CAST(purpose AS TEXT), ''), 'Other') = 'HK Digitizer' THEN 0 END AS \"HK Digitizer\" FROM (SELECT ts_epoch, purpose, laser_ma FROM daq_run UNION ALL SELECT ts_epoch, 'HK Digitizer', NULL FROM hk_run) WHERE ts_epoch >= CAST(strftime('%s','now') AS INTEGER) - 7 * 86400 ORDER BY ts_epoch",
+     "rawQueryText": "SELECT ts_epoch AS time, CASE WHEN COALESCE(NULLIF(CAST(purpose AS TEXT), ''), 'Other') = 'General scan' THEN laser_ma END AS \"General scan\", CASE WHEN COALESCE(NULLIF(CAST(purpose AS TEXT), ''), 'Other') = 'Stability' THEN laser_ma END AS \"Stability\", CASE WHEN COALESCE(NULLIF(CAST(purpose AS TEXT), ''), 'Other') = 'Manual' THEN laser_ma END AS \"Manual\", CASE WHEN COALESCE(NULLIF(CAST(purpose AS TEXT), ''), 'Other') = 'Self trigger (dark)' THEN 0 END AS \"Self trigger (dark)\", CASE WHEN COALESCE(NULLIF(CAST(purpose AS TEXT), ''), 'Other') = 'External trigger (LDs off)' THEN 0 END AS \"External trigger (LDs off)\", CASE WHEN COALESCE(NULLIF(CAST(purpose AS TEXT), ''), 'Other') = 'Other' THEN laser_ma END AS \"Other\", CASE WHEN COALESCE(NULLIF(CAST(purpose AS TEXT), ''), 'Other') = 'HK Digitizer' THEN 0 END AS \"HK Digitizer\" FROM (SELECT ts_epoch, purpose, laser_ma FROM daq_run UNION ALL SELECT ts_epoch, 'HK Digitizer', NULL FROM hk_run) WHERE ts_epoch >= CAST(strftime('%s','now') AS INTEGER) - 7 * 86400 ORDER BY ts_epoch",
+     "queryType": "table",
+     "timeColumns": [
+      "time"
+     ]
+    }
+   ],
+   "gridPos": {
+    "x": 0,
+    "y": 1,
+    "w": 24,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "min": 0,
+     "noValue": "No runs in the last 7 days",
+     "custom": {
+      "drawStyle": "points",
+      "pointSize": 7,
+      "showPoints": "always",
+      "spanNulls": false
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "General scan"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "blue"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Stability"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "green"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Manual"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "orange"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Self trigger (dark)"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "purple"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "External trigger (LDs off)"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "red"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Other"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "gray"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "HK Digitizer"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#00A896"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    }
+   },
+   "timeFrom": "7d",
+   "id": 2
+  },
+  {
+   "type": "table",
+   "title": "Single-position general runs",
+   "datasource": {
+    "type": "frser-sqlite-datasource",
+    "uid": "precal-monitor"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "frser-sqlite-datasource",
+      "uid": "precal-monitor"
+     },
+     "refId": "A",
+     "queryText": "SELECT scan_id AS \"group\", MIN(ts) AS start, MAX(ts) AS \"end\", CAST(MAX(CAST(wavelength AS INT)) AS TEXT) || ' nm' AS wl, COUNT(*) AS runs, GROUP_CONCAT(DISTINCT CAST(CAST(run AS INT) AS TEXT)) AS run_numbers, MAX(CAST(rot2 AS TEXT) || ' / ' || CAST(tilt2 AS TEXT)) AS \"rot2 / tilt2\", GROUP_CONCAT(DISTINCT CAST(status AS TEXT)) AS status FROM daq_run WHERE scan_id IS NOT NULL AND scan_id != '' GROUP BY scan_id HAVING COUNT(DISTINCT CAST(rot2 AS TEXT) || '/' || CAST(tilt2 AS TEXT)) <= 1 ORDER BY MIN(ts_epoch) DESC LIMIT 50",
+     "rawQueryText": "SELECT scan_id AS \"group\", MIN(ts) AS start, MAX(ts) AS \"end\", CAST(MAX(CAST(wavelength AS INT)) AS TEXT) || ' nm' AS wl, COUNT(*) AS runs, GROUP_CONCAT(DISTINCT CAST(CAST(run AS INT) AS TEXT)) AS run_numbers, MAX(CAST(rot2 AS TEXT) || ' / ' || CAST(tilt2 AS TEXT)) AS \"rot2 / tilt2\", GROUP_CONCAT(DISTINCT CAST(status AS TEXT)) AS status FROM daq_run WHERE scan_id IS NOT NULL AND scan_id != '' GROUP BY scan_id HAVING COUNT(DISTINCT CAST(rot2 AS TEXT) || '/' || CAST(tilt2 AS TEXT)) <= 1 ORDER BY MIN(ts_epoch) DESC LIMIT 50",
+     "queryType": "table",
+     "timeColumns": [
+      "time"
+     ]
+    }
+   ],
+   "gridPos": {
+    "x": 0,
+    "y": 9,
+    "w": 24,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {
+    "cellHeight": "sm"
+   },
+   "id": 3
+  },
+  {
+   "type": "table",
+   "title": "Runs",
+   "datasource": {
+    "type": "frser-sqlite-datasource",
+    "uid": "precal-monitor"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "frser-sqlite-datasource",
+      "uid": "precal-monitor"
+     },
+     "refId": "A",
+     "queryText": "SELECT ts AS registered, COALESCE(scan_id, '') AS scan, COALESCE(NULLIF(CAST(purpose AS TEXT), ''), 'Other') AS purpose, CAST(CAST(date AS INT) AS TEXT) AS date, CAST(run AS INT) AS run, CAST(kind AS TEXT) AS kind, CAST(mode AS TEXT) AS mode, CAST(status AS TEXT) AS status, CAST(CAST(wavelength AS INT) AS TEXT) AS wl, laser_ma, events, CAST(sn1 AS TEXT) AS sn1, CAST(sn2 AS TEXT) AS sn2, CAST(sn3 AS TEXT) AS sn3, CAST(dir1 AS TEXT) AS dir1, CAST(dir2 AS TEXT) AS dir2, CAST(dir3 AS TEXT) AS dir3, CAST(file AS TEXT) AS file, ts_epoch FROM daq_run UNION ALL SELECT ts, '', 'HK Digitizer', CAST(date AS TEXT), CAST(run AS INT), CAST(kind AS TEXT), CAST(mode AS TEXT), 'done', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, CAST(run_id AS TEXT), ts_epoch FROM hk_run ORDER BY ts_epoch DESC LIMIT 300",
+     "rawQueryText": "SELECT ts AS registered, COALESCE(scan_id, '') AS scan, COALESCE(NULLIF(CAST(purpose AS TEXT), ''), 'Other') AS purpose, CAST(CAST(date AS INT) AS TEXT) AS date, CAST(run AS INT) AS run, CAST(kind AS TEXT) AS kind, CAST(mode AS TEXT) AS mode, CAST(status AS TEXT) AS status, CAST(CAST(wavelength AS INT) AS TEXT) AS wl, laser_ma, events, CAST(sn1 AS TEXT) AS sn1, CAST(sn2 AS TEXT) AS sn2, CAST(sn3 AS TEXT) AS sn3, CAST(dir1 AS TEXT) AS dir1, CAST(dir2 AS TEXT) AS dir2, CAST(dir3 AS TEXT) AS dir3, CAST(file AS TEXT) AS file, ts_epoch FROM daq_run UNION ALL SELECT ts, '', 'HK Digitizer', CAST(date AS TEXT), CAST(run AS INT), CAST(kind AS TEXT), CAST(mode AS TEXT), 'done', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, CAST(run_id AS TEXT), ts_epoch FROM hk_run ORDER BY ts_epoch DESC LIMIT 300",
+     "queryType": "table",
+     "timeColumns": [
+      "time"
+     ]
+    }
+   ],
+   "gridPos": {
+    "x": 0,
+    "y": 17,
+    "w": 24,
+    "h": 10
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "filterable": true
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "ts_epoch"
+      },
+      "properties": [
+       {
+        "id": "custom.hidden",
+        "value": true
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "purpose"
+      },
+      "properties": [
+       {
+        "id": "custom.cellOptions",
+        "value": {
+         "type": "color-text"
+        }
+       },
+       {
+        "id": "mappings",
+        "value": [
+         {
+          "type": "value",
+          "options": {
+           "HK Digitizer": {
+            "color": "#00A896"
+           }
+          }
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "options": {},
+   "id": 4
+  },
+  {
+   "type": "row",
+   "title": "HV",
+   "collapsed": false,
+   "gridPos": {
+    "x": 0,
+    "y": 27,
+    "w": 24,
+    "h": 1
+   },
+   "panels": [],
+   "id": 5
+  },
+  {
+   "type": "state-timeline",
+   "title": "HV state",
+   "datasource": {
+    "type": "frser-sqlite-datasource",
+    "uid": "precal-hv"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "frser-sqlite-datasource",
+      "uid": "precal-hv"
+     },
+     "refId": "A",
+     "queryText": "SELECT time, MAX(CASE c WHEN 3 THEN 4 WHEN 2 THEN 3 WHEN 4 THEN 2 WHEN 1 THEN 1 ELSE 0 END * 10 + c) % 10 AS state FROM (SELECT (CAST(strftime('%s', timestamp, 'utc') AS INTEGER) / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, CASE\n  WHEN Ch0_Stat IS NULL AND Ch1_Stat IS NULL AND Ch2_Stat IS NULL AND Ch3_Stat IS NULL THEN 4\n  WHEN (Ch0_Stat = 4096 AND Ch1_Stat = 4096 AND Ch2_Stat = 4096 AND Ch3_Stat = 4096 AND COALESCE(Ch0_V, 0) = 0 AND COALESCE(Ch1_V, 0) = 0 AND COALESCE(Ch2_V, 0) = 0 AND COALESCE(Ch3_V, 0) = 0) THEN 2\n  WHEN (COALESCE(CAST(Ch0_Stat AS INT), 0) | COALESCE(CAST(Ch1_Stat AS INT), 0) | COALESCE(CAST(Ch2_Stat AS INT), 0) | COALESCE(CAST(Ch3_Stat AS INT), 0)) & 7128 THEN 3\n  WHEN (COALESCE(CAST(Ch0_Stat AS INT), 0) | COALESCE(CAST(Ch1_Stat AS INT), 0) | COALESCE(CAST(Ch2_Stat AS INT), 0)) & 1 THEN 0\n  ELSE 1 END AS c FROM monitoring_data WHERE timestamp >= strftime('%Y-%m-%dT%H:%M:%S', $__from / 1000, 'unixepoch', 'localtime') AND timestamp < strftime('%Y-%m-%dT%H:%M:%S', $__to / 1000, 'unixepoch', 'localtime')) GROUP BY 1 ORDER BY 1",
+     "rawQueryText": "SELECT time, MAX(CASE c WHEN 3 THEN 4 WHEN 2 THEN 3 WHEN 4 THEN 2 WHEN 1 THEN 1 ELSE 0 END * 10 + c) % 10 AS state FROM (SELECT (CAST(strftime('%s', timestamp, 'utc') AS INTEGER) / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, CASE\n  WHEN Ch0_Stat IS NULL AND Ch1_Stat IS NULL AND Ch2_Stat IS NULL AND Ch3_Stat IS NULL THEN 4\n  WHEN (Ch0_Stat = 4096 AND Ch1_Stat = 4096 AND Ch2_Stat = 4096 AND Ch3_Stat = 4096 AND COALESCE(Ch0_V, 0) = 0 AND COALESCE(Ch1_V, 0) = 0 AND COALESCE(Ch2_V, 0) = 0 AND COALESCE(Ch3_V, 0) = 0) THEN 2\n  WHEN (COALESCE(CAST(Ch0_Stat AS INT), 0) | COALESCE(CAST(Ch1_Stat AS INT), 0) | COALESCE(CAST(Ch2_Stat AS INT), 0) | COALESCE(CAST(Ch3_Stat AS INT), 0)) & 7128 THEN 3\n  WHEN (COALESCE(CAST(Ch0_Stat AS INT), 0) | COALESCE(CAST(Ch1_Stat AS INT), 0) | COALESCE(CAST(Ch2_Stat AS INT), 0)) & 1 THEN 0\n  ELSE 1 END AS c FROM monitoring_data WHERE timestamp >= strftime('%Y-%m-%dT%H:%M:%S', $__from / 1000, 'unixepoch', 'localtime') AND timestamp < strftime('%Y-%m-%dT%H:%M:%S', $__to / 1000, 'unixepoch', 'localtime')) GROUP BY 1 ORDER BY 1",
+     "queryType": "table",
+     "timeColumns": [
+      "time"
+     ]
+    }
+   ],
+   "gridPos": {
+    "x": 0,
+    "y": 28,
+    "w": 9,
+    "h": 5
+   },
+   "fieldConfig": {
+    "defaults": {
+     "mappings": [
+      {
+       "type": "value",
+       "options": {
+        "0": {
+         "text": "NORMAL ON",
+         "color": "green"
+        },
+        "1": {
+         "text": "NORMAL OFF",
+         "color": "green"
+        },
+        "2": {
+         "text": "READERR",
+         "color": "orange"
+        },
+        "3": {
+         "text": "ILK/ALARM",
+         "color": "red"
+        },
+        "4": {
+         "text": "NODATA",
+         "color": "gray"
+        }
+       }
+      }
+     ]
+    },
+    "overrides": []
+   },
+   "options": {
+    "showValue": "never",
+    "mergeValues": true
+   },
+   "id": 6
+  },
+  {
+   "type": "stat",
+   "title": "Last good HV read",
+   "datasource": {
+    "type": "frser-sqlite-datasource",
+    "uid": "precal-monitor"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "frser-sqlite-datasource",
+      "uid": "precal-monitor"
+     },
+     "refId": "A",
+     "queryText": "SELECT hv_last_good_age_s AS \"ago\" FROM v_daq_status ORDER BY time DESC LIMIT 1",
+     "rawQueryText": "SELECT hv_last_good_age_s AS \"ago\" FROM v_daq_status ORDER BY time DESC LIMIT 1",
+     "queryType": "table",
+     "timeColumns": [
+      "time"
+     ]
+    }
+   ],
+   "gridPos": {
+    "x": 9,
+    "y": 28,
+    "w": 3,
+    "h": 5
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 60
+       },
+       {
+        "color": "red",
+        "value": 300
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "value",
+    "graphMode": "none",
+    "text": {
+     "valueSize": 18
+    },
+    "reduceOptions": {
+     "values": false,
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "/.*/"
+    }
+   },
+   "id": 7
+  },
+  {
+   "type": "table",
+   "title": "HV status bits (last good read)",
+   "datasource": {
+    "type": "frser-sqlite-datasource",
+    "uid": "precal-hv"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "frser-sqlite-datasource",
+      "uid": "precal-hv"
+     },
+     "refId": "A",
+     "queryText": "SELECT timestamp, 'Monitor' AS channel, CAST(Ch0_Stat AS INT) AS stat, (CAST(Ch0_Stat AS INT) >> 0) & 1 AS \"ON\", (CAST(Ch0_Stat AS INT) >> 1) & 1 AS \"RUP\", (CAST(Ch0_Stat AS INT) >> 2) & 1 AS \"RDN\", (CAST(Ch0_Stat AS INT) >> 3) & 1 AS \"OVC\", (CAST(Ch0_Stat AS INT) >> 4) & 1 AS \"OVV\", (CAST(Ch0_Stat AS INT) >> 6) & 1 AS \"MAXV\", (CAST(Ch0_Stat AS INT) >> 7) & 1 AS \"TRIP\", (CAST(Ch0_Stat AS INT) >> 8) & 1 AS \"OVP\", (CAST(Ch0_Stat AS INT) >> 9) & 1 AS \"OVT\", (CAST(Ch0_Stat AS INT) >> 10) & 1 AS \"DIS\", (CAST(Ch0_Stat AS INT) >> 11) & 1 AS \"KILL\", (CAST(Ch0_Stat AS INT) >> 12) & 1 AS \"EXT_ILK\" FROM (SELECT * FROM monitoring_data WHERE ((Ch0_Stat IS NOT NULL OR Ch1_Stat IS NOT NULL OR Ch2_Stat IS NOT NULL) AND NOT (Ch0_Stat = 4096 AND Ch1_Stat = 4096 AND Ch2_Stat = 4096 AND Ch3_Stat = 4096 AND COALESCE(Ch0_V, 0) = 0 AND COALESCE(Ch1_V, 0) = 0 AND COALESCE(Ch2_V, 0) = 0 AND COALESCE(Ch3_V, 0) = 0)) ORDER BY timestamp DESC LIMIT 1) UNION ALL SELECT timestamp, 'Rot1' AS channel, CAST(Ch1_Stat AS INT) AS stat, (CAST(Ch1_Stat AS INT) >> 0) & 1 AS \"ON\", (CAST(Ch1_Stat AS INT) >> 1) & 1 AS \"RUP\", (CAST(Ch1_Stat AS INT) >> 2) & 1 AS \"RDN\", (CAST(Ch1_Stat AS INT) >> 3) & 1 AS \"OVC\", (CAST(Ch1_Stat AS INT) >> 4) & 1 AS \"OVV\", (CAST(Ch1_Stat AS INT) >> 6) & 1 AS \"MAXV\", (CAST(Ch1_Stat AS INT) >> 7) & 1 AS \"TRIP\", (CAST(Ch1_Stat AS INT) >> 8) & 1 AS \"OVP\", (CAST(Ch1_Stat AS INT) >> 9) & 1 AS \"OVT\", (CAST(Ch1_Stat AS INT) >> 10) & 1 AS \"DIS\", (CAST(Ch1_Stat AS INT) >> 11) & 1 AS \"KILL\", (CAST(Ch1_Stat AS INT) >> 12) & 1 AS \"EXT_ILK\" FROM (SELECT * FROM monitoring_data WHERE ((Ch0_Stat IS NOT NULL OR Ch1_Stat IS NOT NULL OR Ch2_Stat IS NOT NULL) AND NOT (Ch0_Stat = 4096 AND Ch1_Stat = 4096 AND Ch2_Stat = 4096 AND Ch3_Stat = 4096 AND COALESCE(Ch0_V, 0) = 0 AND COALESCE(Ch1_V, 0) = 0 AND COALESCE(Ch2_V, 0) = 0 AND COALESCE(Ch3_V, 0) = 0)) ORDER BY timestamp DESC LIMIT 1) UNION ALL SELECT timestamp, 'Rot2' AS channel, CAST(Ch2_Stat AS INT) AS stat, (CAST(Ch2_Stat AS INT) >> 0) & 1 AS \"ON\", (CAST(Ch2_Stat AS INT) >> 1) & 1 AS \"RUP\", (CAST(Ch2_Stat AS INT) >> 2) & 1 AS \"RDN\", (CAST(Ch2_Stat AS INT) >> 3) & 1 AS \"OVC\", (CAST(Ch2_Stat AS INT) >> 4) & 1 AS \"OVV\", (CAST(Ch2_Stat AS INT) >> 6) & 1 AS \"MAXV\", (CAST(Ch2_Stat AS INT) >> 7) & 1 AS \"TRIP\", (CAST(Ch2_Stat AS INT) >> 8) & 1 AS \"OVP\", (CAST(Ch2_Stat AS INT) >> 9) & 1 AS \"OVT\", (CAST(Ch2_Stat AS INT) >> 10) & 1 AS \"DIS\", (CAST(Ch2_Stat AS INT) >> 11) & 1 AS \"KILL\", (CAST(Ch2_Stat AS INT) >> 12) & 1 AS \"EXT_ILK\" FROM (SELECT * FROM monitoring_data WHERE ((Ch0_Stat IS NOT NULL OR Ch1_Stat IS NOT NULL OR Ch2_Stat IS NOT NULL) AND NOT (Ch0_Stat = 4096 AND Ch1_Stat = 4096 AND Ch2_Stat = 4096 AND Ch3_Stat = 4096 AND COALESCE(Ch0_V, 0) = 0 AND COALESCE(Ch1_V, 0) = 0 AND COALESCE(Ch2_V, 0) = 0 AND COALESCE(Ch3_V, 0) = 0)) ORDER BY timestamp DESC LIMIT 1) UNION ALL SELECT timestamp, 'Ch3' AS channel, CAST(Ch3_Stat AS INT) AS stat, (CAST(Ch3_Stat AS INT) >> 0) & 1 AS \"ON\", (CAST(Ch3_Stat AS INT) >> 1) & 1 AS \"RUP\", (CAST(Ch3_Stat AS INT) >> 2) & 1 AS \"RDN\", (CAST(Ch3_Stat AS INT) >> 3) & 1 AS \"OVC\", (CAST(Ch3_Stat AS INT) >> 4) & 1 AS \"OVV\", (CAST(Ch3_Stat AS INT) >> 6) & 1 AS \"MAXV\", (CAST(Ch3_Stat AS INT) >> 7) & 1 AS \"TRIP\", (CAST(Ch3_Stat AS INT) >> 8) & 1 AS \"OVP\", (CAST(Ch3_Stat AS INT) >> 9) & 1 AS \"OVT\", (CAST(Ch3_Stat AS INT) >> 10) & 1 AS \"DIS\", (CAST(Ch3_Stat AS INT) >> 11) & 1 AS \"KILL\", (CAST(Ch3_Stat AS INT) >> 12) & 1 AS \"EXT_ILK\" FROM (SELECT * FROM monitoring_data WHERE ((Ch0_Stat IS NOT NULL OR Ch1_Stat IS NOT NULL OR Ch2_Stat IS NOT NULL) AND NOT (Ch0_Stat = 4096 AND Ch1_Stat = 4096 AND Ch2_Stat = 4096 AND Ch3_Stat = 4096 AND COALESCE(Ch0_V, 0) = 0 AND COALESCE(Ch1_V, 0) = 0 AND COALESCE(Ch2_V, 0) = 0 AND COALESCE(Ch3_V, 0) = 0)) ORDER BY timestamp DESC LIMIT 1)",
+     "rawQueryText": "SELECT timestamp, 'Monitor' AS channel, CAST(Ch0_Stat AS INT) AS stat, (CAST(Ch0_Stat AS INT) >> 0) & 1 AS \"ON\", (CAST(Ch0_Stat AS INT) >> 1) & 1 AS \"RUP\", (CAST(Ch0_Stat AS INT) >> 2) & 1 AS \"RDN\", (CAST(Ch0_Stat AS INT) >> 3) & 1 AS \"OVC\", (CAST(Ch0_Stat AS INT) >> 4) & 1 AS \"OVV\", (CAST(Ch0_Stat AS INT) >> 6) & 1 AS \"MAXV\", (CAST(Ch0_Stat AS INT) >> 7) & 1 AS \"TRIP\", (CAST(Ch0_Stat AS INT) >> 8) & 1 AS \"OVP\", (CAST(Ch0_Stat AS INT) >> 9) & 1 AS \"OVT\", (CAST(Ch0_Stat AS INT) >> 10) & 1 AS \"DIS\", (CAST(Ch0_Stat AS INT) >> 11) & 1 AS \"KILL\", (CAST(Ch0_Stat AS INT) >> 12) & 1 AS \"EXT_ILK\" FROM (SELECT * FROM monitoring_data WHERE ((Ch0_Stat IS NOT NULL OR Ch1_Stat IS NOT NULL OR Ch2_Stat IS NOT NULL) AND NOT (Ch0_Stat = 4096 AND Ch1_Stat = 4096 AND Ch2_Stat = 4096 AND Ch3_Stat = 4096 AND COALESCE(Ch0_V, 0) = 0 AND COALESCE(Ch1_V, 0) = 0 AND COALESCE(Ch2_V, 0) = 0 AND COALESCE(Ch3_V, 0) = 0)) ORDER BY timestamp DESC LIMIT 1) UNION ALL SELECT timestamp, 'Rot1' AS channel, CAST(Ch1_Stat AS INT) AS stat, (CAST(Ch1_Stat AS INT) >> 0) & 1 AS \"ON\", (CAST(Ch1_Stat AS INT) >> 1) & 1 AS \"RUP\", (CAST(Ch1_Stat AS INT) >> 2) & 1 AS \"RDN\", (CAST(Ch1_Stat AS INT) >> 3) & 1 AS \"OVC\", (CAST(Ch1_Stat AS INT) >> 4) & 1 AS \"OVV\", (CAST(Ch1_Stat AS INT) >> 6) & 1 AS \"MAXV\", (CAST(Ch1_Stat AS INT) >> 7) & 1 AS \"TRIP\", (CAST(Ch1_Stat AS INT) >> 8) & 1 AS \"OVP\", (CAST(Ch1_Stat AS INT) >> 9) & 1 AS \"OVT\", (CAST(Ch1_Stat AS INT) >> 10) & 1 AS \"DIS\", (CAST(Ch1_Stat AS INT) >> 11) & 1 AS \"KILL\", (CAST(Ch1_Stat AS INT) >> 12) & 1 AS \"EXT_ILK\" FROM (SELECT * FROM monitoring_data WHERE ((Ch0_Stat IS NOT NULL OR Ch1_Stat IS NOT NULL OR Ch2_Stat IS NOT NULL) AND NOT (Ch0_Stat = 4096 AND Ch1_Stat = 4096 AND Ch2_Stat = 4096 AND Ch3_Stat = 4096 AND COALESCE(Ch0_V, 0) = 0 AND COALESCE(Ch1_V, 0) = 0 AND COALESCE(Ch2_V, 0) = 0 AND COALESCE(Ch3_V, 0) = 0)) ORDER BY timestamp DESC LIMIT 1) UNION ALL SELECT timestamp, 'Rot2' AS channel, CAST(Ch2_Stat AS INT) AS stat, (CAST(Ch2_Stat AS INT) >> 0) & 1 AS \"ON\", (CAST(Ch2_Stat AS INT) >> 1) & 1 AS \"RUP\", (CAST(Ch2_Stat AS INT) >> 2) & 1 AS \"RDN\", (CAST(Ch2_Stat AS INT) >> 3) & 1 AS \"OVC\", (CAST(Ch2_Stat AS INT) >> 4) & 1 AS \"OVV\", (CAST(Ch2_Stat AS INT) >> 6) & 1 AS \"MAXV\", (CAST(Ch2_Stat AS INT) >> 7) & 1 AS \"TRIP\", (CAST(Ch2_Stat AS INT) >> 8) & 1 AS \"OVP\", (CAST(Ch2_Stat AS INT) >> 9) & 1 AS \"OVT\", (CAST(Ch2_Stat AS INT) >> 10) & 1 AS \"DIS\", (CAST(Ch2_Stat AS INT) >> 11) & 1 AS \"KILL\", (CAST(Ch2_Stat AS INT) >> 12) & 1 AS \"EXT_ILK\" FROM (SELECT * FROM monitoring_data WHERE ((Ch0_Stat IS NOT NULL OR Ch1_Stat IS NOT NULL OR Ch2_Stat IS NOT NULL) AND NOT (Ch0_Stat = 4096 AND Ch1_Stat = 4096 AND Ch2_Stat = 4096 AND Ch3_Stat = 4096 AND COALESCE(Ch0_V, 0) = 0 AND COALESCE(Ch1_V, 0) = 0 AND COALESCE(Ch2_V, 0) = 0 AND COALESCE(Ch3_V, 0) = 0)) ORDER BY timestamp DESC LIMIT 1) UNION ALL SELECT timestamp, 'Ch3' AS channel, CAST(Ch3_Stat AS INT) AS stat, (CAST(Ch3_Stat AS INT) >> 0) & 1 AS \"ON\", (CAST(Ch3_Stat AS INT) >> 1) & 1 AS \"RUP\", (CAST(Ch3_Stat AS INT) >> 2) & 1 AS \"RDN\", (CAST(Ch3_Stat AS INT) >> 3) & 1 AS \"OVC\", (CAST(Ch3_Stat AS INT) >> 4) & 1 AS \"OVV\", (CAST(Ch3_Stat AS INT) >> 6) & 1 AS \"MAXV\", (CAST(Ch3_Stat AS INT) >> 7) & 1 AS \"TRIP\", (CAST(Ch3_Stat AS INT) >> 8) & 1 AS \"OVP\", (CAST(Ch3_Stat AS INT) >> 9) & 1 AS \"OVT\", (CAST(Ch3_Stat AS INT) >> 10) & 1 AS \"DIS\", (CAST(Ch3_Stat AS INT) >> 11) & 1 AS \"KILL\", (CAST(Ch3_Stat AS INT) >> 12) & 1 AS \"EXT_ILK\" FROM (SELECT * FROM monitoring_data WHERE ((Ch0_Stat IS NOT NULL OR Ch1_Stat IS NOT NULL OR Ch2_Stat IS NOT NULL) AND NOT (Ch0_Stat = 4096 AND Ch1_Stat = 4096 AND Ch2_Stat = 4096 AND Ch3_Stat = 4096 AND COALESCE(Ch0_V, 0) = 0 AND COALESCE(Ch1_V, 0) = 0 AND COALESCE(Ch2_V, 0) = 0 AND COALESCE(Ch3_V, 0) = 0)) ORDER BY timestamp DESC LIMIT 1)",
+     "queryType": "table",
+     "timeColumns": [
+      "time"
+     ]
+    }
+   ],
+   "gridPos": {
+    "x": 12,
+    "y": 28,
+    "w": 12,
+    "h": 5
+   },
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {
+    "cellHeight": "sm"
+   },
+   "id": 8
+  },
+  {
+   "type": "timeseries",
+   "title": "Dark box temperature [C]",
+   "datasource": {
+    "type": "frser-sqlite-datasource",
+    "uid": "precal-hv"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "frser-sqlite-datasource",
+      "uid": "precal-hv"
+     },
+     "refId": "A",
+     "queryText": "SELECT (CAST(strftime('%s', timestamp, 'utc') AS INTEGER) / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(Dark_Box_1_T) AS \"Rot#1\", AVG(Dark_Box_2_T) AS \"Rot#2\", AVG(Dark_Box_3_T) AS \"Mon.\" FROM monitoring_data WHERE timestamp >= strftime('%Y-%m-%dT%H:%M:%S', $__from / 1000, 'unixepoch', 'localtime') AND timestamp < strftime('%Y-%m-%dT%H:%M:%S', $__to / 1000, 'unixepoch', 'localtime') GROUP BY 1 ORDER BY 1",
+     "rawQueryText": "SELECT (CAST(strftime('%s', timestamp, 'utc') AS INTEGER) / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(Dark_Box_1_T) AS \"Rot#1\", AVG(Dark_Box_2_T) AS \"Rot#2\", AVG(Dark_Box_3_T) AS \"Mon.\" FROM monitoring_data WHERE timestamp >= strftime('%Y-%m-%dT%H:%M:%S', $__from / 1000, 'unixepoch', 'localtime') AND timestamp < strftime('%Y-%m-%dT%H:%M:%S', $__to / 1000, 'unixepoch', 'localtime') GROUP BY 1 ORDER BY 1",
+     "queryType": "table",
+     "timeColumns": [
+      "time"
+     ]
+    }
+   ],
+   "gridPos": {
+    "x": 0,
+    "y": 33,
+    "w": 12,
+    "h": 7
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "celsius",
+     "custom": {
+      "spanNulls": 900000
+     }
+    },
+    "overrides": []
+   },
+   "options": {},
+   "id": 9
+  },
+  {
+   "type": "timeseries",
+   "title": "Dark box humidity [%]",
+   "datasource": {
+    "type": "frser-sqlite-datasource",
+    "uid": "precal-hv"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "frser-sqlite-datasource",
+      "uid": "precal-hv"
+     },
+     "refId": "A",
+     "queryText": "SELECT (CAST(strftime('%s', timestamp, 'utc') AS INTEGER) / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(Dark_Box_1_H) AS \"Rot#1\", AVG(Dark_Box_2_H) AS \"Rot#2\", AVG(Dark_Box_3_H) AS \"Mon.\" FROM monitoring_data WHERE timestamp >= strftime('%Y-%m-%dT%H:%M:%S', $__from / 1000, 'unixepoch', 'localtime') AND timestamp < strftime('%Y-%m-%dT%H:%M:%S', $__to / 1000, 'unixepoch', 'localtime') GROUP BY 1 ORDER BY 1",
+     "rawQueryText": "SELECT (CAST(strftime('%s', timestamp, 'utc') AS INTEGER) / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(Dark_Box_1_H) AS \"Rot#1\", AVG(Dark_Box_2_H) AS \"Rot#2\", AVG(Dark_Box_3_H) AS \"Mon.\" FROM monitoring_data WHERE timestamp >= strftime('%Y-%m-%dT%H:%M:%S', $__from / 1000, 'unixepoch', 'localtime') AND timestamp < strftime('%Y-%m-%dT%H:%M:%S', $__to / 1000, 'unixepoch', 'localtime') GROUP BY 1 ORDER BY 1",
+     "queryType": "table",
+     "timeColumns": [
+      "time"
+     ]
+    }
+   ],
+   "gridPos": {
+    "x": 12,
+    "y": 33,
+    "w": 12,
+    "h": 7
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "humidity",
+     "custom": {
+      "spanNulls": 900000
+     }
+    },
+    "overrides": []
+   },
+   "options": {},
+   "id": 10
+  },
+  {
+   "type": "row",
+   "title": "B-field",
+   "collapsed": false,
+   "gridPos": {
+    "x": 0,
+    "y": 40,
+    "w": 24,
+    "h": 1
+   },
+   "panels": [],
+   "id": 11
+  },
+  {
+   "type": "timeseries",
+   "title": "|B| all magnetometers [mG]",
+   "datasource": {
+    "type": "frser-sqlite-datasource",
+    "uid": "precal-monitor"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "frser-sqlite-datasource",
+      "uid": "precal-monitor"
+     },
+     "refId": "A",
+     "queryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(m1_mg) AS M1, AVG(m2_mg) AS M2, AVG(m3_mg) AS M3 FROM bfield WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000  GROUP BY 1 ORDER BY 1",
+     "rawQueryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(m1_mg) AS M1, AVG(m2_mg) AS M2, AVG(m3_mg) AS M3 FROM bfield WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000  GROUP BY 1 ORDER BY 1",
+     "queryType": "table",
+     "timeColumns": [
+      "time"
+     ]
+    }
+   ],
+   "gridPos": {
+    "x": 0,
+    "y": 41,
+    "w": 12,
+    "h": 7
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "spanNulls": 900000
+     }
+    },
+    "overrides": []
+   },
+   "options": {},
+   "id": 12
+  },
+  {
+   "type": "timeseries",
+   "title": "Temperature T1-T7 [C]",
+   "datasource": {
+    "type": "frser-sqlite-datasource",
+    "uid": "precal-monitor"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "frser-sqlite-datasource",
+      "uid": "precal-monitor"
+     },
+     "refId": "A",
+     "queryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(t1) AS T1, AVG(t2) AS T2, AVG(t3) AS T3, AVG(t4) AS T4, AVG(t5) AS T5, AVG(t6) AS T6, AVG(t7) AS T7 FROM bfield WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000  GROUP BY 1 ORDER BY 1",
+     "rawQueryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(t1) AS T1, AVG(t2) AS T2, AVG(t3) AS T3, AVG(t4) AS T4, AVG(t5) AS T5, AVG(t6) AS T6, AVG(t7) AS T7 FROM bfield WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000  GROUP BY 1 ORDER BY 1",
+     "queryType": "table",
+     "timeColumns": [
+      "time"
+     ]
+    }
+   ],
+   "gridPos": {
+    "x": 12,
+    "y": 41,
+    "w": 12,
+    "h": 7
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "celsius",
+     "custom": {
+      "spanNulls": 900000
+     }
+    },
+    "overrides": []
+   },
+   "options": {},
+   "id": 13
+  },
+  {
+   "type": "row",
+   "title": "Laser",
+   "collapsed": false,
+   "gridPos": {
+    "x": 0,
+    "y": 48,
+    "w": 24,
+    "h": 1
+   },
+   "panels": [],
+   "id": 14
+  },
+  {
+   "type": "timeseries",
+   "title": "Laser temperature [C]",
+   "datasource": {
+    "type": "frser-sqlite-datasource",
+    "uid": "precal-monitor"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "frser-sqlite-datasource",
+      "uid": "precal-monitor"
+     },
+     "refId": "A",
+     "queryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(CASE WHEN wl = '375nm' THEN temp_c END) AS \"375nm\", AVG(CASE WHEN wl = '405nm' THEN temp_c END) AS \"405nm\", AVG(CASE WHEN wl = '450nm' THEN temp_c END) AS \"450nm\", AVG(CASE WHEN wl = '473nm' THEN temp_c END) AS \"473nm\" FROM laser WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000 GROUP BY 1 ORDER BY 1",
+     "rawQueryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(CASE WHEN wl = '375nm' THEN temp_c END) AS \"375nm\", AVG(CASE WHEN wl = '405nm' THEN temp_c END) AS \"405nm\", AVG(CASE WHEN wl = '450nm' THEN temp_c END) AS \"450nm\", AVG(CASE WHEN wl = '473nm' THEN temp_c END) AS \"473nm\" FROM laser WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000 GROUP BY 1 ORDER BY 1",
+     "queryType": "table",
+     "timeColumns": [
+      "time"
+     ]
+    }
+   ],
+   "gridPos": {
+    "x": 0,
+    "y": 49,
+    "w": 8,
+    "h": 7
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "celsius",
+     "custom": {
+      "spanNulls": 900000
+     }
+    },
+    "overrides": []
+   },
+   "options": {},
+   "id": 15
+  },
+  {
+   "type": "timeseries",
+   "title": "Pulse current [mA]",
+   "datasource": {
+    "type": "frser-sqlite-datasource",
+    "uid": "precal-monitor"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "frser-sqlite-datasource",
+      "uid": "precal-monitor"
+     },
+     "refId": "A",
+     "queryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(CASE WHEN wl = '375nm' THEN pulse_ma END) AS \"375nm\", AVG(CASE WHEN wl = '405nm' THEN pulse_ma END) AS \"405nm\", AVG(CASE WHEN wl = '450nm' THEN pulse_ma END) AS \"450nm\", AVG(CASE WHEN wl = '473nm' THEN pulse_ma END) AS \"473nm\" FROM laser WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000 GROUP BY 1 ORDER BY 1",
+     "rawQueryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(CASE WHEN wl = '375nm' THEN pulse_ma END) AS \"375nm\", AVG(CASE WHEN wl = '405nm' THEN pulse_ma END) AS \"405nm\", AVG(CASE WHEN wl = '450nm' THEN pulse_ma END) AS \"450nm\", AVG(CASE WHEN wl = '473nm' THEN pulse_ma END) AS \"473nm\" FROM laser WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000 GROUP BY 1 ORDER BY 1",
+     "queryType": "table",
+     "timeColumns": [
+      "time"
+     ]
+    }
+   ],
+   "gridPos": {
+    "x": 8,
+    "y": 49,
+    "w": 8,
+    "h": 7
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "spanNulls": 900000
+     }
+    },
+    "overrides": []
+   },
+   "options": {},
+   "id": 16
+  },
+  {
+   "type": "timeseries",
+   "title": "LD on",
+   "datasource": {
+    "type": "frser-sqlite-datasource",
+    "uid": "precal-monitor"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "frser-sqlite-datasource",
+      "uid": "precal-monitor"
+     },
+     "refId": "A",
+     "queryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(CASE WHEN wl = '375nm' THEN ld_on END) AS \"375nm\", AVG(CASE WHEN wl = '405nm' THEN ld_on END) AS \"405nm\", AVG(CASE WHEN wl = '450nm' THEN ld_on END) AS \"450nm\", AVG(CASE WHEN wl = '473nm' THEN ld_on END) AS \"473nm\" FROM laser WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000 GROUP BY 1 ORDER BY 1",
+     "rawQueryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(CASE WHEN wl = '375nm' THEN ld_on END) AS \"375nm\", AVG(CASE WHEN wl = '405nm' THEN ld_on END) AS \"405nm\", AVG(CASE WHEN wl = '450nm' THEN ld_on END) AS \"450nm\", AVG(CASE WHEN wl = '473nm' THEN ld_on END) AS \"473nm\" FROM laser WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000 GROUP BY 1 ORDER BY 1",
+     "queryType": "table",
+     "timeColumns": [
+      "time"
+     ]
+    }
+   ],
+   "gridPos": {
+    "x": 16,
+    "y": 49,
+    "w": 8,
+    "h": 7
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "spanNulls": 900000
+     }
+    },
+    "overrides": []
+   },
+   "options": {},
+   "id": 17
+  },
+  {
+   "type": "table",
+   "title": "Laser events (warnings)",
+   "datasource": {
+    "type": "frser-sqlite-datasource",
+    "uid": "precal-monitor"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "frser-sqlite-datasource",
+      "uid": "precal-monitor"
+     },
+     "refId": "A",
+     "queryText": "SELECT ts, CAST(wl AS TEXT) AS wl, CAST(level AS TEXT) AS level, CAST(message AS TEXT) AS message FROM laser_event WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000 AND level IN ('WARNING', 'ERROR', 'CRITICAL') ORDER BY ts_epoch DESC LIMIT 200",
+     "rawQueryText": "SELECT ts, CAST(wl AS TEXT) AS wl, CAST(level AS TEXT) AS level, CAST(message AS TEXT) AS message FROM laser_event WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000 AND level IN ('WARNING', 'ERROR', 'CRITICAL') ORDER BY ts_epoch DESC LIMIT 200",
+     "queryType": "table",
+     "timeColumns": [
+      "time"
+     ]
+    }
+   ],
+   "gridPos": {
+    "x": 0,
+    "y": 56,
+    "w": 24,
+    "h": 6
+   },
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {},
+   "id": 18
+  },
+  {
+   "type": "row",
+   "title": "UPS",
+   "collapsed": false,
+   "gridPos": {
+    "x": 0,
+    "y": 62,
+    "w": 24,
+    "h": 1
+   },
+   "panels": [],
+   "id": 19
+  },
+  {
+   "type": "timeseries",
+   "title": "Battery and load [%]",
+   "datasource": {
+    "type": "frser-sqlite-datasource",
+    "uid": "precal-monitor"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "frser-sqlite-datasource",
+      "uid": "precal-monitor"
+     },
+     "refId": "A",
+     "queryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(batt_pct) AS battery, AVG(load) AS load FROM ups_state WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000  GROUP BY 1 ORDER BY 1",
+     "rawQueryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(batt_pct) AS battery, AVG(load) AS load FROM ups_state WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000  GROUP BY 1 ORDER BY 1",
+     "queryType": "table",
+     "timeColumns": [
+      "time"
+     ]
+    }
+   ],
+   "gridPos": {
+    "x": 0,
+    "y": 63,
+    "w": 8,
+    "h": 7
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percent",
+     "custom": {
+      "spanNulls": 900000
+     }
+    },
+    "overrides": []
+   },
+   "options": {},
+   "id": 20
+  },
+  {
+   "type": "timeseries",
+   "title": "On battery",
+   "datasource": {
+    "type": "frser-sqlite-datasource",
+    "uid": "precal-monitor"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "frser-sqlite-datasource",
+      "uid": "precal-monitor"
+     },
+     "refId": "A",
+     "queryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(on_battery) AS on_battery, AVG(battery_low) AS battery_low FROM ups_state WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000  GROUP BY 1 ORDER BY 1",
+     "rawQueryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(on_battery) AS on_battery, AVG(battery_low) AS battery_low FROM ups_state WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000  GROUP BY 1 ORDER BY 1",
+     "queryType": "table",
+     "timeColumns": [
+      "time"
+     ]
+    }
+   ],
+   "gridPos": {
+    "x": 8,
+    "y": 63,
+    "w": 8,
+    "h": 7
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "spanNulls": 900000
+     }
+    },
+    "overrides": []
+   },
+   "options": {},
+   "id": 21
+  },
+  {
+   "type": "timeseries",
+   "title": "Input / output [V]",
+   "datasource": {
+    "type": "frser-sqlite-datasource",
+    "uid": "precal-monitor"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "frser-sqlite-datasource",
+      "uid": "precal-monitor"
+     },
+     "refId": "A",
+     "queryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(vin) AS Vin, AVG(vout) AS Vout FROM ups WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000  GROUP BY 1 ORDER BY 1",
+     "rawQueryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(vin) AS Vin, AVG(vout) AS Vout FROM ups WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000  GROUP BY 1 ORDER BY 1",
+     "queryType": "table",
+     "timeColumns": [
+      "time"
+     ]
+    }
+   ],
+   "gridPos": {
+    "x": 16,
+    "y": 63,
+    "w": 8,
+    "h": 7
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "volt",
+     "custom": {
+      "spanNulls": 900000
+     }
+    },
+    "overrides": []
+   },
+   "options": {},
+   "id": 22
+  },
+  {
+   "type": "row",
+   "title": "Services and sync",
+   "collapsed": false,
+   "gridPos": {
+    "x": 0,
+    "y": 70,
+    "w": 24,
+    "h": 1
+   },
+   "panels": [],
+   "id": 23
+  },
+  {
+   "type": "state-timeline",
+   "title": "Services over time",
+   "datasource": {
+    "type": "frser-sqlite-datasource",
+    "uid": "precal-monitor"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "frser-sqlite-datasource",
+      "uid": "precal-monitor"
+     },
+     "refId": "A",
+     "queryText": "SELECT time, unit_ups_guard_service AS \"UPS guard\", unit_remote_ops_service AS \"Remote page\", unit_daq_data_monitoring_service AS \"Data monitor :8090\", unit_network_watchdog_timer AS \"Supervisor\", unit_bfield_log_sync_timer AS \"B-field sync\", unit_backup_logs_timer AS \"Log backup\", unit_precal_monitor_timer AS \"Collector\" FROM v_pc_health WHERE host = 'kor' AND time >= $__from / 1000 AND time < $__to / 1000 ORDER BY time",
+     "rawQueryText": "SELECT time, unit_ups_guard_service AS \"UPS guard\", unit_remote_ops_service AS \"Remote page\", unit_daq_data_monitoring_service AS \"Data monitor :8090\", unit_network_watchdog_timer AS \"Supervisor\", unit_bfield_log_sync_timer AS \"B-field sync\", unit_backup_logs_timer AS \"Log backup\", unit_precal_monitor_timer AS \"Collector\" FROM v_pc_health WHERE host = 'kor' AND time >= $__from / 1000 AND time < $__to / 1000 ORDER BY time",
+     "queryType": "table",
+     "timeColumns": [
+      "time"
+     ]
+    }
+   ],
+   "gridPos": {
+    "x": 0,
+    "y": 71,
+    "w": 24,
+    "h": 7
+   },
+   "fieldConfig": {
+    "defaults": {
+     "mappings": [
+      {
+       "type": "value",
+       "options": {
+        "1": {
+         "text": "RUNNING",
+         "color": "green"
+        },
+        "0": {
+         "text": "DOWN",
+         "color": "red"
+        }
+       }
+      }
+     ]
+    },
+    "overrides": []
+   },
+   "options": {
+    "showValue": "never",
+    "mergeValues": true
+   },
+   "id": 24
+  },
+  {
+   "type": "table",
+   "title": "Collector sources",
+   "datasource": {
+    "type": "frser-sqlite-datasource",
+    "uid": "precal-monitor"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "frser-sqlite-datasource",
+      "uid": "precal-monitor"
+     },
+     "refId": "A",
+     "queryText": "SELECT name AS source, CAST(strftime('%s','now') AS INTEGER) - last_ok_epoch AS \"last run\", CASE WHEN CAST(strftime('%s','now') AS INTEGER) - last_ok_epoch > 3 * COALESCE(period_s, 60) + 60 THEN 0 ELSE 1 END AS run, CAST(strftime('%s','now') AS INTEGER) - data_epoch AS \"newest data\", max_age_s AS \"data limit\", CASE WHEN max_age_s IS NULL THEN -1 WHEN CAST(strftime('%s','now') AS INTEGER) - data_epoch > max_age_s THEN 0 ELSE 1 END AS data, CAST(COALESCE(last_error, '') AS TEXT) AS \"last error\" FROM source_status ORDER BY name",
+     "rawQueryText": "SELECT name AS source, CAST(strftime('%s','now') AS INTEGER) - last_ok_epoch AS \"last run\", CASE WHEN CAST(strftime('%s','now') AS INTEGER) - last_ok_epoch > 3 * COALESCE(period_s, 60) + 60 THEN 0 ELSE 1 END AS run, CAST(strftime('%s','now') AS INTEGER) - data_epoch AS \"newest data\", max_age_s AS \"data limit\", CASE WHEN max_age_s IS NULL THEN -1 WHEN CAST(strftime('%s','now') AS INTEGER) - data_epoch > max_age_s THEN 0 ELSE 1 END AS data, CAST(COALESCE(last_error, '') AS TEXT) AS \"last error\" FROM source_status ORDER BY name",
+     "queryType": "table",
+     "timeColumns": [
+      "time"
+     ]
+    }
+   ],
+   "gridPos": {
+    "x": 0,
+    "y": 78,
+    "w": 24,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "run"
+      },
+      "properties": [
+       {
+        "id": "custom.cellOptions",
+        "value": {
+         "type": "color-text"
+        }
+       },
+       {
+        "id": "mappings",
+        "value": [
+         {
+          "type": "value",
+          "options": {
+           "1": {
+            "text": "OK",
+            "color": "green"
+           },
+           "0": {
+            "text": "FAIL",
+            "color": "red"
+           },
+           "-1": {
+            "text": "n/a",
+            "color": "gray"
+           }
+          }
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "data"
+      },
+      "properties": [
+       {
+        "id": "custom.cellOptions",
+        "value": {
+         "type": "color-text"
+        }
+       },
+       {
+        "id": "mappings",
+        "value": [
+         {
+          "type": "value",
+          "options": {
+           "1": {
+            "text": "OK",
+            "color": "green"
+           },
+           "0": {
+            "text": "FAIL",
+            "color": "red"
+           },
+           "-1": {
+            "text": "n/a",
+            "color": "gray"
+           }
+          }
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "last run"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "s"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "newest data"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "s"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "data limit"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "s"
+       }
+      ]
+     }
+    ]
+   },
+   "options": {
+    "cellHeight": "sm"
+   },
+   "id": 25
+  },
+  {
+   "type": "row",
+   "title": "PCs",
+   "collapsed": false,
+   "gridPos": {
+    "x": 0,
+    "y": 86,
+    "w": 24,
+    "h": 1
+   },
+   "panels": [],
+   "id": 26
+  },
+  {
+   "type": "stat",
+   "title": "Uptime",
+   "datasource": {
+    "type": "frser-sqlite-datasource",
+    "uid": "precal-monitor"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "frser-sqlite-datasource",
+      "uid": "precal-monitor"
+     },
+     "refId": "A",
+     "queryText": "SELECT (SELECT uptime_h FROM pc_health WHERE host = 'kor' ORDER BY ts_epoch DESC LIMIT 1) / 24.0 AS \"KOR\", (SELECT uptime_h FROM pc_health WHERE host = 'bfield' ORDER BY ts_epoch DESC LIMIT 1) / 24.0 AS \"B-field\", (SELECT uptime_h FROM pc_health WHERE host = 'shifter' ORDER BY ts_epoch DESC LIMIT 1) / 24.0 AS \"Shifter\"",
+     "rawQueryText": "SELECT (SELECT uptime_h FROM pc_health WHERE host = 'kor' ORDER BY ts_epoch DESC LIMIT 1) / 24.0 AS \"KOR\", (SELECT uptime_h FROM pc_health WHERE host = 'bfield' ORDER BY ts_epoch DESC LIMIT 1) / 24.0 AS \"B-field\", (SELECT uptime_h FROM pc_health WHERE host = 'shifter' ORDER BY ts_epoch DESC LIMIT 1) / 24.0 AS \"Shifter\"",
+     "queryType": "table",
+     "timeColumns": [
+      "time"
+     ]
+    }
+   ],
+   "gridPos": {
+    "x": 0,
+    "y": 87,
+    "w": 8,
+    "h": 4
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "d",
+     "decimals": 1
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "none",
+    "graphMode": "none",
+    "textMode": "value_and_name",
+    "reduceOptions": {
+     "values": false,
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "/.*/"
+    }
+   },
+   "id": 27
+  },
+  {
+   "type": "stat",
+   "title": "Disk free",
+   "datasource": {
+    "type": "frser-sqlite-datasource",
+    "uid": "precal-monitor"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "frser-sqlite-datasource",
+      "uid": "precal-monitor"
+     },
+     "refId": "A",
+     "queryText": "SELECT (SELECT disk_root_free_gb FROM pc_health WHERE host = 'kor' ORDER BY ts_epoch DESC LIMIT 1) AS \"KOR root\", (SELECT disk_ext_hdd_free_gb FROM pc_health WHERE host = 'kor' ORDER BY ts_epoch DESC LIMIT 1) AS \"KOR ext HDD\", (SELECT disk_root_free_gb FROM pc_health WHERE host = 'shifter' ORDER BY ts_epoch DESC LIMIT 1) AS \"Shifter root\", (SELECT disk_rawdata_free_gb FROM pc_health WHERE host = 'shifter' ORDER BY ts_epoch DESC LIMIT 1) AS \"Shifter rawdata\", (SELECT disk_c_free_gb FROM pc_health WHERE host = 'bfield' ORDER BY ts_epoch DESC LIMIT 1) AS \"B-field C:\"",
+     "rawQueryText": "SELECT (SELECT disk_root_free_gb FROM pc_health WHERE host = 'kor' ORDER BY ts_epoch DESC LIMIT 1) AS \"KOR root\", (SELECT disk_ext_hdd_free_gb FROM pc_health WHERE host = 'kor' ORDER BY ts_epoch DESC LIMIT 1) AS \"KOR ext HDD\", (SELECT disk_root_free_gb FROM pc_health WHERE host = 'shifter' ORDER BY ts_epoch DESC LIMIT 1) AS \"Shifter root\", (SELECT disk_rawdata_free_gb FROM pc_health WHERE host = 'shifter' ORDER BY ts_epoch DESC LIMIT 1) AS \"Shifter rawdata\", (SELECT disk_c_free_gb FROM pc_health WHERE host = 'bfield' ORDER BY ts_epoch DESC LIMIT 1) AS \"B-field C:\"",
+     "queryType": "table",
+     "timeColumns": [
+      "time"
+     ]
+    }
+   ],
+   "gridPos": {
+    "x": 8,
+    "y": 87,
+    "w": 16,
+    "h": 4
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "decgbytes",
+     "decimals": 1
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "none",
+    "graphMode": "none",
+    "textMode": "value_and_name",
+    "reduceOptions": {
+     "values": false,
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "/.*/"
+    }
+   },
+   "id": 28
+  },
+  {
+   "type": "timeseries",
+   "title": "Load average KOR",
+   "datasource": {
+    "type": "frser-sqlite-datasource",
+    "uid": "precal-monitor"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "frser-sqlite-datasource",
+      "uid": "precal-monitor"
+     },
+     "refId": "A",
+     "queryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(load1) AS \"load1\", AVG(load5) AS \"load5\", AVG(load15) AS \"load15\", MAX(ncpu) AS \"cores\" FROM pc_health WHERE host = 'kor' AND ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000 GROUP BY 1 ORDER BY 1",
+     "rawQueryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(load1) AS \"load1\", AVG(load5) AS \"load5\", AVG(load15) AS \"load15\", MAX(ncpu) AS \"cores\" FROM pc_health WHERE host = 'kor' AND ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000 GROUP BY 1 ORDER BY 1",
+     "queryType": "table",
+     "timeColumns": [
+      "time"
+     ]
+    }
+   ],
+   "gridPos": {
+    "x": 0,
+    "y": 91,
+    "w": 8,
+    "h": 7
+   },
+   "fieldConfig": {
+    "defaults": {
+     "min": 0,
+     "custom": {
+      "spanNulls": 900000
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "cores"
+      },
+      "properties": [
+       {
+        "id": "custom.lineStyle",
+        "value": {
+         "fill": "dash",
+         "dash": [
+          10,
+          10
+         ]
+        }
+       },
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "red"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {},
+   "id": 29
+  },
+  {
+   "type": "timeseries",
+   "title": "Load average Shifter",
+   "datasource": {
+    "type": "frser-sqlite-datasource",
+    "uid": "precal-monitor"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "frser-sqlite-datasource",
+      "uid": "precal-monitor"
+     },
+     "refId": "A",
+     "queryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(load1) AS \"load1\", AVG(load5) AS \"load5\", AVG(load15) AS \"load15\", MAX(ncpu) AS \"cores\" FROM pc_health WHERE host = 'shifter' AND ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000 GROUP BY 1 ORDER BY 1",
+     "rawQueryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(load1) AS \"load1\", AVG(load5) AS \"load5\", AVG(load15) AS \"load15\", MAX(ncpu) AS \"cores\" FROM pc_health WHERE host = 'shifter' AND ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000 GROUP BY 1 ORDER BY 1",
+     "queryType": "table",
+     "timeColumns": [
+      "time"
+     ]
+    }
+   ],
+   "gridPos": {
+    "x": 8,
+    "y": 91,
+    "w": 8,
+    "h": 7
+   },
+   "fieldConfig": {
+    "defaults": {
+     "min": 0,
+     "custom": {
+      "spanNulls": 900000
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "cores"
+      },
+      "properties": [
+       {
+        "id": "custom.lineStyle",
+        "value": {
+         "fill": "dash",
+         "dash": [
+          10,
+          10
+         ]
+        }
+       },
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "red"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "options": {},
+   "id": 30
+  },
+  {
+   "type": "timeseries",
+   "title": "CPU temperature [C]",
+   "datasource": {
+    "type": "frser-sqlite-datasource",
+    "uid": "precal-monitor"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "frser-sqlite-datasource",
+      "uid": "precal-monitor"
+     },
+     "refId": "A",
+     "queryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(CASE WHEN host = 'kor' THEN cpu_temp_c END) AS \"KOR\", AVG(CASE WHEN host = 'shifter' THEN cpu_temp_c END) AS \"Shifter\" FROM pc_health WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000 GROUP BY 1 ORDER BY 1",
+     "rawQueryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(CASE WHEN host = 'kor' THEN cpu_temp_c END) AS \"KOR\", AVG(CASE WHEN host = 'shifter' THEN cpu_temp_c END) AS \"Shifter\" FROM pc_health WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000 GROUP BY 1 ORDER BY 1",
+     "queryType": "table",
+     "timeColumns": [
+      "time"
+     ]
+    }
+   ],
+   "gridPos": {
+    "x": 16,
+    "y": 91,
+    "w": 8,
+    "h": 7
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "celsius",
+     "custom": {
+      "spanNulls": 900000
+     }
+    },
+    "overrides": []
+   },
+   "options": {},
+   "id": 31
+  },
+  {
+   "type": "timeseries",
+   "title": "RAM used [GB]",
+   "datasource": {
+    "type": "frser-sqlite-datasource",
+    "uid": "precal-monitor"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "frser-sqlite-datasource",
+      "uid": "precal-monitor"
+     },
+     "refId": "A",
+     "queryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(CASE WHEN host = 'kor' THEN mem_used_gb END) AS \"KOR\", AVG(CASE WHEN host = 'bfield' THEN mem_used_gb END) AS \"B-field\", AVG(CASE WHEN host = 'shifter' THEN mem_used_gb END) AS \"Shifter\" FROM pc_health WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000 GROUP BY 1 ORDER BY 1",
+     "rawQueryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(CASE WHEN host = 'kor' THEN mem_used_gb END) AS \"KOR\", AVG(CASE WHEN host = 'bfield' THEN mem_used_gb END) AS \"B-field\", AVG(CASE WHEN host = 'shifter' THEN mem_used_gb END) AS \"Shifter\" FROM pc_health WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000 GROUP BY 1 ORDER BY 1",
+     "queryType": "table",
+     "timeColumns": [
+      "time"
+     ]
+    }
+   ],
+   "gridPos": {
+    "x": 0,
+    "y": 98,
+    "w": 8,
+    "h": 7
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "decgbytes",
+     "min": 0,
+     "custom": {
+      "spanNulls": 900000
+     }
+    },
+    "overrides": []
+   },
+   "options": {},
+   "id": 32
+  },
+  {
+   "type": "timeseries",
+   "title": "Swap [%]",
+   "datasource": {
+    "type": "frser-sqlite-datasource",
+    "uid": "precal-monitor"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "frser-sqlite-datasource",
+      "uid": "precal-monitor"
+     },
+     "refId": "A",
+     "queryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(CASE WHEN host = 'kor' THEN swap_used_pct END) AS \"KOR\", AVG(CASE WHEN host = 'bfield' THEN swap_used_pct END) AS \"B-field\", AVG(CASE WHEN host = 'shifter' THEN swap_used_pct END) AS \"Shifter\" FROM pc_health WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000 GROUP BY 1 ORDER BY 1",
+     "rawQueryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(CASE WHEN host = 'kor' THEN swap_used_pct END) AS \"KOR\", AVG(CASE WHEN host = 'bfield' THEN swap_used_pct END) AS \"B-field\", AVG(CASE WHEN host = 'shifter' THEN swap_used_pct END) AS \"Shifter\" FROM pc_health WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000 GROUP BY 1 ORDER BY 1",
+     "queryType": "table",
+     "timeColumns": [
+      "time"
+     ]
+    }
+   ],
+   "gridPos": {
+    "x": 8,
+    "y": 98,
+    "w": 8,
+    "h": 7
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percent",
+     "min": 0,
+     "max": 100,
+     "custom": {
+      "spanNulls": 900000
+     }
+    },
+    "overrides": []
+   },
+   "options": {},
+   "id": 33
+  },
+  {
+   "type": "timeseries",
+   "title": "Disk used trend [%]",
+   "datasource": {
+    "type": "frser-sqlite-datasource",
+    "uid": "precal-monitor"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "frser-sqlite-datasource",
+      "uid": "precal-monitor"
+     },
+     "refId": "A",
+     "queryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(CASE WHEN host = 'kor' THEN disk_root_pct END) AS \"KOR root\", AVG(CASE WHEN host = 'kor' THEN disk_ext_hdd_pct END) AS \"KOR ext HDD\", AVG(CASE WHEN host = 'shifter' THEN disk_root_pct END) AS \"Shifter root\", AVG(CASE WHEN host = 'shifter' THEN disk_rawdata_pct END) AS \"Shifter rawdata\", AVG(CASE WHEN host = 'bfield' THEN disk_c_pct END) AS \"B-field C:\" FROM pc_health WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000 GROUP BY 1 ORDER BY 1",
+     "rawQueryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(CASE WHEN host = 'kor' THEN disk_root_pct END) AS \"KOR root\", AVG(CASE WHEN host = 'kor' THEN disk_ext_hdd_pct END) AS \"KOR ext HDD\", AVG(CASE WHEN host = 'shifter' THEN disk_root_pct END) AS \"Shifter root\", AVG(CASE WHEN host = 'shifter' THEN disk_rawdata_pct END) AS \"Shifter rawdata\", AVG(CASE WHEN host = 'bfield' THEN disk_c_pct END) AS \"B-field C:\" FROM pc_health WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000 GROUP BY 1 ORDER BY 1",
+     "queryType": "table",
+     "timeColumns": [
+      "time"
+     ]
+    }
+   ],
+   "gridPos": {
+    "x": 16,
+    "y": 98,
+    "w": 8,
+    "h": 7
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percent",
+     "custom": {
+      "spanNulls": 900000
+     }
+    },
+    "overrides": []
+   },
+   "options": {},
+   "timeFrom": "7d",
+   "id": 34
+  },
+  {
+   "type": "timeseries",
+   "title": "Network receive",
+   "datasource": {
+    "type": "frser-sqlite-datasource",
+    "uid": "precal-monitor"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "frser-sqlite-datasource",
+      "uid": "precal-monitor"
+     },
+     "refId": "A",
+     "queryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(CASE WHEN host = 'kor' THEN net_rx_bps END) AS \"KOR\", AVG(CASE WHEN host = 'bfield' THEN net_rx_bps END) AS \"B-field\", AVG(CASE WHEN host = 'shifter' THEN net_rx_bps END) AS \"Shifter\" FROM pc_health WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000 GROUP BY 1 ORDER BY 1",
+     "rawQueryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(CASE WHEN host = 'kor' THEN net_rx_bps END) AS \"KOR\", AVG(CASE WHEN host = 'bfield' THEN net_rx_bps END) AS \"B-field\", AVG(CASE WHEN host = 'shifter' THEN net_rx_bps END) AS \"Shifter\" FROM pc_health WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000 GROUP BY 1 ORDER BY 1",
+     "queryType": "table",
+     "timeColumns": [
+      "time"
+     ]
+    }
+   ],
+   "gridPos": {
+    "x": 0,
+    "y": 105,
+    "w": 12,
+    "h": 7
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "Bps",
+     "min": 0,
+     "custom": {
+      "spanNulls": 900000
+     }
+    },
+    "overrides": []
+   },
+   "options": {},
+   "id": 35
+  },
+  {
+   "type": "timeseries",
+   "title": "Network send",
+   "datasource": {
+    "type": "frser-sqlite-datasource",
+    "uid": "precal-monitor"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "frser-sqlite-datasource",
+      "uid": "precal-monitor"
+     },
+     "refId": "A",
+     "queryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(CASE WHEN host = 'kor' THEN net_tx_bps END) AS \"KOR\", AVG(CASE WHEN host = 'bfield' THEN net_tx_bps END) AS \"B-field\", AVG(CASE WHEN host = 'shifter' THEN net_tx_bps END) AS \"Shifter\" FROM pc_health WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000 GROUP BY 1 ORDER BY 1",
+     "rawQueryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(CASE WHEN host = 'kor' THEN net_tx_bps END) AS \"KOR\", AVG(CASE WHEN host = 'bfield' THEN net_tx_bps END) AS \"B-field\", AVG(CASE WHEN host = 'shifter' THEN net_tx_bps END) AS \"Shifter\" FROM pc_health WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000 GROUP BY 1 ORDER BY 1",
+     "queryType": "table",
+     "timeColumns": [
+      "time"
+     ]
+    }
+   ],
+   "gridPos": {
+    "x": 12,
+    "y": 105,
+    "w": 12,
+    "h": 7
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "Bps",
+     "min": 0,
+     "custom": {
+      "spanNulls": 900000
+     }
+    },
+    "overrides": []
+   },
+   "options": {},
+   "id": 36
+  }
+ ]
+}

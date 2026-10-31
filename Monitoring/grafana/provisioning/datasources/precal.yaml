@@ -1,0 +1,18 @@
+apiVersion: 1
+datasources:
+  - name: PrecalMonitor
+    uid: precal-monitor
+    type: frser-sqlite-datasource
+    access: proxy
+    jsonData:
+      path: /home/precalkor/Logs/Monitoring/precal_monitor.db
+      pathPrefix: "file:"
+      pathOptions: "mode=ro&_pragma=busy_timeout(5000)"   # wait out a writer's lock instead of failing
+  - name: HVEnv
+    uid: precal-hv
+    type: frser-sqlite-datasource
+    access: proxy
+    jsonData:
+      path: /home/precalkor/Integrated_Control_SW/HV_Control_SW/monitoring_log.db
+      pathPrefix: "file:"
+      pathOptions: "mode=ro&_pragma=busy_timeout(5000)"   # wait out a writer's lock instead of failing

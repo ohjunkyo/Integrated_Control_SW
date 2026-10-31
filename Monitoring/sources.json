@@ -1,0 +1,72 @@
+{
+  "db": "~/Logs/Monitoring/precal_monitor.db",
+  "log": "~/logs/precal_monitor.log",
+  "since": "2026-07-01",
+  "recent_days": 3,
+  "scan_pattern": "ADC_test/script_v7.sh|execute_DAQ_v2",
+  "sources": [
+    {"name": "laser", "kind": "csv", "max_age_s": 120, "extra_cols": ["pd_raw", "pd_current_ma", "pulse_width_ps"], "table": "laser",
+     "glob": "~/Logs/Laser/laser_data_*nm_*.csv",
+     "name_fields": {"wl": "laser_data_(\\d+nm)_"}, "file_date": "_(\\d{8})\\.csv$", "key": ["wl"]},
+
+    {"name": "laser_event", "kind": "text", "table": "laser_event",
+     "glob": "~/Logs/Laser/laser_log_*nm_*.txt",
+     "name_fields": {"wl": "laser_log_(\\d+nm)_"}, "file_date": "_(\\d{4}-\\d{2}-\\d{2})\\.txt$",
+     "pattern": "^\\[(?P<ts>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2})\\] \\[(?P<level>\\w+)\\] (?P<message>.*)$"},
+
+    {"name": "laser_event_old", "kind": "text", "table": "laser_event",
+     "glob": "~/Logs/Laser/laser_log._*.txt", "file_date": "_(\\d{4}-\\d{2}-\\d{2})\\.txt$",
+     "pattern": "^(?P<ts>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}),\\d+ \\| (?P<level>\\w+) \\| (?P<message>.*)$"},
+
+    {"name": "ups", "kind": "csv", "max_age_s": 120, "table": "ups",
+     "glob": "~/Logs/UPS/ups_*.csv", "file_date": "_(\\d{8})\\.csv$"},
+
+    {"name": "ups_state", "kind": "json", "max_age_s": 300, "table": "ups_state",
+     "path": "~/.cache/precal/ups_state.json", "ts_field": "ts"},
+
+    {"name": "bfield", "kind": "csv", "max_age_s": 1800, "table": "bfield",
+     "glob": "~/Logs/Bfield/log_bfield_*.csv", "null": ["N/A"],
+     "derived": {"m1_mg": "1000 * sqrt(m1_x**2 + m1_y**2 + m1_z**2)", "m2_mg": "1000 * sqrt(m2_x**2 + m2_y**2 + m2_z**2)",
+                 "m3_mg": "1000 * sqrt(m3_x**2 + m3_y**2 + m3_z**2)", "m4_mg": "1000 * sqrt(m4_x**2 + m4_y**2 + m4_z**2)"}},
+
+    {"name": "daq_run", "kind": "csv_table", "table": "daq_run",
+     "path": "~/ADC/ADC_test/Data/run_registry.csv", "ts_column": "registered_at", "key": ["date", "run"],
+     "post": "classify_runs"},
+
+    {"name": "hk_run", "kind": "probe", "probe": "hk_runs", "table": "hk_run", "ssh": "shifter",
+     "dir": "~/Desktop/hkelec/DiscreteSoftware-Keio_test/data", "every_s": 300},
+
+    {"name": "daq_status", "kind": "probe", "probe": "daq_status", "table": "daq_status", "every_s": 60,
+     "procs": {"v2": "DAQ_Control_SW_v2/main.py", "tk": "DAQ_Control_SW/main.py",
+               "hv_app": "HV_Control_SW/monitoring_app.py", "ups_guard": "UPS_Guard/ups_guard.py"},
+     "hv_db": "~/Logs/HV_Env/monitoring_log.db",
+     "v2_dir": "~/Integrated_Control_SW/DAQ_Control_SW_v2",
+     "locks": ["daq", "daq_v2", "daq_v2_control", "hv", "laser_gui", "ups_guard"],
+     "ok_logs": {"backup_logs": "~/logs/backup_logs.log", "bfield_sync": "~/logs/bfield_log_sync.log",
+                 "data_sync": {"path": "~/logs/sync_data_v2.log", "marker": "failures (left on local): 0"}},
+     "tcp": {"logic_unit": "192.168.10.208:8080"}},
+
+    {"name": "kor_health", "kind": "probe", "probe": "health", "table": "pc_health", "host": "kor", "every_s": 60,
+     "disks": {"root": "/", "ext_hdd": "/home/precalkor/external_HDD_1_4T"},
+     "procs": {"v2": "DAQ_Control_SW_v2/main.py", "hv_app": "HV_Control_SW/monitoring_app.py",
+               "ups_guard": "UPS_Guard/ups_guard.py", "tailscaled": "tailscaled"},
+     "units": ["ups-guard.service", "remote-ops.service", "daq-data-monitoring.service", "network-watchdog.timer",
+               "bfield-log-sync.timer", "backup-logs.timer", "precal-monitor.timer"],
+     "key_procs": ["hv_app", "ups_guard"]},
+
+    {"name": "shifter_health", "kind": "probe", "probe": "health", "table": "pc_health", "host": "shifter",
+     "ssh": "shifter", "every_s": 300,
+     "disks": {"root": "/", "rawdata": "/media/precalib/rawdata"},
+     "procs": {"elog": "manage.py runserver", "aus_copier": "copier_gui.py", "tailscaled": "tailscaled"},
+     "files": {"rundb": "~/shiftertool/database/runDB_v3.db", "kor_raw": "/media/precalib/rawdata/kor/commissioning"},
+     "key_procs": ["elog"]},
+
+    {"name": "bfield_health", "kind": "probe", "probe": "health", "table": "pc_health", "host": "bfield",
+     "ssh": "bfield", "os": "windows", "every_s": 300,
+     "disks": {"c": "C:"},
+     "procs": {"logger": "python", "phidget": "Phidget22Manager", "grafana": "grafana", "camera": "WindowsCamera"},
+     "tasks": {"upload_sukap": "UploadToSukap01"},
+     "files": {"bfield_log": "C:/Users/precal_bfield/log_bfield_20261007.csv"},
+     "key_procs": ["logger", "phidget"]}
+  ]
+}

@@ -1,0 +1,9 @@
+[Unit]
+Description=Copy monitoring logs into precal_monitor.db
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /home/precalkor/Integrated_Control_SW/Monitoring/ingest.py
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=300
