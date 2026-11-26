@@ -1,0 +1,11 @@
+[Unit]
+Description=UPS guard: power-failure shutdown (DAQ, lasers, HV, then PC)
+After=default.target
+
+[Service]
+ExecStart=/home/precalkor/Integrated_Control_SW/venv/bin/python /home/precalkor/Integrated_Control_SW/UPS_Guard/ups_guard.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

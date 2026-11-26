@@ -1,0 +1,12 @@
+# For HV_Control_SW (PyQt5 App)
+pyqt5
+pyqtgraph
+pyserial
+pyvisa
+pyUSB
+numpy
+caen-libs
+
+# For DAQ_Control_SW (Tkinter App)
+Pillow
+

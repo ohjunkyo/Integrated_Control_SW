@@ -1,0 +1,10 @@
+apiVersion: 1
+providers:
+  - name: precal
+    folder: KOR
+    folderUid: kor
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    options:
+      path: /home/precalkor/Integrated_Control_SW/Monitoring/grafana/dashboards

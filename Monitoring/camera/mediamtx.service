@@ -1,0 +1,12 @@
+[Unit]
+Description=MediaMTX (B-field PC webcam, HLS on 127.0.0.1:8888)
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/opt/mediamtx
+ExecStart=%h/opt/mediamtx/mediamtx %h/.config/mediamtx/mediamtx.yml
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

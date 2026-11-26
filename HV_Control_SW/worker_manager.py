@@ -1,0 +1,114 @@
+from PyQt5.QtCore import QObject, pyqtSignal, QThread, QTimer, pyqtSlot, QMetaObject, Qt # [수정됨] pyqtSlot 추가
+from workers.arduino import ArduinoWorker
+from workers.caen_process import caen_worker_process
+from multiprocessing import Process, Queue
+import time
+
+class CaenProcessBridge(QObject):
+    """Reads data from the process queue and emits Qt signals."""
+    data_ready = pyqtSignal(list); initial_settings_ready = pyqtSignal(dict)
+    connection_status = pyqtSignal(str); command_feedback = pyqtSignal(str)
+    def __init__(self, data_q: Queue):
+        super().__init__(); self.data_q = data_q
+        self.timer = QTimer(self); self.timer.timeout.connect(self.check_queue); self.timer.start(100)
+    def check_queue(self):
+        while not self.data_q.empty():
+            item = self.data_q.get()
+            if item['type'] == 'data': self.data_ready.emit(item['data'])
+            elif item['type'] == 'status': self.connection_status.emit(item['msg'])
+            elif item['type'] == 'feedback': self.command_feedback.emit(item['msg'])
+            elif item['type'] == 'initial_settings': self.initial_settings_ready.emit(item['data'])
+    
+    @pyqtSlot() # [수정됨] 이 함수가 다른 스레드에서 호출될 수 있음을 알림
+    def stop(self):
+        self.timer.stop()
+
+class WorkerManager(QObject):
+    arduino_data_ready = pyqtSignal(int, object, object); caenhv_data_ready = pyqtSignal(list)
+    arduino_status_changed = pyqtSignal(str); caenhv_status_changed = pyqtSignal(str)
+    hv_command_feedback = pyqtSignal(str); hv_initial_settings_ready = pyqtSignal(dict)
+    shutdown_complete = pyqtSignal()
+
+    def __init__(self, config, parent=None):
+        super().__init__(parent); self.config = config
+        self._arduino_worker = ArduinoWorker(config['arduino_settings']['port'], config['arduino_settings']['baud_rate'])
+        self._arduino_thread = QThread(); self._arduino_worker.moveToThread(self._arduino_thread)
+        self._arduino_thread.started.connect(self._arduino_worker.run)
+        self._arduino_worker.data_ready.connect(self.arduino_data_ready); self._arduino_worker.connection_status.connect(self.arduino_status_changed)
+        
+        # [수정됨] 스레드가 종료될 때 'stop_polling'이 올바른 스레드에서 호출되도록 연결
+        self._arduino_thread.finished.connect(self._arduino_worker.stop_polling)
+        
+        self.caen_cmd_q = Queue(); self.caen_data_q = Queue()
+        self.caen_process = Process(target=caen_worker_process, args=(self.caen_cmd_q, self.caen_data_q, config['caen_hv_settings']))
+        
+        self.caen_bridge = CaenProcessBridge(self.caen_data_q); self.caen_bridge_thread = QThread()
+        self.caen_bridge.moveToThread(self.caen_bridge_thread)
+        self.caen_bridge.data_ready.connect(self.caenhv_data_ready); self.caen_bridge.connection_status.connect(self.caenhv_status_changed)
+        self.caen_bridge.command_feedback.connect(self.hv_command_feedback); self.caen_bridge.initial_settings_ready.connect(self.hv_initial_settings_ready)
+        
+        # [수정됨] 브릿지 스레드가 종료될 때 'stop'이 올바른 스레드에서 호출되도록 연결
+        self.caen_bridge_thread.finished.connect(self.caen_bridge.stop)
+        
+        self.shutdown_timer = QTimer(self); self.shutdown_timer.timeout.connect(self._check_shutdown_status)
+
+    def start_workers(self):
+        self._arduino_thread.start(); self.caen_bridge_thread.start(); self.caen_process.start()
+
+    def initiate_shutdown(self):
+        print("Initiating worker shutdown...")
+        if self._arduino_thread.isRunning():
+            # [수정됨] 타이머를 직접 멈추는 대신 스레드에 종료 신호를 보냄
+            # self._arduino_worker.stop_polling() # <- 이 줄 삭제
+            self._arduino_thread.quit() # 'finished' 신호가 stop_polling을 호출할 것임
+        if self.caen_process.is_alive():
+            self.caen_cmd_q.put({'type': 'stop'})
+
+        self._shutdown_started = time.time()
+        self.shutdown_timer.start(100)
+            
+    # A CAEN call can hang for a network timeout when the crate is unreachable;
+    # past this the worker is killed. HV itself is unaffected -- the crate keeps
+    # its setpoints; only monitoring stops.
+    SHUTDOWN_LIMIT_S = 5.0
+
+    def _check_shutdown_status(self):
+        arduino_done = self._arduino_thread.isFinished()
+        caen_done = not self.caen_process.is_alive()
+
+        if not (arduino_done and caen_done) and time.time() - self._shutdown_started > self.SHUTDOWN_LIMIT_S:
+            if not caen_done:
+                print("CAEN worker did not stop in time -- terminating it.")
+                self.caen_process.terminate(); self.caen_process.join(1)
+            if not arduino_done:
+                print("Arduino thread did not stop in time -- continuing without it.")
+            arduino_done = caen_done = True
+
+        if arduino_done and caen_done:
+            self.shutdown_timer.stop()
+            print("Arduino thread and CAEN process stopped.")
+            
+            # Now, stop the bridge
+            # [수정됨] 타이머를 직접 멈추는 대신 스레드에 종료 신호를 보냄
+            # self.caen_bridge.stop() # <- 이 줄 삭제
+            self.caen_bridge_thread.quit() # 'finished' 신호가 stop을 호출할 것임
+            self.caen_bridge_thread.wait(2000)
+            print(f"Bridge thread stopped. Shutdown took {time.time() - self._shutdown_started:.1f} s.")
+            
+            self.shutdown_complete.emit()
+
+    def queue_hv_command(self, command_type, slot, ch, param_name, value):
+        ch_list = [ch] if isinstance(ch, int) else ch
+        cmd = {'type': command_type, 'slot': slot, 'ch_list': ch_list, 'param_name': param_name, 'value': value}
+        self.caen_cmd_q.put(cmd)
+
+    def reconnect_env(self):
+        """Close and reopen only the ENV serial link (HV untouched)."""
+        QMetaObject.invokeMethod(self._arduino_worker, "reconnect", Qt.QueuedConnection)
+
+    def poll_env_now(self):
+        QMetaObject.invokeMethod(self._arduino_worker, "poll_now", Qt.QueuedConnection)
+
+    def hv_link_command(self, cmd_type):
+        """'connect' / 'disconnect' (software link only, HV output unchanged) / 'poll_now'."""
+        self.caen_cmd_q.put({'type': cmd_type})

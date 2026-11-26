@@ -1,0 +1,13 @@
+[Unit]
+Description=Camera login gate (HLS proxy on 127.0.0.1:8890 -> MediaMTX 127.0.0.1:8888)
+After=network-online.target mediamtx.service
+
+[Service]
+ExecStart=/usr/bin/python3 %h/Integrated_Control_SW/Monitoring/camera/camera_gate.py
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

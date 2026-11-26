@@ -1,0 +1,75 @@
+
+# Database files
+*.db
+*.db-journal
+*.sqlite3
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# IDE / OS specific
+.vscode/
+.idea/
+.DS_Store
+./DAQ_Control_SW/LOG/UPS/
+DAQ_Control_SW/LOG/
+*.csv
+main_v*.py
+ui_manager_original.py
+__pycache__/
+
+# Python virtual environment
+venv/
+
+# Claude Code internal files
+.claude/
+
+# Runtime state (not source)
+DAQ_Control_SW/handover_notes.jsonl
+DAQ_Control_SW/laser_sequence.json
+DAQ_Control_SW/scan_recovery_state.json
+DAQ_Control_SW/ui_prefs.json
+DAQ_Control_SW/hk_config.json
+DAQ_Control_SW/queued_schedules.json
+*.swp
+
+# Ad-hoc UI backup snapshot (not a real release/tag)
+DAQ_Control_SW/_ui_backup_20260722_185041/
+
+# Data, not code: HV monitoring logs and DB snapshots taken before migrations
+HV_Control_SW/LOG/
+*.db.bak_*
+
+# Site configuration and state (operator's files; ship examples instead)
+/DAQ_Control_SW/config3.h
+/DAQ_Control_SW/contacts.json
+/DAQ_Control_SW/routines/
+/DAQ_Control_SW/hk_configs/
+/Monitoring/sources.json
+/Monitoring/camera/mediamtx.yml
+/HV_Control_SW/config_precal*.json
+/HV_Control_SW/config_8ch.json
+
+# Backups, retired code, logs, vendor files
+_archive/
+Unused/
+_unused/
+old_versions/
+_ui_backup_*/
+LOG/
+logs/
+docs/
+manuals/
+graphify-out/
+*.bak*
+*.log
+*.exe
+*.dll
+*.pdf
+*.tmp_secrets
+arduino-cli*
+._*
+/usbreset
+/read_kill_program
+/externalHDD_readme

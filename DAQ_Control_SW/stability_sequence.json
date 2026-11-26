@@ -1,0 +1,34 @@
+{
+  "405nm": {
+    "on": true,
+    "bias": "0.0",
+    "pulse": "109",
+    "len": "10",
+    "unit": "count",
+    "iv": "180"
+  },
+  "375nm": {
+    "on": false,
+    "bias": "0",
+    "pulse": "118",
+    "len": "1",
+    "unit": "count",
+    "iv": "5"
+  },
+  "450nm": {
+    "on": false,
+    "bias": "0.0",
+    "pulse": "85",
+    "len": "1",
+    "unit": "count",
+    "iv": "5"
+  },
+  "473nm": {
+    "on": false,
+    "bias": "0",
+    "pulse": "120",
+    "len": "1",
+    "unit": "count",
+    "iv": "0"
+  }
+}
