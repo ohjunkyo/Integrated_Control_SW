@@ -67,13 +67,14 @@ FIT_METRICS = ("gain", "chres", "tts", "fwhm")   # stored as -1 when the fit fai
 
 
 def _fn_params(h, name):
-    """(parameters, errors) of the fit function `name` stored with a histogram, or None."""
+    """(parameters, errors) of the last fit function `name` stored with a histogram (the final fit), or None."""
+    got = None
     for fn in h.member("fFunctions"):
         am = fn.all_members
         if str(am.get("fName", "")).startswith(name):
-            return ([float(v) for v in am["fParams"].all_members["fParameters"]],
-                    [float(v) for v in am.get("fParErrors", [])])
-    return None
+            got = ([float(v) for v in am["fParams"].all_members["fParameters"]],
+                   [float(v) for v in am.get("fParErrors", [])])
+    return got
 
 
 def _exg_shape(x, mu, s, tau):

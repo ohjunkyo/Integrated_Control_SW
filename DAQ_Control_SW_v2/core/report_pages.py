@@ -100,14 +100,17 @@ def _hv(rows, col):
 
 
 def _curve(h):
-    fn = h.member("fFunctions")
-    if not len(fn):
-        return None, None, None
-    s = np.array(list(fn[0].all_members["fSave"]), dtype=float)
-    if len(s) < 4:
-        return None, None, fn[0]
-    y, lo, hi = s[:-2], s[-2], s[-1]
-    return np.linspace(lo, hi, len(y)), y, fn[0]
+    """Curve of the last fit stored with the histogram: the final W-fixed fit follows the free-W one."""
+    fns = list(h.member("fFunctions"))
+    for fn in reversed(fns):
+        try:
+            s = np.array(list(fn.all_members["fSave"]), dtype=float)
+        except Exception:
+            continue
+        if len(s) >= 4:
+            y, lo, hi = s[:-2], s[-2], s[-1]
+            return np.linspace(lo, hi, len(y)), y, fn
+    return None, None, (fns[-1] if fns else None)
 
 
 def _hist(h):

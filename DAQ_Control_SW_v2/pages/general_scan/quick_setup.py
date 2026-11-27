@@ -82,6 +82,7 @@ class QuickSetupPage(QWidget):
         g.setHorizontalSpacing(8)
         g.setVerticalSpacing(8)
         self.fields = {}
+        self.scan_rot = {}   # direction key -> label with the X / Y scan rotation angles
         self.dirty = set()   # keys edited by hand or synced from hardware, not saved yet
         r = 0
         for row in ROWS:
@@ -97,6 +98,12 @@ class QuickSetupPage(QWidget):
                 f = _Field(key, self.dirty.add)
                 g.addWidget(f.w, r, 2 * c + 1, 1, 9 if key == "NOTE" else 1)   # the note spans the whole form
                 self.fields[key] = f
+                if key in ("direction2", "direction3"):
+                    f.w.textChanged.connect(lambda _t, k=key: self._show_scan_rot(k))
+                    hint = QLabel()
+                    hint.setStyleSheet(f"font-size: 11pt; font-weight: 700; color: {theme.C['warn']};")
+                    g.addWidget(hint, r, 10)
+                    self.scan_rot[key] = hint
             r += 1
         g.setRowMinimumHeight(r, 10)
         r += 1
@@ -211,6 +218,9 @@ class QuickSetupPage(QWidget):
             return int(cfg.get("TimeWindow", "")), int(cfg.get("PostTrigger", "")), "external"
         except ValueError:
             return None
+
+    def _show_scan_rot(self, key):
+        self.scan_rot[key].setText(qs.scan_rot_text(self.fields[key].text()))
 
     def refresh(self):
         cfg = env.read_config()

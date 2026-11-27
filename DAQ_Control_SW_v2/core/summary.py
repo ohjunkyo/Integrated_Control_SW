@@ -17,6 +17,21 @@ def _log(msg):
     applog.log(msg)
 
 
+def busy():
+    """True while a background summary or uniformity (refit) job holds the lock."""
+    import fcntl
+    try:
+        with open(os.path.join(env.ADC_DIR, "LOG", "routine_summary.lock"), "a") as f:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return True
+            fcntl.flock(f, fcntl.LOCK_UN)
+    except OSError:
+        pass
+    return False
+
+
 def launch(args, what):
     """Start routine_summary.py <args> --index detached at low priority, one at a time (flock). -> argv or None."""
     if env.NO_HW:

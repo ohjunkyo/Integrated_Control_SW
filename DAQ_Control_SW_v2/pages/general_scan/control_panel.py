@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QDialog, QFr
 
 from app import scan_bridge, theme
 from core import env, status
+from core.quick_setup import scan_rot_text
 from core.access import ACCESS, check_password
 from core.stability import RUN
 from core.stage import stage
@@ -155,7 +156,7 @@ class ControlPanelPage(QWidget):
     def _right(self):
         box = QGroupBox("Manual Control Panel")
         v = QVBoxLayout(box)
-        self.dev, self.entries, self.manual = {}, {}, []
+        self.dev, self.entries, self.manual, self.axes = {}, {}, [], {}
         for dev in (2, 3):
             lab = _big("-")
             v.addWidget(lab)
@@ -174,6 +175,10 @@ class ControlPanelPage(QWidget):
                 row.addWidget(r)
                 row.addSpacing(10)
             row.addStretch(1)
+            axes = QLabel()
+            axes.setStyleSheet(f"font-size: 11pt; font-weight: 700; color: {theme.C['warn']};")
+            row.addWidget(axes)
+            self.axes[dev] = axes
             v.addLayout(row)
             brow = QHBoxLayout()
             for t, fn in (("Get Current", lambda _=False, d=dev: self._get_current(d)),
@@ -631,6 +636,7 @@ class ControlPanelPage(QWidget):
             sn = cfg.get(f"SN{dev}", "") or "N/A"
             cable = (cfg.get(f"direction{dev}") or "").strip().upper()
             head = f"SN{dev} | {sn}-{cable}" if cable else f"SN{dev} | {sn}"
+            self.axes[dev].setText(scan_rot_text(cable))
             if dev in live:
                 tilt, rot, moving = live[dev]
                 lab.setText(f"{head} | Status -> Tilt: {tilt:.1f}°, Rot: {rot:.1f}°" + ("  (moving)" if moving else ""))

@@ -4,6 +4,7 @@ import html
 import os
 import subprocess
 import threading
+import time
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg
 from matplotlib.colors import to_hex
@@ -30,6 +31,7 @@ from core import hk_results as HK
 from core import report_pages as RP
 from core import routine_results as RR
 from core import routine_stats as RS
+from core import summary
 from core.schedule import JST
 from widgets.flow_layout import FlowLayout
 from widgets.plot_zoom import PlotZoom
@@ -620,6 +622,7 @@ class _ReportCard:
 
 class ResultsPage(_AutoReload, QWidget):
     REPORT_DIR = os.path.join(env.ADC_DIR, "Data", "RoutineStats", "reports")
+    AUTO_REPORT_MIN_S, AUTO_REPORT_MAX_S = 30.0, 1800.0   # wait for the refit lock to be taken / give up
 
     def __init__(self):
         super().__init__()
@@ -702,6 +705,7 @@ class ResultsPage(_AutoReload, QWidget):
         self.spin = _Spinner(self)
         self._shown = None   # label of the run on screen: its reloads keep it shown, no spinner
         self._auto, self._was_active = None, bool(rt.progress().get("active"))
+        self._auto_since = 0.0
         self.auto_timer = QTimer(self)
         self.auto_timer.timeout.connect(self._auto_tick)
         self.auto_timer.start(POLL_MS)
@@ -1215,12 +1219,18 @@ class ResultsPage(_AutoReload, QWidget):
         active = bool(rt.progress().get("active"))
         if self._was_active and not active:
             self._auto = "pending"
+            self._auto_since = time.monotonic()
         self._was_active = active
-        if self._auto == "pending" and not self._busy:
+        if self._auto == "pending" and not self._busy and self._refit_done():
             runs = rt.routine_runs()
             self._auto = runs[0]["label"] if runs else None
             if self._auto:
                 self.on_show(prefer=self._auto)
+
+    def _refit_done(self):
+        """The refit started at the routine end rewrites FinalResult: the report waits until its lock is free."""
+        waited = time.monotonic() - self._auto_since
+        return waited >= self.AUTO_REPORT_MIN_S and (waited > self.AUTO_REPORT_MAX_S or not summary.busy())
 
     def save_report(self):
         """The report as one PDF in REPORT_DIR (the remote page links the newest)."""

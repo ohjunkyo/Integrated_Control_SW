@@ -1006,8 +1006,8 @@
       "uid": "precal-monitor"
      },
      "refId": "A",
-     "queryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(m2_mg) AS \"Rot1 (M2)\", AVG(m3_mg) AS \"Rot2 (M3)\", AVG(m1_mg) AS \"AUS (M1)\" FROM bfield WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000  GROUP BY 1 ORDER BY 1",
-     "rawQueryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(m2_mg) AS \"Rot1 (M2)\", AVG(m3_mg) AS \"Rot2 (M3)\", AVG(m1_mg) AS \"AUS (M1)\" FROM bfield WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000  GROUP BY 1 ORDER BY 1",
+     "queryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(m3_mg) AS \"Rot1 (M_KOR1)\", AVG(m2_mg) AS \"Rot2 (M_KOR2)\", AVG(m1_mg) AS \"AUS (M_AUS)\" FROM bfield WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000  GROUP BY 1 ORDER BY 1",
+     "rawQueryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(m3_mg) AS \"Rot1 (M_KOR1)\", AVG(m2_mg) AS \"Rot2 (M_KOR2)\", AVG(m1_mg) AS \"AUS (M_AUS)\" FROM bfield WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000  GROUP BY 1 ORDER BY 1",
      "queryType": "table",
      "timeColumns": [
       "time"
@@ -1073,7 +1073,7 @@
   },
   {
    "type": "timeseries",
-   "title": "B components Rot1 (M2) [mG]",
+   "title": "B components Rot1 (M_KOR1) [mG]",
    "datasource": {
     "type": "frser-sqlite-datasource",
     "uid": "precal-monitor"
@@ -1085,8 +1085,8 @@
       "uid": "precal-monitor"
      },
      "refId": "A",
-     "queryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(m2_x * 1000) AS X, AVG(m2_y * 1000) AS Y, AVG(m2_z * 1000) AS Z FROM bfield WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000  GROUP BY 1 ORDER BY 1",
-     "rawQueryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(m2_x * 1000) AS X, AVG(m2_y * 1000) AS Y, AVG(m2_z * 1000) AS Z FROM bfield WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000  GROUP BY 1 ORDER BY 1",
+     "queryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(COALESCE(m3_x, m_kor1_x) * 1000) AS X, AVG(COALESCE(m3_y, m_kor1_y) * 1000) AS Y, AVG(COALESCE(m3_z, m_kor1_z) * 1000) AS Z FROM bfield WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000  GROUP BY 1 ORDER BY 1",
+     "rawQueryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(COALESCE(m3_x, m_kor1_x) * 1000) AS X, AVG(COALESCE(m3_y, m_kor1_y) * 1000) AS Y, AVG(COALESCE(m3_z, m_kor1_z) * 1000) AS Z FROM bfield WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000  GROUP BY 1 ORDER BY 1",
      "queryType": "table",
      "timeColumns": [
       "time"
@@ -1112,7 +1112,7 @@
   },
   {
    "type": "timeseries",
-   "title": "B components Rot2 (M3) [mG]",
+   "title": "B components Rot2 (M_KOR2) [mG]",
    "datasource": {
     "type": "frser-sqlite-datasource",
     "uid": "precal-monitor"
@@ -1124,8 +1124,8 @@
       "uid": "precal-monitor"
      },
      "refId": "A",
-     "queryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(m3_x * 1000) AS X, AVG(m3_y * 1000) AS Y, AVG(m3_z * 1000) AS Z FROM bfield WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000  GROUP BY 1 ORDER BY 1",
-     "rawQueryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(m3_x * 1000) AS X, AVG(m3_y * 1000) AS Y, AVG(m3_z * 1000) AS Z FROM bfield WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000  GROUP BY 1 ORDER BY 1",
+     "queryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(COALESCE(m2_x, m_kor2_x) * 1000) AS X, AVG(COALESCE(m2_y, m_kor2_y) * 1000) AS Y, AVG(COALESCE(m2_z, m_kor2_z) * 1000) AS Z FROM bfield WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000  GROUP BY 1 ORDER BY 1",
+     "rawQueryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(COALESCE(m2_x, m_kor2_x) * 1000) AS X, AVG(COALESCE(m2_y, m_kor2_y) * 1000) AS Y, AVG(COALESCE(m2_z, m_kor2_z) * 1000) AS Z FROM bfield WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000  GROUP BY 1 ORDER BY 1",
      "queryType": "table",
      "timeColumns": [
       "time"
@@ -1151,7 +1151,7 @@
   },
   {
    "type": "timeseries",
-   "title": "B components AUS (M1) [mG]",
+   "title": "B components AUS (M_AUS) [mG]",
    "datasource": {
     "type": "frser-sqlite-datasource",
     "uid": "precal-monitor"
@@ -1163,8 +1163,8 @@
       "uid": "precal-monitor"
      },
      "refId": "A",
-     "queryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(m1_x * 1000) AS X, AVG(m1_y * 1000) AS Y, AVG(m1_z * 1000) AS Z FROM bfield WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000  GROUP BY 1 ORDER BY 1",
-     "rawQueryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(m1_x * 1000) AS X, AVG(m1_y * 1000) AS Y, AVG(m1_z * 1000) AS Z FROM bfield WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000  GROUP BY 1 ORDER BY 1",
+     "queryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(COALESCE(m1_x, m_aus_x) * 1000) AS X, AVG(COALESCE(m1_y, m_aus_y) * 1000) AS Y, AVG(COALESCE(m1_z, m_aus_z) * 1000) AS Z FROM bfield WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000  GROUP BY 1 ORDER BY 1",
+     "rawQueryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(COALESCE(m1_x, m_aus_x) * 1000) AS X, AVG(COALESCE(m1_y, m_aus_y) * 1000) AS Y, AVG(COALESCE(m1_z, m_aus_z) * 1000) AS Z FROM bfield WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000  GROUP BY 1 ORDER BY 1",
      "queryType": "table",
      "timeColumns": [
       "time"

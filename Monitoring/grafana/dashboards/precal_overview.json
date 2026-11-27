@@ -2136,8 +2136,8 @@
       "uid": "precal-monitor"
      },
      "refId": "A",
-     "queryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(m2_mg) AS \"Rot1 (M2)\", AVG(m3_mg) AS \"Rot2 (M3)\", AVG(m1_mg) AS \"AUS (M1)\" FROM bfield WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000  GROUP BY 1 ORDER BY 1",
-     "rawQueryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(m2_mg) AS \"Rot1 (M2)\", AVG(m3_mg) AS \"Rot2 (M3)\", AVG(m1_mg) AS \"AUS (M1)\" FROM bfield WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000  GROUP BY 1 ORDER BY 1",
+     "queryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(m3_mg) AS \"Rot1 (M_KOR1)\", AVG(m2_mg) AS \"Rot2 (M_KOR2)\", AVG(m1_mg) AS \"AUS (M_AUS)\" FROM bfield WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000  GROUP BY 1 ORDER BY 1",
+     "rawQueryText": "SELECT (ts_epoch / MAX(($__to - $__from) / 600000, 1)) * MAX(($__to - $__from) / 600000, 1) AS time, AVG(m3_mg) AS \"Rot1 (M_KOR1)\", AVG(m2_mg) AS \"Rot2 (M_KOR2)\", AVG(m1_mg) AS \"AUS (M_AUS)\" FROM bfield WHERE ts_epoch >= $__from / 1000 AND ts_epoch < $__to / 1000  GROUP BY 1 ORDER BY 1",
      "queryType": "table",
      "timeColumns": [
       "time"

@@ -26,7 +26,8 @@ CHANNELS = [(0, "Monitor"), (1, "Rot1"), (2, "Rot2"), (3, "Ch3")]
 BOXES = [(1, "Rot#1"), (2, "Rot#2"), (3, "Mon.")]
 WLS = ["375nm", "405nm", "450nm", "473nm"]
 T_NAMES = {7: '"T7 (AUS box)"'}   # T7 probe sits inside the AUS group's box
-B_NAMES = {1: '"AUS (M1)"', 2: '"Rot1 (M2)"', 3: '"Rot2 (M3)"'}   # magnetometer M1 sits in the AUS box, M2 at Rot1, M3 at Rot2
+B_NAMES = {1: '"AUS (M_AUS)"', 2: '"Rot2 (M_KOR2)"', 3: '"Rot1 (M_KOR1)"'}   # B-field log names; M_KOR1 sits at Rot1, M_KOR2 at Rot2
+B_COLS = {1: "m_aus", 2: "m_kor2", 3: "m_kor1"}   # component columns since the log header was renamed
 
 panels, y = [], 0
 BOARDS = {"main": ([], 0), "details": ([], 0)}
@@ -465,21 +466,21 @@ row("B-field")
 panel("timeseries", "Coil current [A] (0 A = coils OFF)", wide([(f"i{n}", f"I{n}") for n in (1, 2, 3, 4)], "bfield"),
       8, 7, 0, unit="amp", thresholds=[{"color": RED, "value": None}, {"color": GREEN, "value": 0.01}],
       custom={"spanNulls": 7200000, "thresholdsStyle": {"mode": "line+area"}})
-panel("timeseries", "|B| [mG]", wide([(f"m{n}_mg", B_NAMES[n]) for n in (2, 3, 1)], "bfield"), 8, 7, 8)
+panel("timeseries", "|B| [mG]", wide([(f"m{n}_mg", B_NAMES[n]) for n in (3, 2, 1)], "bfield"), 8, 7, 8)
 panel("timeseries", "Temperature [C]", wide([(f"t{n}", T_NAMES.get(n, f"T{n}")) for n in (3, 5, 7)], "bfield"),
       8, 7, 16, unit="celsius")
 y += 7
 
 to("details")
 row("B-field")
-panel("timeseries", "|B| all magnetometers [mG]", wide([(f"m{n}_mg", B_NAMES.get(n, f"M{n}")) for n in (2, 3, 1)], "bfield"),
+panel("timeseries", "|B| all magnetometers [mG]", wide([(f"m{n}_mg", B_NAMES.get(n, f"M{n}")) for n in (3, 2, 1)], "bfield"),
       12, 7, 0)
 panel("timeseries", "Temperature T1-T7 [C]",
       wide([(f"t{n}", T_NAMES.get(n, f"T{n}")) for n in (1, 2, 3, 4, 5, 6, 7)], "bfield"), 12, 7, 12, unit="celsius")
 y += 7
-for k, n in enumerate((2, 3, 1)):   # the log holds gauss; the panels show mG like |B|
+for k, n in enumerate((3, 2, 1)):   # the log holds gauss; the panels show mG like |B|
     panel("timeseries", f"B components {B_NAMES[n].strip(chr(34))} [mG]",
-          wide([(f"m{n}_{a} * 1000", a.upper()) for a in "xyz"], "bfield"), 8, 7, 8 * k)
+          wide([(f"COALESCE(m{n}_{a}, {B_COLS[n]}_{a}) * 1000", a.upper()) for a in "xyz"], "bfield"), 8, 7, 8 * k)
 y += 7
 
 to("main")

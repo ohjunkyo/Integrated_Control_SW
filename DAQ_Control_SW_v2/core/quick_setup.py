@@ -10,6 +10,7 @@ import sqlite3
 from datetime import datetime
 
 from core import env
+import angle_convert   # the Tk app's helper; core.env puts its folder on the path
 
 # Quick Configuration keys, Tk qs_vars order
 KEYS = ["Shift_worker", "Expert", "NOTE", "Laser", "Wavelength", "BField", "BField_X", "BField_Y", "BField_ZTop",
@@ -20,6 +21,15 @@ HV_DB = env.HV_DB
 HV_STALE_AFTER_S = 180
 # Readback jitters around the setpoint; only a larger difference is a real setting change
 TOLERANCE = {"HV1": 5.0, "HV2": 5.0, "HV3": 5.0, "Laser": 1.0}
+
+
+def scan_rot_text(cable):
+    """'X-axis: Rot 45°  |  Y-axis: Rot 135°' for a cable direction A~H; '' when it is not set."""
+    cable = (cable or "").strip().upper()
+    if len(cable) != 1 or cable not in "ABCDEFGH":
+        return ""
+    x, y = angle_convert.get_xy_rot_for_direction(cable)
+    return f"X-axis: Rot {x}°  |  Y-axis: Rot {y}°"
 
 
 def _log(msg):

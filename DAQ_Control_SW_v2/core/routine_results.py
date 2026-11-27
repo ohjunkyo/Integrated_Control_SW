@@ -722,8 +722,8 @@ def people(rows):
 
 MON_DB = os.path.expanduser("~/Logs/Monitoring/precal_monitor.db")   # precal-monitor ingest (B-field log)
 COND_BIN_S = 120
-MAGNETOMETERS = (2, 3)   # the B-field log's M2 and M3 sit at this setup
-MAG_NAMES = {2: "Rot1 (M2)", 3: "Rot2 (M3)"}   # magnetometer M2 sits at Rot1, M3 at Rot2
+MAGNETOMETERS = (3, 2)   # bfield table columns m3_mg (log M_KOR1) and m2_mg (log M_KOR2)
+MAG_NAMES = {3: "Rot1 (M_KOR1)", 2: "Rot2 (M_KOR2)"}   # M_KOR1 sits at Rot1, M_KOR2 at Rot2
 # labels as the HV Monitor shows these boxes (config_precal.json display_name)
 ENV_SENSORS = (("Rot#1", "Dark_Box_1"), ("Rot#2", "Dark_Box_2"), ("Mon.", "Dark_Box_3"),
                ("Rot1", "Rot1"), ("Rot2", "Rot2"))
@@ -770,9 +770,9 @@ def conditions(a, b):
                            (f"{a:%Y-%m-%d %H:%M:%S}", f"{b:%Y-%m-%d %H:%M:%S}")).fetchall()
         con.close()
         ts = [datetime.fromisoformat(r[0]) for r in rows]
+        for m in MAGNETOMETERS:
+            add("B", MAG_NAMES.get(m, f"M{m}"), ts, [r[m] for r in rows])
         for k in range(4):
-            if k + 1 in MAGNETOMETERS:
-                add("B", MAG_NAMES.get(k + 1, f"M{k + 1}"), ts, [r[1 + k] for r in rows])
             add("I", f"I{k + 1}", ts, [r[5 + k] for r in rows])
     except Exception:
         pass
